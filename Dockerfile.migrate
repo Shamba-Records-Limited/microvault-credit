@@ -1,0 +1,38 @@
+# Build stage
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apk add --no-cache git make
+
+# Copy workspace file
+COPY go.work go.work.sum* ./
+
+# Copy module files for both repos
+COPY Microvault/go.mod Microvault/go.sum ./Microvault/
+COPY microvault-credit/go.mod microvault-credit/go.sum ./microvault-credit/
+
+RUN go mod download
+
+# Copy source code for both repos
+COPY Microvault/ ./Microvault/
+COPY microvault-credit/ ./microvault-credit/
+
+# Build the migration binary (migrations are embedded via go:embed)
+WORKDIR /app/microvault-credit
+RUN go build -o /migrate cmd/migrate/main.go
+
+# Runtime stage
+FROM alpine:3.19
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apk add --no-cache ca-certificates
+
+# Copy binary from builder (migrations are embedded in the binary)
+COPY --from=builder /migrate /app/migrate
+
+# Run migrations
+CMD ["/app/migrate", "up"]

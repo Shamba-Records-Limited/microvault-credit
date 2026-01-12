@@ -1,0 +1,23 @@
+FROM golang:1.25-alpine
+
+WORKDIR /app
+
+# Install Node.js and npm for Redocly
+RUN apk add --no-cache nodejs npm
+
+# Install Go tools
+RUN go install github.com/air-verse/air@latest && \
+    go install github.com/swaggo/swag/cmd/swag@latest
+
+# Copy workspace file
+COPY go.work go.work.sum* ./
+
+# Copy module files for both repos
+COPY Microvault/go.mod Microvault/go.sum ./Microvault/
+COPY microvault-credit/go.mod microvault-credit/go.sum ./microvault-credit/
+
+RUN go mod download
+
+WORKDIR /app/microvault-credit
+
+CMD ["air", "-c", ".air.toml"]

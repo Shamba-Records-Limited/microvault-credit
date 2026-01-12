@@ -1,0 +1,10 @@
+root = "."
+tmp_dir = "tmp/credit"
+
+[build]
+  bin = "./tmp/credit/main"
+  cmd = "go build -o ./tmp/credit/main ./cmd/credit/main.go"
+  exclude_dir = ["tmp", "vendor", "core", "cmd/credit/docs"]
+  include_dir = ["credit", "cmd/credit"]
+  include_ext = ["go"]
+  delay = 1000
