@@ -24,7 +24,7 @@ WORKDIR /app/microvault-credit
 RUN go build -o /migrate cmd/migrate/main.go
 
 # Runtime stage
-FROM alpine:3.19
+FROM alpine:3.23
 
 WORKDIR /app
 
