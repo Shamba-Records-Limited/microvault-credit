@@ -3,7 +3,7 @@ package models
 import (
 	"time"
 
-	users "github.com/Shamba-Records-Limited/Microvault/pkg/models"
+	users "github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"

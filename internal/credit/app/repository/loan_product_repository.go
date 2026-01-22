@@ -6,7 +6,7 @@ import (
 	"log"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
-	pkgErrors "github.com/Shamba-Records-Limited/Microvault/pkg/errors"
+	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
 	"gorm.io/gorm"
 )
 

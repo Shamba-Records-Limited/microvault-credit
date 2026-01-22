@@ -3,7 +3,7 @@ package jobs
 import (
 	"log"
 
-	pkgjobs "github.com/Shamba-Records-Limited/Microvault/pkg/jobs"
+	pkgjobs "github.com/Shamba-Records-Limited/microvault/pkg/jobs"
 )
 
 // RegisterCronJobs registers all scheduled cron jobs for the credit module

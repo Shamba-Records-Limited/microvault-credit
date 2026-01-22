@@ -8,7 +8,7 @@ import (
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/pkg/notifications"
-	pkgjobs "github.com/Shamba-Records-Limited/Microvault/pkg/jobs"
+	pkgjobs "github.com/Shamba-Records-Limited/microvault/pkg/jobs"
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
 )

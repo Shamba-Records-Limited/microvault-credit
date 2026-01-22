@@ -7,18 +7,18 @@ import (
 	"syscall"
 
 	_ "github.com/Shamba-Records-Limited/microvault-credit/cmd/credit/docs"
-	"github.com/Shamba-Records-Limited/Microvault/pkg/config"
-	"github.com/Shamba-Records-Limited/Microvault/pkg/health"
-	"github.com/Shamba-Records-Limited/Microvault/pkg/middleware"
-	"github.com/Shamba-Records-Limited/Microvault/platform/cache"
-	"github.com/Shamba-Records-Limited/Microvault/platform/database"
+	"github.com/Shamba-Records-Limited/microvault/pkg/config"
+	"github.com/Shamba-Records-Limited/microvault/pkg/health"
+	"github.com/Shamba-Records-Limited/microvault/pkg/middleware"
+	"github.com/Shamba-Records-Limited/microvault/platform/cache"
+	"github.com/Shamba-Records-Limited/microvault/platform/database"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/swagger"
 )
 
-// @title MicroVault Credit API
+// @title microvault Credit API
 // @version 1.0
-// @description Credit management and loan processing service for MicroVault.
+// @description Credit management and loan processing service for microvault.
 // @termsOfService http://swagger.io/terms/
 // @contact.name API Support
 // @contact.email smugane@shambarecords.com

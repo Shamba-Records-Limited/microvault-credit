@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	pdfutils "github.com/Shamba-Records-Limited/Microvault/pkg/utils"
+	pdfutils "github.com/Shamba-Records-Limited/microvault/pkg/utils"
 )
 
 // MpesaStatementParser is a utility for parsing M-Pesa statement text

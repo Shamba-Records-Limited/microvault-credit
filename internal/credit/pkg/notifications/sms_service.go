@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Shamba-Records-Limited/Microvault/pkg/mobile/sms"
+	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/sms"
 )
 
 // SMSNotificationService handles SMS notifications for credit operations
@@ -112,7 +112,7 @@ func (s *SMSNotificationService) SendLoanDefaultNotification(ctx context.Context
 // SendWelcomeMessage sends welcome message to new users
 func (s *SMSNotificationService) SendWelcomeMessage(ctx context.Context, phoneNumber string, name string) error {
 	message := fmt.Sprintf(
-		"Welcome to MicroVault, %s! Dial *384*1234# to access your account and request loans. Need help? Visit https://microvault.com/support",
+		"Welcome to microvault, %s! Dial *384*1234# to access your account and request loans. Need help? Visit https://microvault.com/support",
 		name,
 	)
 
@@ -137,7 +137,7 @@ func (s *SMSNotificationService) SendKYCVerificationNotification(ctx context.Con
 // SendAccountSuspensionNotification sends account suspension notification
 func (s *SMSNotificationService) SendAccountSuspensionNotification(ctx context.Context, phoneNumber string, reason string) error {
 	message := fmt.Sprintf(
-		"Your MicroVault account has been suspended. Reason: %s. Please contact support.",
+		"Your microvault account has been suspended. Reason: %s. Please contact support.",
 		reason,
 	)
 
@@ -168,7 +168,7 @@ func (s *SMSNotificationService) SendSecurityAlert(ctx context.Context, phoneNum
 // SendPromotionalMessage sends promotional message
 func (s *SMSNotificationService) SendPromotionalMessage(ctx context.Context, phoneNumber string, promotion string) error {
 	message := fmt.Sprintf(
-		"MicroVault: %s Dial *384*1234# to take advantage of this offer!",
+		"microvault: %s Dial *384*1234# to take advantage of this offer!",
 		promotion,
 	)
 

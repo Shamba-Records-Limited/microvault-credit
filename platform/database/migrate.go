@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/Shamba-Records-Limited/Microvault/pkg/config"
-	microvaultdb "github.com/Shamba-Records-Limited/Microvault/platform/database"
+	"github.com/Shamba-Records-Limited/microvault/pkg/config"
+	microvaultdb "github.com/Shamba-Records-Limited/microvault/platform/database"
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
