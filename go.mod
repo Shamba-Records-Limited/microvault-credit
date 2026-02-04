@@ -7,7 +7,7 @@ require github.com/Shamba-Records-Limited/microvault v0.0.0
 replace github.com/Shamba-Records-Limited/microvault => ../microvault
 
 require (
-	github.com/gofiber/fiber/v2 v2.52.10
+	github.com/gofiber/fiber/v2 v2.52.11
 	github.com/gofiber/swagger v1.1.1
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
