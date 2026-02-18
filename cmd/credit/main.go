@@ -1,15 +1,30 @@
 package main
 
 import (
+	"context"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	_ "github.com/Shamba-Records-Limited/microvault-credit/cmd/credit/docs"
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/adapters"
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/pkg/notifications"
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
+	"github.com/Shamba-Records-Limited/microvault/pkg/controllers"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
+	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
+	"github.com/Shamba-Records-Limited/microvault/pkg/webhook"
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
 	"github.com/Shamba-Records-Limited/microvault/pkg/health"
 	"github.com/Shamba-Records-Limited/microvault/pkg/middleware"
+	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/sms"
+	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/sms/providers/africastalking"
+	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd"
+	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
+	atussd "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/providers/africastalking"
 	"github.com/Shamba-Records-Limited/microvault/platform/cache"
 	"github.com/Shamba-Records-Limited/microvault/platform/database"
 	"github.com/gofiber/fiber/v2"
@@ -27,37 +42,136 @@ import (
 // @host localhost:8081
 // @BasePath /
 func main() {
-	// ---- Initialize Configuration ----
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// ---- 1. Configuration ----
 	cfg, err := config.New()
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// ---- Initialize Database ----
-	_, err = database.GetConnection("credit", &cfg.Postgres)
+	// ---- 2. Database ----
+	db, err := database.GetConnection("credit", &cfg.Postgres)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	log.Println("Database connected successfully")
 
-	// ---- Initialize Cache ----
-	_, err = cache.GetConnection("credit", &cfg.Redis)
+	// ---- 3. Redis ----
+	redisClient, err := cache.GetConnection("credit", &cfg.Redis)
 	if err != nil {
 		log.Fatalf("Failed to connect to Redis: %v", err)
 	}
 	log.Println("Redis connected successfully")
 
-	// ---- Initialize Application ----
-	// Create a new fiber app
+	// ---- 4. Repositories ----
+	repos, err := repository.NewRepositories(db)
+	if err != nil {
+		log.Fatalf("Failed to initialize repositories: %v", err)
+	}
+
+	// ---- 5. Loan service ----
+	loanSvc := loan.NewService(repos.Loan)
+
+	// ---- 6. Stellar RPC client + service ----
+	rpcClient := cfg.Stellar.NewRpcClient()
+	stellarSvc := stellar.NewService(
+		rpcClient,
+		cfg.Stellar.NetworkPassphrase,
+		cfg.Stellar.TreasurySecretKey,
+		cfg.Stellar.AdminSecretKey,
+		cfg.Stellar.ContractID,
+		cfg.Stellar.USDCIssuer,
+	)
+
+	// ---- 7. SMS + notification service ----
+	smsService := sms.NewSMSService()
+	atSMSAdapter := africastalking.NewAfricasTalkingSMSAdapter(
+		cfg.Mobile.AfricasTalking.Username,
+		cfg.Mobile.AfricasTalking.APIKey,
+		cfg.Mobile.AfricasTalking.BaseURL,
+	)
+	smsService.RegisterProvider("africastalking", atSMSAdapter)
+
+	notificationSvc := notifications.NewSMSNotificationService(smsService, "africastalking", "microvault")
+
+	// ---- 8. YellowCard adapter ----
+	ycAdapter := yellowcard.NewYellowcardAdapter(
+		cfg.Payments.YellowCard.PublicKey,
+		cfg.Payments.YellowCard.SecretKey,
+		cfg.Payments.YellowCard.BaseURL,
+	)
+
+	// ---- 9. Treasury transfer bridge ----
+	treasuryTransfer := ussdadapters.NewStellarTreasuryTransfer(stellarSvc)
+
+	// ---- 10. Off-ramp adapter ----
+	offRampSvc := ussdadapters.NewYellowCardOffRampAdapter(ussdadapters.YellowCardOffRampConfig{
+		Adapter:      ycAdapter,
+		Treasury:     treasuryTransfer,
+		BusinessID:   cfg.Payments.YellowCard.BusinessID,
+		BusinessName: cfg.Payments.YellowCard.BusinessName,
+	})
+
+	// ---- 11. LoanServiceAdapter (USSD LoanService) ----
+	// 5000 USDC = 50_000_000_000 stroops auto-approve limit
+	loanAdapter := adapters.NewLoanServiceAdapter(
+		loanSvc,
+		stellarSvc,
+		offRampSvc,
+		notificationSvc,
+		logger,
+		50_000_000_000,
+	)
+
+	// ---- 12. DisbursementStatusAdapter (webhook callbacks) ----
+	disbursementAdapter := adapters.NewDisbursementStatusAdapter(
+		repos.Loan,
+		notificationSvc,
+		logger,
+	)
+
+	// ---- 13. USSD stack ----
+	sessionManager := ussd.NewSessionManager(redisClient, 0) // default 5min TTL
+	menuRegistry := ussd.NewMenuRegistry()
+
+	// Register standard loan menus
+	standardPreset := &ussd.StandardLoanMenuPreset{}
+	standardPreset.Initialize(menuRegistry)
+
+	ussdHandler := ussd.NewUSSDHandler(sessionManager, menuRegistry, nil, loanAdapter)
+	ussdService := ussd.NewUSSDService(ussdHandler)
+
+	// Register Africa's Talking USSD provider
+	atUSSDProvider := atussd.NewAfricasTalkingUSSDAdapter(
+		cfg.Mobile.AfricasTalking.Username,
+		cfg.Mobile.AfricasTalking.APIKey,
+	)
+	ussdService.RegisterProvider("africastalking", atUSSDProvider)
+
+	// ---- 14. Webhook service + controller ----
+	webhookSvc := webhook.NewService(disbursementAdapter, nil)
+	webhookCtrl := controllers.NewWebhookController(webhookSvc, cfg.Payments.YellowCard.WebhookSecret)
+
+	// ---- 15. Refund poller ----
+	pollerCtx, pollerCancel := context.WithCancel(context.Background())
+	refundPoller := webhook.NewRefundPoller(
+		ycAdapter,
+		offRampSvc,
+		disbursementAdapter,
+		disbursementAdapter,
+		nil, // AlertService — ops alerts via logging for now
+		webhook.DefaultRefundPollerConfig(),
+	)
+	go refundPoller.Start(pollerCtx)
+
+	// ---- 16. Fiber app + middleware + routes ----
 	app := fiber.New()
 
-	// Initialize health check middleware (without Stellar for credit service)
 	healthCheck := health.NewCheckerWithoutStellar("credit", "credit")
-
-	// Initialize middleware & pass health checker middleware
 	middleware.FiberMiddleware(app, healthCheck)
 
-	// Define swagger routes
+	// Swagger
 	app.Get("/swagger/*", swagger.New(swagger.Config{
 		DeepLinking:  false,
 		DocExpansion: "list",
@@ -68,16 +182,33 @@ func main() {
 		OAuth2RedirectUrl: "http://localhost:8081/swagger/oauth2-redirect.html",
 	}))
 
-	// Serve redoc.html at the root route
+	// Redoc at root
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.SendFile("./cmd/credit/docs/redoc-static.html")
 	})
 
-	// Create a channel to listen for OS signals
+	// USSD callback
+	app.Post("/ussd/:provider", func(c *fiber.Ctx) error {
+		provider := c.Params("provider")
+		data := make(map[string]string)
+		c.Request().PostArgs().VisitAll(func(key, value []byte) {
+			data[string(key)] = string(value)
+		})
+		resp, err := ussdService.HandleRequest(c.Context(), provider, data)
+		if err != nil {
+			logger.Error("USSD request failed", "provider", provider, "error", err)
+			return c.Status(fiber.StatusInternalServerError).SendString("END An error occurred. Please try again.")
+		}
+		return c.SendString(resp.(string))
+	})
+
+	// YellowCard webhook
+	app.Post("/webhooks/yellowcard", webhookCtrl.HandleYellowCardWebhook)
+
+	// ---- 17. Start server ----
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Run the server in a separate goroutine
 	go func() {
 		log.Printf("Starting credit server on %s", cfg.Server.CreditAddr())
 		if err := app.Listen(cfg.Server.CreditAddr()); err != nil {
@@ -85,24 +216,23 @@ func main() {
 		}
 	}()
 
-	// Block main goroutine until a signal is received
+	// ---- 18. Graceful shutdown ----
 	sig := <-sigChan
 	log.Printf("Received signal %s. Shutting down gracefully...", sig)
 
-	// Tell Fiber to shut down
+	pollerCancel()
+
 	if err := app.Shutdown(); err != nil {
 		log.Printf("Fiber shutdown error: %v", err)
 	}
 	log.Println("Fiber server shut down.")
 
-	// Close database connections
 	if err := database.CloseAll(); err != nil {
 		log.Printf("Database shutdown error: %v", err)
 	} else {
 		log.Println("Database connections closed successfully.")
 	}
 
-	// Close cache connections
 	if err := cache.CloseAll(); err != nil {
 		log.Printf("Cache shutdown error: %v", err)
 	} else {
