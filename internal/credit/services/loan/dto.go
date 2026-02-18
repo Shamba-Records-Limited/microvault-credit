@@ -16,18 +16,21 @@ type CreateLoanRequest struct {
 
 // UpdateLoanRequest represents the request to update loan information
 type UpdateLoanRequest struct {
-	VaultTxHash       *string `json:"vault_tx_hash,omitempty"`
-	VaultTxStatus     *string `json:"vault_tx_status,omitempty"`
-	RampProvider      *string `json:"ramp_provider,omitempty"`
-	RampRequestID     *string `json:"ramp_request_id,omitempty"`
-	RampFiatAmount    *int64  `json:"ramp_fiat_amount,omitempty"`
-	RampFiatCurr      *string `json:"ramp_fiat_currency,omitempty"`
-	MomoProvider      *string `json:"momo_provider,omitempty"`
-	MomoTxID          *string `json:"momo_transaction_id,omitempty"`
-	MomoStatus        *string `json:"momo_status,omitempty"`
-	OriginationFee    *int64  `json:"origination_fee,omitempty"`
-	OriginationFeeBps *int32  `json:"origination_fee_bps,omitempty"`
-	TotalAmount       *int64  `json:"total_amount,omitempty"`
+	VaultTxHash        *string `json:"vault_tx_hash,omitempty"`
+	VaultTxStatus      *string `json:"vault_tx_status,omitempty"`
+	RampProvider       *string `json:"ramp_provider,omitempty"`
+	RampRequestID      *string `json:"ramp_request_id,omitempty"`
+	RampFiatAmount     *int64  `json:"ramp_fiat_amount,omitempty"`
+	RampFiatCurr       *string `json:"ramp_fiat_currency,omitempty"`
+	MomoProvider       *string `json:"momo_provider,omitempty"`
+	MomoTxID           *string `json:"momo_transaction_id,omitempty"`
+	MomoStatus         *string `json:"momo_status,omitempty"`
+	OriginationFee     *int64  `json:"origination_fee,omitempty"`
+	OriginationFeeBps  *int32  `json:"origination_fee_bps,omitempty"`
+	TotalAmount        *int64  `json:"total_amount,omitempty"`
+	SettlementMethod   *string `json:"settlement_method,omitempty"`
+	DisbursementStatus *string `json:"disbursement_status,omitempty"`
+	RampSequenceID     *string `json:"ramp_sequence_id,omitempty"`
 }
 
 // ApproveLoanRequest represents the request to approve a loan
@@ -37,13 +40,16 @@ type ApproveLoanRequest struct {
 
 // DisburseLoanRequest represents the request to disburse a loan
 type DisburseLoanRequest struct {
-	VaultTxHash    *string `json:"vault_tx_hash,omitempty"`
-	RampProvider   *string `json:"ramp_provider,omitempty"`
-	RampRequestID  *string `json:"ramp_request_id,omitempty"`
-	RampFiatAmount *int64  `json:"ramp_fiat_amount,omitempty"`
-	RampFiatCurr   *string `json:"ramp_fiat_currency,omitempty"`
-	MomoProvider   *string `json:"momo_provider,omitempty"`
-	MomoTxID       *string `json:"momo_transaction_id,omitempty"`
+	VaultTxHash        *string `json:"vault_tx_hash,omitempty"`
+	RampProvider       *string `json:"ramp_provider,omitempty"`
+	RampRequestID      *string `json:"ramp_request_id,omitempty"`
+	RampFiatAmount     *int64  `json:"ramp_fiat_amount,omitempty"`
+	RampFiatCurr       *string `json:"ramp_fiat_currency,omitempty"`
+	MomoProvider       *string `json:"momo_provider,omitempty"`
+	MomoTxID           *string `json:"momo_transaction_id,omitempty"`
+	SettlementMethod   *string `json:"settlement_method,omitempty"`
+	DisbursementStatus *string `json:"disbursement_status,omitempty"`
+	RampSequenceID     *string `json:"ramp_sequence_id,omitempty"`
 }
 
 // LoanResponse represents the response containing loan information
@@ -78,6 +84,9 @@ type LoanResponse struct {
 	MomoProvider        *string    `json:"momo_provider,omitempty"`
 	MomoTxID            *string    `json:"momo_transaction_id,omitempty"`
 	MomoStatus          *string    `json:"momo_status,omitempty"`
+	SettlementMethod    *string    `json:"settlement_method,omitempty"`
+	DisbursementStatus  *string    `json:"disbursement_status,omitempty"`
+	RampSequenceID      *string    `json:"ramp_sequence_id,omitempty"`
 	DisbursementRateBps *int64     `json:"disbursement_rate_bps,omitempty"`
 	DisbursementAmtKES  *int64     `json:"disbursement_amount_kes,omitempty"`
 	RepaymentAmtKES     *int64     `json:"repayment_amount_kes,omitempty"`

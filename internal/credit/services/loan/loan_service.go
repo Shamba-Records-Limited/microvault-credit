@@ -210,6 +210,15 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanRequest) 
 	if req.TotalAmount != nil {
 		loan.TotalAmount = req.TotalAmount
 	}
+	if req.SettlementMethod != nil {
+		loan.SettlementMethod = req.SettlementMethod
+	}
+	if req.DisbursementStatus != nil {
+		loan.DisbursementStatus = req.DisbursementStatus
+	}
+	if req.RampSequenceID != nil {
+		loan.RampSequenceID = req.RampSequenceID
+	}
 
 	// Update in database
 	if err := s.repo.Update(ctx, loan); err != nil {
@@ -314,6 +323,15 @@ func (s *service) Disburse(ctx context.Context, id string, req DisburseLoanReque
 	}
 	if req.MomoTxID != nil {
 		loan.MomoTxID = req.MomoTxID
+	}
+	if req.SettlementMethod != nil {
+		loan.SettlementMethod = req.SettlementMethod
+	}
+	if req.DisbursementStatus != nil {
+		loan.DisbursementStatus = req.DisbursementStatus
+	}
+	if req.RampSequenceID != nil {
+		loan.RampSequenceID = req.RampSequenceID
 	}
 
 	if err := s.repo.Update(ctx, loan); err != nil {

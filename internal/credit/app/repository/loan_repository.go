@@ -23,6 +23,8 @@ var (
 	ErrFailedToRestoreLoan            = errors.New("failed to restore loan")
 	ErrFailedToDeleteLoan             = errors.New("failed to delete loan")
 	ErrFailedToDeleteLoansByUserID    = errors.New("failed to delete loans by user ID")
+	ErrFailedToGetLoanBySequenceID   = errors.New("failed to get loan by sequence ID")
+	ErrFailedToGetLoansByDisbStatus  = errors.New("failed to get loans by disbursement status")
 )
 
 // LoanRepository defines the interface for loanRespository data access.
@@ -35,6 +37,8 @@ type LoanRepository interface {
 	GetByUserID(ctx context.Context, userID string, limit, offset int) ([]*models.Loan, error)
 	GetActiveLoans(ctx context.Context, limit, offset int) ([]*models.Loan, error)
 	GetActiveLoansByStatus(ctx context.Context, status string, limit, offset int) ([]*models.Loan, error)
+	GetBySequenceID(ctx context.Context, sequenceID string) (*models.Loan, error)
+	GetByDisbursementStatus(ctx context.Context, status string, limit int) ([]*models.Loan, error)
 
 	// Update operations
 	Update(ctx context.Context, loan *models.Loan) error
@@ -137,6 +141,37 @@ func (r *loanRepository) GetActiveLoansByStatus(ctx context.Context, status stri
 	return loans, nil
 }
 
+// GetBySequenceID retrieves a loan by its YellowCard ramp sequence ID.
+func (r *loanRepository) GetBySequenceID(ctx context.Context, sequenceID string) (*models.Loan, error) {
+	var loan models.Loan
+	result := r.db.WithContext(ctx).
+		Where("ramp_sequence_id = ? AND deleted_at IS NULL", sequenceID).
+		First(&loan)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil, ErrLoanNotFound
+	}
+	if result.Error != nil {
+		log.Printf("GetBySequenceID: database error: %v", result.Error)
+		return nil, ErrFailedToGetLoanBySequenceID
+	}
+	return &loan, nil
+}
+
+// GetByDisbursementStatus retrieves loans by their disbursement status.
+func (r *loanRepository) GetByDisbursementStatus(ctx context.Context, status string, limit int) ([]*models.Loan, error) {
+	var loans []*models.Loan
+	result := r.db.WithContext(ctx).
+		Where("disbursement_status = ? AND deleted_at IS NULL", status).
+		Order("created_at ASC").
+		Limit(limit).
+		Find(&loans)
+	if result.Error != nil {
+		log.Printf("GetByDisbursementStatus: database error: %v", result.Error)
+		return nil, ErrFailedToGetLoansByDisbStatus
+	}
+	return loans, nil
+}
+
 // --- Update Operations ---
 
 // Update updates a loan record.
@@ -158,9 +193,12 @@ func (r *loanRepository) Update(ctx context.Context, loan *models.Loan) error {
 			"ramp_fiat_amount":    loan.RampFiatAmount,
 			"ramp_fiat_currency":  loan.RampFiatCurr,
 			"momo_provider":       loan.MomoProvider,
-			"momo_transaction_id": loan.MomoTxID,
-			"momo_status":         loan.MomoStatus,
-			"origination_fee":     loan.OriginationFee,
+			"momo_transaction_id":  loan.MomoTxID,
+			"momo_status":          loan.MomoStatus,
+			"settlement_method":    loan.SettlementMethod,
+			"disbursement_status":  loan.DisbursementStatus,
+			"ramp_sequence_id":     loan.RampSequenceID,
+			"origination_fee":      loan.OriginationFee,
 			"origination_fee_pct": loan.OriginationFeeBps,
 			"total_amount":        loan.TotalAmount,
 			"updated_at":          time.Now(),

@@ -42,6 +42,9 @@ type Loan struct {
 	MomoProvider        *string        `json:"momo_provider,omitempty" gorm:"type:varchar(50)"`
 	MomoTxID            *string        `json:"momo_transaction_id,omitempty" gorm:"type:varchar(100);index"`
 	MomoStatus          *string        `json:"momo_status,omitempty" gorm:"type:varchar(20)"`
+	SettlementMethod    *string        `json:"settlement_method,omitempty" gorm:"type:varchar(20)"`
+	DisbursementStatus  *string        `json:"disbursement_status,omitempty" gorm:"type:varchar(30);index"`
+	RampSequenceID      *string        `json:"ramp_sequence_id,omitempty" gorm:"type:varchar(200);index"`
 	DisbursementRateBps *int64         `json:"disbursement_rate_bps,omitempty" gorm:"type:bigint"`
 	DisbursementAmtKES  *int64         `json:"disbursement_amount_kes,omitempty" gorm:"type:bigint"`
 	RepaymentAmtKES     *int64         `json:"repayment_amount_kes,omitempty" gorm:"type:bigint"`
