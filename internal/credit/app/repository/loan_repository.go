@@ -162,6 +162,7 @@ func (r *loanRepository) GetBySequenceID(ctx context.Context, sequenceID string)
 func (r *loanRepository) GetByDisbursementStatus(ctx context.Context, status string, limit int) ([]*models.Loan, error) {
 	var loans []*models.Loan
 	result := r.db.WithContext(ctx).
+		Preload("User").
 		Where("disbursement_status = ? AND deleted_at IS NULL", status).
 		Order("created_at ASC").
 		Limit(limit).

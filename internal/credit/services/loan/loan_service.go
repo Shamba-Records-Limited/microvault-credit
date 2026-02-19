@@ -219,6 +219,27 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanRequest) 
 	if req.RampSequenceID != nil {
 		loan.RampSequenceID = req.RampSequenceID
 	}
+	if req.DisbursementRateBps != nil {
+		loan.DisbursementRateBps = req.DisbursementRateBps
+	}
+	if req.DisbursementAmtKES != nil {
+		loan.DisbursementAmtKES = req.DisbursementAmtKES
+	}
+	if req.RepaymentAmtKES != nil {
+		loan.RepaymentAmtKES = req.RepaymentAmtKES
+	}
+	if req.ConversionSpreadBps != nil {
+		loan.ConversionSpreadBps = req.ConversionSpreadBps
+	}
+	if req.BorrowIndex != nil {
+		loan.BorrowIndex = req.BorrowIndex
+	}
+	if req.RampFeeUSD != nil {
+		loan.RampFeeUSD = req.RampFeeUSD
+	}
+	if req.RampFeeLocal != nil {
+		loan.RampFeeLocal = req.RampFeeLocal
+	}
 
 	// Update in database
 	if err := s.repo.Update(ctx, loan); err != nil {
@@ -467,6 +488,9 @@ func toLoanResponse(loan *models.Loan) *LoanResponse {
 		DisbursementAmtKES:  loan.DisbursementAmtKES,
 		RepaymentAmtKES:     loan.RepaymentAmtKES,
 		ConversionSpreadBps: loan.ConversionSpreadBps,
+		BorrowIndex:         loan.BorrowIndex,
+		RampFeeUSD:          loan.RampFeeUSD,
+		RampFeeLocal:        loan.RampFeeLocal,
 		CreatedAt:           loan.CreatedAt,
 		UpdatedAt:           loan.UpdatedAt,
 	}

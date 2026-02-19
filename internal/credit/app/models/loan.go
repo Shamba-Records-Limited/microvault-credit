@@ -49,6 +49,9 @@ type Loan struct {
 	DisbursementAmtKES  *int64         `json:"disbursement_amount_kes,omitempty" gorm:"type:bigint"`
 	RepaymentAmtKES     *int64         `json:"repayment_amount_kes,omitempty" gorm:"type:bigint"`
 	ConversionSpreadBps *int32         `json:"conversion_spread_bps,omitempty" gorm:"type:int"`
+	BorrowIndex         *int64         `json:"borrow_index,omitempty" gorm:"type:bigint"`
+	RampFeeUSD          *int64         `json:"ramp_fee_usd,omitempty" gorm:"type:bigint"`
+	RampFeeLocal        *int64         `json:"ramp_fee_local,omitempty" gorm:"type:bigint"`
 	CreatedAt           time.Time      `json:"created_at" gorm:"autoCreateTime;not null"`
 	UpdatedAt           time.Time      `json:"updated_at" gorm:"autoUpdateTime;not null"`
 	DeletedAt           gorm.DeletedAt `json:"deleted_at" gorm:"index"`

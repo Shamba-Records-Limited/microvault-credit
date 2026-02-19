@@ -13,9 +13,13 @@ import (
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/pkg/notifications"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
+	"github.com/Shamba-Records-Limited/microvault/pkg/account"
 	"github.com/Shamba-Records-Limited/microvault/pkg/controllers"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
+	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
+	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
+	"github.com/Shamba-Records-Limited/microvault/pkg/user"
 	"github.com/Shamba-Records-Limited/microvault/pkg/webhook"
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
 	"github.com/Shamba-Records-Limited/microvault/pkg/health"
@@ -70,6 +74,12 @@ func main() {
 		log.Fatalf("Failed to initialize repositories: %v", err)
 	}
 
+	// ---- 4b. Core repositories (shared DB — users, accounts, transactions) ----
+	coreRepos, err := corerepository.NewRepositories(db)
+	if err != nil {
+		log.Fatalf("Failed to initialize core repositories: %v", err)
+	}
+
 	// ---- 5. Loan service ----
 	loanSvc := loan.NewService(repos.Loan)
 
@@ -113,6 +123,30 @@ func main() {
 		BusinessName: cfg.Payments.YellowCard.BusinessName,
 	})
 
+	// ---- 10b. User + Account + Transaction services ----
+	userSvc := user.NewService(coreRepos.User)
+	accountSvc := account.NewService(coreRepos.Account, coreRepos.User)
+	txnSvc := transaction.NewService(coreRepos.Transaction)
+
+	// ---- 10c. UserServiceAdapter ----
+	userAdapter, err := ussdadapters.NewUserServiceAdapter(
+		userSvc,
+		accountSvc,
+		stellarSvc,
+		db,
+		ussdadapters.WalletConfig{
+			TreasuryPrivateKey: cfg.Stellar.TreasurySecretKey,
+			USDCIssuer:         cfg.Stellar.USDCIssuer,
+			EnableMultiSig:     cfg.Stellar.EnableMultiSig,
+			LowThreshold:       cfg.Stellar.MultiSigLowThreshold,
+			MediumThreshold:    cfg.Stellar.MultiSigMediumThreshold,
+			HighThreshold:      cfg.Stellar.MultiSigHighThreshold,
+		},
+	)
+	if err != nil {
+		log.Fatalf("Failed to create user service adapter: %v", err)
+	}
+
 	// ---- 11. LoanServiceAdapter (USSD LoanService) ----
 	// 5000 USDC = 50_000_000_000 stroops auto-approve limit
 	loanAdapter := adapters.NewLoanServiceAdapter(
@@ -120,6 +154,7 @@ func main() {
 		stellarSvc,
 		offRampSvc,
 		notificationSvc,
+		txnSvc,
 		logger,
 		50_000_000_000,
 	)
@@ -128,8 +163,12 @@ func main() {
 	disbursementAdapter := adapters.NewDisbursementStatusAdapter(
 		repos.Loan,
 		notificationSvc,
+		txnSvc,
 		logger,
 	)
+
+	// ---- 12b. Rate service adapter ----
+	rateSvc := adapters.NewRateServiceAdapter(offRampSvc)
 
 	// ---- 13. USSD stack ----
 	sessionManager := ussd.NewSessionManager(redisClient, 0) // default 5min TTL
@@ -139,7 +178,7 @@ func main() {
 	standardPreset := &ussd.StandardLoanMenuPreset{}
 	standardPreset.Initialize(menuRegistry)
 
-	ussdHandler := ussd.NewUSSDHandler(sessionManager, menuRegistry, nil, loanAdapter)
+	ussdHandler := ussd.NewUSSDHandler(sessionManager, menuRegistry, userAdapter, loanAdapter, rateSvc)
 	ussdService := ussd.NewUSSDService(ussdHandler)
 
 	// Register Africa's Talking USSD provider
@@ -150,7 +189,7 @@ func main() {
 	ussdService.RegisterProvider("africastalking", atUSSDProvider)
 
 	// ---- 14. Webhook service + controller ----
-	webhookSvc := webhook.NewService(disbursementAdapter, nil)
+	webhookSvc := webhook.NewService(disbursementAdapter, nil, disbursementAdapter)
 	webhookCtrl := controllers.NewWebhookController(webhookSvc, cfg.Payments.YellowCard.WebhookSecret)
 
 	// ---- 15. Refund poller ----
@@ -161,6 +200,7 @@ func main() {
 		disbursementAdapter,
 		disbursementAdapter,
 		nil, // AlertService — ops alerts via logging for now
+		disbursementAdapter,
 		webhook.DefaultRefundPollerConfig(),
 	)
 	go refundPoller.Start(pollerCtx)

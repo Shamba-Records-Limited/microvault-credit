@@ -16,21 +16,28 @@ type CreateLoanRequest struct {
 
 // UpdateLoanRequest represents the request to update loan information
 type UpdateLoanRequest struct {
-	VaultTxHash        *string `json:"vault_tx_hash,omitempty"`
-	VaultTxStatus      *string `json:"vault_tx_status,omitempty"`
-	RampProvider       *string `json:"ramp_provider,omitempty"`
-	RampRequestID      *string `json:"ramp_request_id,omitempty"`
-	RampFiatAmount     *int64  `json:"ramp_fiat_amount,omitempty"`
-	RampFiatCurr       *string `json:"ramp_fiat_currency,omitempty"`
-	MomoProvider       *string `json:"momo_provider,omitempty"`
-	MomoTxID           *string `json:"momo_transaction_id,omitempty"`
-	MomoStatus         *string `json:"momo_status,omitempty"`
-	OriginationFee     *int64  `json:"origination_fee,omitempty"`
-	OriginationFeeBps  *int32  `json:"origination_fee_bps,omitempty"`
-	TotalAmount        *int64  `json:"total_amount,omitempty"`
-	SettlementMethod   *string `json:"settlement_method,omitempty"`
-	DisbursementStatus *string `json:"disbursement_status,omitempty"`
-	RampSequenceID     *string `json:"ramp_sequence_id,omitempty"`
+	VaultTxHash         *string `json:"vault_tx_hash,omitempty"`
+	VaultTxStatus       *string `json:"vault_tx_status,omitempty"`
+	RampProvider        *string `json:"ramp_provider,omitempty"`
+	RampRequestID       *string `json:"ramp_request_id,omitempty"`
+	RampFiatAmount      *int64  `json:"ramp_fiat_amount,omitempty"`
+	RampFiatCurr        *string `json:"ramp_fiat_currency,omitempty"`
+	MomoProvider        *string `json:"momo_provider,omitempty"`
+	MomoTxID            *string `json:"momo_transaction_id,omitempty"`
+	MomoStatus          *string `json:"momo_status,omitempty"`
+	OriginationFee      *int64  `json:"origination_fee,omitempty"`
+	OriginationFeeBps   *int32  `json:"origination_fee_bps,omitempty"`
+	TotalAmount         *int64  `json:"total_amount,omitempty"`
+	SettlementMethod    *string `json:"settlement_method,omitempty"`
+	DisbursementStatus  *string `json:"disbursement_status,omitempty"`
+	RampSequenceID      *string `json:"ramp_sequence_id,omitempty"`
+	DisbursementRateBps *int64  `json:"disbursement_rate_bps,omitempty"`
+	DisbursementAmtKES  *int64  `json:"disbursement_amount_kes,omitempty"`
+	RepaymentAmtKES     *int64  `json:"repayment_amount_kes,omitempty"`
+	ConversionSpreadBps *int32  `json:"conversion_spread_bps,omitempty"`
+	BorrowIndex         *int64  `json:"borrow_index,omitempty"`
+	RampFeeUSD          *int64  `json:"ramp_fee_usd,omitempty"`
+	RampFeeLocal        *int64  `json:"ramp_fee_local,omitempty"`
 }
 
 // ApproveLoanRequest represents the request to approve a loan
@@ -91,6 +98,9 @@ type LoanResponse struct {
 	DisbursementAmtKES  *int64     `json:"disbursement_amount_kes,omitempty"`
 	RepaymentAmtKES     *int64     `json:"repayment_amount_kes,omitempty"`
 	ConversionSpreadBps *int32     `json:"conversion_spread_bps,omitempty"`
+	BorrowIndex         *int64     `json:"borrow_index,omitempty"`
+	RampFeeUSD          *int64     `json:"ramp_fee_usd,omitempty"`
+	RampFeeLocal        *int64     `json:"ramp_fee_local,omitempty"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 }
