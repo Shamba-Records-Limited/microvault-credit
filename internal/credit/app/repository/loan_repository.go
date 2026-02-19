@@ -145,6 +145,7 @@ func (r *loanRepository) GetActiveLoansByStatus(ctx context.Context, status stri
 func (r *loanRepository) GetBySequenceID(ctx context.Context, sequenceID string) (*models.Loan, error) {
 	var loan models.Loan
 	result := r.db.WithContext(ctx).
+		Preload("User").
 		Where("ramp_sequence_id = ? AND deleted_at IS NULL", sequenceID).
 		First(&loan)
 	if errors.Is(result.Error, gorm.ErrRecordNotFound) {

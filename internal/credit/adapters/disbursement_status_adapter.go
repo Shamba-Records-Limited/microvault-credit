@@ -99,7 +99,12 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(sequenceID string
 		amountKES = float64(*loan.RampFiatAmount) / 100
 	}
 
-	if err := a.notificationSvc.SendLoanDisbursementNotification(ctx, "", loanNumber, amountKES); err != nil {
+	phone := ""
+	if loan.User != nil {
+		phone = loan.User.MobileNumber
+	}
+
+	if err := a.notificationSvc.SendLoanDisbursementNotification(ctx, phone, loanNumber, amountKES); err != nil {
 		a.logger.Warn("failed to send completion SMS",
 			"loan_id", loan.ID,
 			"error", err,
@@ -136,7 +141,12 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementFailed(sequenceID string) 
 		loanNumber = *loan.LoanNumber
 	}
 
-	if err := a.notificationSvc.SendLoanDefaultNotification(ctx, "", loanNumber); err != nil {
+	phone := ""
+	if loan.User != nil {
+		phone = loan.User.MobileNumber
+	}
+
+	if err := a.notificationSvc.SendLoanDefaultNotification(ctx, phone, loanNumber); err != nil {
 		a.logger.Warn("failed to send failure SMS",
 			"loan_id", loan.ID,
 			"error", err,

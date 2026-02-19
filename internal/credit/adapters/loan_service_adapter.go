@@ -55,15 +55,25 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	start := time.Now()
 
 	// Step 1: Auto-approve eligibility check.
+	amountUSD := float64(req.PrincipalAmount) / 1e7
 	if req.PrincipalAmount > a.defaultLimit {
+		reason := "Loan amount exceeds the current limit"
 		a.logger.Warn("loan rejected: exceeds limit",
 			"user_id", req.UserID,
 			"amount", req.PrincipalAmount,
 			"limit", a.defaultLimit,
 		)
+
+		// Notify user of rejection (best-effort).
+		if a.notificationSvc != nil && req.PhoneNumber != "" {
+			if smsErr := a.notificationSvc.SendLoanRejectionNotification(ctx, req.PhoneNumber, amountUSD, reason); smsErr != nil {
+				a.logger.Warn("rejection SMS failed", "user_id", req.UserID, "error", smsErr)
+			}
+		}
+
 		return &ussd.LoanApproval{
 			Approved: false,
-			Reason:   "Loan amount exceeds the current limit",
+			Reason:   reason,
 		}, nil
 	}
 	a.logger.Info("loan eligibility check",
@@ -103,6 +113,17 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	}
 	a.logger.Info("loan auto-approved", "loan_id", loanID)
 
+	// Notify user of approval (best-effort).
+	if a.notificationSvc != nil && req.PhoneNumber != "" {
+		loanNumber := ""
+		if createResp.LoanNumber != nil {
+			loanNumber = *createResp.LoanNumber
+		}
+		if smsErr := a.notificationSvc.SendLoanApprovalNotification(ctx, req.PhoneNumber, loanNumber, amountUSD); smsErr != nil {
+			a.logger.Warn("approval SMS failed", "loan_id", loanID, "error", smsErr)
+		}
+	}
+
 	// Step 4: Borrow from Stellar vault.
 	borrowResp, err := a.stellarSvc.BorrowFromVault(ctx, stellar.BorrowRequest{
 		RecipientAddress: req.AccountID,
@@ -139,12 +160,16 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	}
 
 	// Step 6: Initiate off-ramp.
-	amountUSD := float64(req.PrincipalAmount) / 1e7
 	offRampResult, err := a.offRampSvc.InitiateOffRamp(ctx, ussdadapters.OffRampRequest{
 		LoanID:           loanID,
 		UserID:           req.UserID,
+		RecipientName:    req.RecipientName,
 		AmountUSD:        amountUSD,
 		AmountStroops:    req.PrincipalAmount,
+		DestinationPhone: req.PhoneNumber,
+		CountryCode:      req.CountryCode,
+		NetworkCode:      req.NetworkCode,
+		NetworkName:      req.NetworkName,
 		SettlementMethod: "direct",
 		IdempotencyKey:   loanID,
 	})
@@ -180,19 +205,6 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			a.logger.Warn("failed to record off-ramp details", "loan_id", loanID, "error", updateErr)
 		} else {
 			a.logger.Info("loan updated with off-ramp details", "loan_id", loanID)
-		}
-	}
-
-	// Step 8: SMS notification (best-effort).
-	if a.notificationSvc != nil {
-		loanNumber := ""
-		if createResp.LoanNumber != nil {
-			loanNumber = *createResp.LoanNumber
-		}
-		if smsErr := a.notificationSvc.SendLoanRequestConfirmation(ctx, "", loanNumber, amountUSD); smsErr != nil {
-			a.logger.Warn("SMS notification failed", "loan_id", loanID, "error", smsErr)
-		} else {
-			a.logger.Info("SMS notification sent", "loan_id", loanID)
 		}
 	}
 

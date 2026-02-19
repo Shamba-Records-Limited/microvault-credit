@@ -24,12 +24,12 @@ func NewSMSNotificationService(smsService *sms.SMSService, providerName string, 
 	}
 }
 
-// SendLoanRequestConfirmation sends loan request confirmation SMS
-func (s *SMSNotificationService) SendLoanRequestConfirmation(ctx context.Context, phoneNumber string, loanNumber string, amountKES float64) error {
+// SendLoanRejectionNotification sends loan rejection notification with the reason
+func (s *SMSNotificationService) SendLoanRejectionNotification(ctx context.Context, phoneNumber string, amountKES float64, reason string) error {
 	message := fmt.Sprintf(
-		"Your loan request for KES %.2f has been received (Ref: %s). You will be notified once it's approved.",
+		"Your loan request for KES %.2f was not approved. Reason: %s. Dial *384*1234# for more info.",
 		amountKES,
-		loanNumber,
+		reason,
 	)
 
 	return s.sendSMS(ctx, phoneNumber, message)
@@ -38,7 +38,7 @@ func (s *SMSNotificationService) SendLoanRequestConfirmation(ctx context.Context
 // SendLoanApprovalNotification sends loan approval notification
 func (s *SMSNotificationService) SendLoanApprovalNotification(ctx context.Context, phoneNumber string, loanNumber string, amountKES float64) error {
 	message := fmt.Sprintf(
-		"Congratulations! Your loan of KES %.2f has been approved (Ref: %s). It will be disbursed shortly.",
+		"Congratulations! Your loan of KES %.2f has been approved (Ref: %s). We are processing it and you will be notified when it's disbursed.",
 		amountKES,
 		loanNumber,
 	)
