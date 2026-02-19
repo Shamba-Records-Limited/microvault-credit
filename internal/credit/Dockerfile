@@ -13,13 +13,13 @@ WORKDIR /build
 COPY go.work go.work.sum* ./
 
 # Copy module files for both repos
-COPY Microvault/go.mod Microvault/go.sum ./Microvault/
+COPY microvault/go.mod microvault/go.sum ./microvault/
 COPY microvault-credit/go.mod microvault-credit/go.sum ./microvault-credit/
 
 RUN go mod download
 
 # Copy source code for both repos
-COPY Microvault/ ./Microvault/
+COPY microvault/ ./microvault/
 COPY microvault-credit/ ./microvault-credit/
 
 # Generate documentation
@@ -45,7 +45,7 @@ WORKDIR /app
 # Copy binary and necessary files from builder
 COPY --from=builder /build/microvault-credit/credit ./credit
 COPY --from=builder /build/microvault-credit/internal/credit/docs/redoc-static.html ./docs/redoc-static.html
-COPY --from=builder /build/Microvault/static ./static
+COPY --from=builder /build/microvault/static ./static
 COPY --from=builder /build/microvault-credit/internal/credit/entrypoint.sh ./entrypoint.sh
 
 # Set permissions before switching user

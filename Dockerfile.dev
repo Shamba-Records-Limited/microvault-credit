@@ -13,7 +13,7 @@ RUN go install github.com/air-verse/air@latest && \
 COPY go.work go.work.sum* ./
 
 # Copy module files for both repos
-COPY Microvault/go.mod Microvault/go.sum ./Microvault/
+COPY microvault/go.mod microvault/go.sum ./microvault/
 COPY microvault-credit/go.mod microvault-credit/go.sum ./microvault-credit/
 
 RUN go mod download

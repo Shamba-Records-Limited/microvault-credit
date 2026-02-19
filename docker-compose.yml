@@ -87,7 +87,7 @@ services:
     build:
       context: ..
       dockerfile: microvault-credit/Dockerfile.dev
-    working_dir: /app/Microvault
+    working_dir: /app/microvault
     command: sh -c "mkdir -p tmp/core && air -c .air-core.toml"
     ports:
       - "8080:8080"

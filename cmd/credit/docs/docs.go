@@ -22,7 +22,167 @@ const docTemplate = `{
     },
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
-    "paths": {}
+    "paths": {
+        "/api/v1/webhooks/yellowcard": {
+            "post": {
+                "description": "Handle incoming webhooks from YellowCard payment service",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Webhooks"
+                ],
+                "summary": "Process YellowCard Payment Webhook",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "HMAC signature for verification",
+                        "name": "X-YC-Signature",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Webhook event data",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_Shamba-Records-Limited_microvault_pkg_payment_yellowcard.WebhookEvent"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "ok",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid webhook payload",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    },
+                    "401": {
+                        "description": "Signature verification failed",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to process webhook",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "fiber.Error": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "integer"
+                },
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_Shamba-Records-Limited_microvault_pkg_payment_yellowcard.SettlementInfo": {
+            "type": "object",
+            "properties": {
+                "cryptoAmount": {
+                    "type": "number"
+                },
+                "cryptoCurrency": {
+                    "type": "string"
+                },
+                "cryptoLocalRate": {
+                    "type": "number"
+                },
+                "cryptoNetwork": {
+                    "type": "string"
+                },
+                "cryptoUSDRate": {
+                    "type": "number"
+                },
+                "expiresAt": {
+                    "type": "string"
+                },
+                "lnInvoice": {
+                    "type": "string"
+                },
+                "walletAddress": {
+                    "type": "string"
+                },
+                "walletTag": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_Shamba-Records-Limited_microvault_pkg_payment_yellowcard.WebhookEvent": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/github_com_Shamba-Records-Limited_microvault_pkg_payment_yellowcard.WebhookPayload"
+                },
+                "event": {
+                    "type": "string"
+                },
+                "timestamp": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_Shamba-Records-Limited_microvault_pkg_payment_yellowcard.WebhookPayload": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "integer"
+                },
+                "convertedAmount": {
+                    "type": "integer"
+                },
+                "country": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "currency": {
+                    "type": "string"
+                },
+                "directSettlement": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "rate": {
+                    "type": "number"
+                },
+                "sequenceId": {
+                    "type": "string"
+                },
+                "settlementInfo": {
+                    "$ref": "#/definitions/github_com_Shamba-Records-Limited_microvault_pkg_payment_yellowcard.SettlementInfo"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        }
+    }
 }`
 
 // SwaggerInfo holds exported Swagger Info so clients can modify it
@@ -31,8 +191,8 @@ var SwaggerInfo = &swag.Spec{
 	Host:             "localhost:8081",
 	BasePath:         "/",
 	Schemes:          []string{},
-	Title:            "MicroVault Credit API",
-	Description:      "Credit management and loan processing service for MicroVault.",
+	Title:            "microvault Credit API",
+	Description:      "Credit management and loan processing service for microvault.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

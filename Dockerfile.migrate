@@ -10,13 +10,13 @@ RUN apk add --no-cache git make
 COPY go.work go.work.sum* ./
 
 # Copy module files for both repos
-COPY Microvault/go.mod Microvault/go.sum ./Microvault/
+COPY microvault/go.mod microvault/go.sum ./microvault/
 COPY microvault-credit/go.mod microvault-credit/go.sum ./microvault-credit/
 
 RUN go mod download
 
 # Copy source code for both repos
-COPY Microvault/ ./Microvault/
+COPY microvault/ ./microvault/
 COPY microvault-credit/ ./microvault-credit/
 
 # Build the migration binary (migrations are embedded via go:embed)

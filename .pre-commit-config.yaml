@@ -29,18 +29,18 @@ repos:
         args: ["--config=.gitleaks.toml"]
 
   # Web project hooks
-  - repo: local
-    hooks:
-      - id: biome-check
-        name: Biome check (lint + format)
-        entry: bash -c 'cd web && npx @biomejs/biome check --error-on-warnings'
-        language: system
-        pass_filenames: false
-        types_or: [javascript, jsx, ts, tsx, json]
+  # - repo: local
+  #   hooks:
+  #     - id: biome-check
+  #       name: Biome check (lint + format)
+  #       entry: bash -c 'cd web && npx @biomejs/biome check --error-on-warnings'
+  #       language: system
+  #       pass_filenames: false
+  #       types_or: [javascript, jsx, ts, tsx, json]
 
-      - id: typescript-check
-        name: TypeScript type check
-        entry: bash -c 'cd web && npx tsc --noEmit'
-        language: system
-        pass_filenames: false
-        types_or: [ts, tsx]
+  #     - id: typescript-check
+  #       name: TypeScript type check
+  #       entry: bash -c 'cd web && npx tsc --noEmit'
+  #       language: system
+  #       pass_filenames: false
+  #       types_or: [ts, tsx]

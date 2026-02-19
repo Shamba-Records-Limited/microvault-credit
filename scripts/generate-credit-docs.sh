@@ -2,9 +2,9 @@
 set -e
 
 # Determine Microvault path for shared pkg (workspace context)
-MICROVAULT_DIR="${MICROVAULT_DIR:-../Microvault}"
+MICROVAULT_DIR="${MICROVAULT_DIR:-../microvault}"
 
-# Generate Swagger docs - search in cmd/credit for main, internal/credit for controllers, and Microvault/pkg for shared
+# Generate Swagger docs - search in cmd/credit for main, internal/credit for controllers, and microvault/pkg for shared
 swag init --parseDependency --parseInternal \
     --generalInfo ./cmd/credit/main.go \
     --dir ./,./internal/credit,"${MICROVAULT_DIR}/pkg" \
