@@ -11,10 +11,10 @@ import (
 	_ "github.com/Shamba-Records-Limited/microvault-credit/cmd/credit/docs"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/adapters"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
-	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/pkg/notifications"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
 	"github.com/Shamba-Records-Limited/microvault/pkg/account"
 	"github.com/Shamba-Records-Limited/microvault/pkg/controllers"
+	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
@@ -103,7 +103,10 @@ func main() {
 	)
 	smsService.RegisterProvider("africastalking", atSMSAdapter)
 
-	notificationSvc := notifications.NewSMSNotificationService(smsService, "africastalking", "microvault")
+	// Resolve SMS provider and create notifier + loan notifier.
+	atProvider, _ := smsService.GetProvider("africastalking")
+	notifier := mvnotifications.NewSMSNotifier(atProvider, "microvault")
+	loanNotifier := mvnotifications.NewSMSLoanNotifier(notifier, nil)
 
 	// ---- 8. YellowCard adapter ----
 	ycAdapter := yellowcard.NewYellowcardAdapter(
@@ -153,7 +156,7 @@ func main() {
 		loanSvc,
 		stellarSvc,
 		offRampSvc,
-		notificationSvc,
+		loanNotifier,
 		txnSvc,
 		logger,
 		50_000_000_000,
@@ -162,7 +165,7 @@ func main() {
 	// ---- 12. DisbursementStatusAdapter (webhook callbacks) ----
 	disbursementAdapter := adapters.NewDisbursementStatusAdapter(
 		repos.Loan,
-		notificationSvc,
+		loanNotifier,
 		txnSvc,
 		logger,
 	)

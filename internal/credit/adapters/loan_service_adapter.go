@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
-	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/pkg/notifications"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services"
+	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
 	"github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd"
 	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
@@ -23,13 +23,13 @@ var _ ussd.LoanService = (*LoanServiceAdapter)(nil)
 // LoanServiceAdapter implements ussd.LoanService by orchestrating credit's loan
 // service, Stellar vault, YellowCard off-ramp, and SMS notifications.
 type LoanServiceAdapter struct {
-	loanSvc         loan.Service
-	stellarSvc      stellar.Service
-	offRampSvc      ussdadapters.OffRampService
-	notificationSvc *notifications.SMSNotificationService
-	txnSvc          transaction.Service
-	logger          *slog.Logger
-	defaultLimit    int64 // auto-approve limit in stroops
+	loanSvc      loan.Service
+	stellarSvc   stellar.Service
+	offRampSvc   ussdadapters.OffRampService
+	loanNotifier contracts.LoanNotifier
+	txnSvc       transaction.Service
+	logger       *slog.Logger
+	defaultLimit int64 // auto-approve limit in stroops
 }
 
 // NewLoanServiceAdapter creates a new LoanServiceAdapter.
@@ -37,19 +37,19 @@ func NewLoanServiceAdapter(
 	loanSvc loan.Service,
 	stellarSvc stellar.Service,
 	offRampSvc ussdadapters.OffRampService,
-	notificationSvc *notifications.SMSNotificationService,
+	loanNotifier contracts.LoanNotifier,
 	txnSvc transaction.Service,
 	logger *slog.Logger,
 	defaultLimit int64,
 ) *LoanServiceAdapter {
 	return &LoanServiceAdapter{
-		loanSvc:         loanSvc,
-		stellarSvc:      stellarSvc,
-		offRampSvc:      offRampSvc,
-		notificationSvc: notificationSvc,
-		txnSvc:          txnSvc,
-		logger:          logger,
-		defaultLimit:    defaultLimit,
+		loanSvc:      loanSvc,
+		stellarSvc:   stellarSvc,
+		offRampSvc:   offRampSvc,
+		loanNotifier: loanNotifier,
+		txnSvc:       txnSvc,
+		logger:       logger,
+		defaultLimit: defaultLimit,
 	}
 }
 
@@ -77,8 +77,13 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		)
 
 		// Notify user of rejection (best-effort).
-		if a.notificationSvc != nil && req.PhoneNumber != "" {
-			if smsErr := a.notificationSvc.SendLoanRejectionNotification(ctx, req.PhoneNumber, notifyAmount, reason); smsErr != nil {
+		if a.loanNotifier != nil && req.PhoneNumber != "" {
+			if smsErr := a.loanNotifier.NotifyLoanRejected(ctx, contracts.LoanNotification{
+				PhoneNumber:     req.PhoneNumber,
+				DisplayAmount:   notifyAmount,
+				DisplayCurrency: notifyCurrency,
+				Reason:          reason,
+			}); smsErr != nil {
 				a.logger.Warn("rejection SMS failed", "user_id", req.UserID, "error", smsErr)
 			}
 		}
@@ -136,12 +141,18 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	a.logger.Info("loan auto-approved", "loan_id", loanID)
 
 	// Notify user of approval (best-effort) — use KES amount when available.
-	if a.notificationSvc != nil && req.PhoneNumber != "" {
+	if a.loanNotifier != nil && req.PhoneNumber != "" {
 		loanNumber := ""
 		if createResp.LoanNumber != nil {
 			loanNumber = *createResp.LoanNumber
 		}
-		if smsErr := a.notificationSvc.SendLoanApprovalNotification(ctx, req.PhoneNumber, loanNumber, notifyAmount); smsErr != nil {
+		if smsErr := a.loanNotifier.NotifyLoanApproved(ctx, contracts.LoanNotification{
+			LoanID:          loanID,
+			LoanNumber:      loanNumber,
+			PhoneNumber:     req.PhoneNumber,
+			DisplayAmount:   notifyAmount,
+			DisplayCurrency: notifyCurrency,
+		}); smsErr != nil {
 			a.logger.Warn("approval SMS failed", "loan_id", loanID, "error", smsErr)
 		}
 	}

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
-	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/pkg/notifications"
+	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
 	pkgjobs "github.com/Shamba-Records-Limited/microvault/pkg/jobs"
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
@@ -16,8 +16,8 @@ import (
 // JobHandlers contains all job handlers for the credit module
 type JobHandlers struct {
 	// Services
-	notificationService *notifications.SMSNotificationService
-	redisClient         *redis.Client
+	loanNotifier contracts.LoanNotifier
+	redisClient  *redis.Client
 
 	// Repositories (add these as you create them)
 	// repaymentRepo *repository.RepaymentRepository
@@ -27,12 +27,12 @@ type JobHandlers struct {
 
 // NewJobHandlers creates a new job handlers instance
 func NewJobHandlers(
-	notificationService *notifications.SMSNotificationService,
+	loanNotifier contracts.LoanNotifier,
 	redisClient *redis.Client,
 ) *JobHandlers {
 	return &JobHandlers{
-		notificationService: notificationService,
-		redisClient:         redisClient,
+		loanNotifier: loanNotifier,
+		redisClient:  redisClient,
 	}
 }
 
@@ -139,7 +139,14 @@ func (h *JobHandlers) HandleRepaymentReminder(task *asynq.Task) error {
 
 		// Send reminder
 		// phoneNumber := user.MobileCountryCode + user.MobileNumber
-		if err := h.notificationService.SendRepaymentReminder(ctx, phoneNumber, loanNumber, amountDueKES, repayment.DueDate); err != nil {
+		dueDate := repayment.DueDate
+		if err := h.loanNotifier.NotifyRepaymentReminder(ctx, contracts.LoanNotification{
+			LoanNumber:      loanNumber,
+			PhoneNumber:     phoneNumber,
+			DisplayAmount:   amountDueKES,
+			DisplayCurrency: "KES",
+			DueDate:         &dueDate,
+		}); err != nil {
 			log.Printf("Warning: failed to send reminder for repayment %s: %v", repayment.ID, err)
 			continue
 		}
@@ -199,7 +206,14 @@ func (h *JobHandlers) HandleRepaymentReminder(task *asynq.Task) error {
 
 		// Send overdue reminder
 		// phoneNumber := user.MobileCountryCode + user.MobileNumber
-		if err := h.notificationService.SendRepaymentReminder(ctx, phoneNumber, loanNumber, amountDueKES, repayment.DueDate); err != nil {
+		overdueDueDate := repayment.DueDate
+		if err := h.loanNotifier.NotifyRepaymentReminder(ctx, contracts.LoanNotification{
+			LoanNumber:      loanNumber,
+			PhoneNumber:     phoneNumber,
+			DisplayAmount:   amountDueKES,
+			DisplayCurrency: "KES",
+			DueDate:         &overdueDueDate,
+		}); err != nil {
 			log.Printf("Warning: failed to send overdue reminder for repayment %s: %v", repayment.ID, err)
 			continue
 		}

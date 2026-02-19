@@ -6,7 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
-	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/pkg/notifications"
+	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
 	"github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
@@ -24,24 +24,24 @@ var (
 // webhook.RefundPendingFetcher, and webhook.TransactionRecorder using
 // the credit loan repository and transaction service.
 type DisbursementStatusAdapter struct {
-	repo            repository.LoanRepository
-	notificationSvc *notifications.SMSNotificationService
-	txnSvc          transaction.Service
-	logger          *slog.Logger
+	repo         repository.LoanRepository
+	loanNotifier contracts.LoanNotifier
+	txnSvc       transaction.Service
+	logger       *slog.Logger
 }
 
 // NewDisbursementStatusAdapter creates a new DisbursementStatusAdapter.
 func NewDisbursementStatusAdapter(
 	repo repository.LoanRepository,
-	notificationSvc *notifications.SMSNotificationService,
+	loanNotifier contracts.LoanNotifier,
 	txnSvc transaction.Service,
 	logger *slog.Logger,
 ) *DisbursementStatusAdapter {
 	return &DisbursementStatusAdapter{
-		repo:            repo,
-		notificationSvc: notificationSvc,
-		txnSvc:          txnSvc,
-		logger:          logger,
+		repo:         repo,
+		loanNotifier: loanNotifier,
+		txnSvc:       txnSvc,
+		logger:       logger,
 	}
 }
 
@@ -101,8 +101,8 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(sequenceID string
 		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
 	}
 
-	if a.notificationSvc == nil {
-		a.logger.Warn("notification service not configured, skipping completion SMS",
+	if a.loanNotifier == nil {
+		a.logger.Warn("loan notifier not configured, skipping completion SMS",
 			"loan_id", loan.ID,
 		)
 		return nil
@@ -113,9 +113,13 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(sequenceID string
 		loanNumber = *loan.LoanNumber
 	}
 
-	amountKES := float64(0)
+	displayAmount := float64(0)
+	displayCurrency := "KES"
 	if loan.RampFiatAmount != nil {
-		amountKES = float64(*loan.RampFiatAmount) / 100
+		displayAmount = float64(*loan.RampFiatAmount) / 100
+	}
+	if loan.RampFiatCurr != nil {
+		displayCurrency = *loan.RampFiatCurr
 	}
 
 	phone := ""
@@ -123,7 +127,13 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(sequenceID string
 		phone = loan.User.MobileNumber
 	}
 
-	if err := a.notificationSvc.SendLoanDisbursementNotification(ctx, phone, loanNumber, amountKES); err != nil {
+	if err := a.loanNotifier.NotifyLoanDisbursed(ctx, contracts.LoanNotification{
+		LoanID:          loan.ID,
+		LoanNumber:      loanNumber,
+		PhoneNumber:     phone,
+		DisplayAmount:   displayAmount,
+		DisplayCurrency: displayCurrency,
+	}); err != nil {
 		a.logger.Warn("failed to send completion SMS",
 			"loan_id", loan.ID,
 			"error", err,
@@ -148,8 +158,8 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementFailed(sequenceID string) 
 		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
 	}
 
-	if a.notificationSvc == nil {
-		a.logger.Warn("notification service not configured, skipping failure SMS",
+	if a.loanNotifier == nil {
+		a.logger.Warn("loan notifier not configured, skipping failure SMS",
 			"loan_id", loan.ID,
 		)
 		return nil
@@ -165,7 +175,11 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementFailed(sequenceID string) 
 		phone = loan.User.MobileNumber
 	}
 
-	if err := a.notificationSvc.SendLoanDefaultNotification(ctx, phone, loanNumber); err != nil {
+	if err := a.loanNotifier.NotifyLoanFailed(ctx, contracts.LoanNotification{
+		LoanID:      loan.ID,
+		LoanNumber:  loanNumber,
+		PhoneNumber: phone,
+	}); err != nil {
 		a.logger.Warn("failed to send failure SMS",
 			"loan_id", loan.ID,
 			"error", err,
