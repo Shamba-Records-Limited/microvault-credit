@@ -7,7 +7,7 @@ MICROVAULT_DIR="${MICROVAULT_DIR:-../microvault}"
 # Generate Swagger docs - search in cmd/credit for main, internal/credit for controllers, and microvault/pkg for shared
 swag init --parseDependency --parseInternal \
     --generalInfo ./cmd/credit/main.go \
-    --dir ./,./internal/credit,"${MICROVAULT_DIR}/pkg" \
+    --dir ./,./internal/credit,"${MICROVAULT_DIR}/pkg/controllers","${MICROVAULT_DIR}/pkg/payment/yellowcard","${MICROVAULT_DIR}/pkg/auth","${MICROVAULT_DIR}/pkg/validation" \
     --output ./cmd/credit/docs
 
 # Build Redoc static HTML from swagger.json

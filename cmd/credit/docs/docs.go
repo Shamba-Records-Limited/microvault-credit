@@ -23,6 +23,164 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/api/v1/auth/challenge": {
+            "get": {
+                "description": "Generate a Stellar transaction challenge for authentication",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Authentication"
+                ],
+                "summary": "Get Authentication Challenge",
+                "responses": {
+                    "200": {
+                        "description": "Challenge generated successfully",
+                        "schema": {
+                            "$ref": "#/definitions/controllers.ChallengeResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to generate challenge",
+                        "schema": {
+                            "$ref": "#/definitions/middleware.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/verify": {
+            "post": {
+                "description": "Verify a signed Stellar transaction challenge and receive a JWT token",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Authentication"
+                ],
+                "summary": "Verify Challenge",
+                "parameters": [
+                    {
+                        "description": "Signed challenge verification",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/controllers.VerifyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Challenge verified successfully",
+                        "schema": {
+                            "$ref": "#/definitions/controllers.VerifyResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request body or transaction",
+                        "schema": {
+                            "$ref": "#/definitions/middleware.Response"
+                        }
+                    },
+                    "401": {
+                        "description": "Challenge verification failed",
+                        "schema": {
+                            "$ref": "#/definitions/middleware.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "Challenge not found",
+                        "schema": {
+                            "$ref": "#/definitions/middleware.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to generate token",
+                        "schema": {
+                            "$ref": "#/definitions/middleware.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/mobile/ussd/{provider}": {
+            "post": {
+                "description": "Handle USSD callback requests from the USSD gateway. The provider is specified in the URL path.",
+                "consumes": [
+                    "application/x-www-form-urlencoded"
+                ],
+                "produces": [
+                    "text/plain"
+                ],
+                "tags": [
+                    "USSD"
+                ],
+                "summary": "USSD Callback Handler",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "USSD provider name (e.g. africastalking)",
+                        "name": "provider",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "sessionId",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "User's phone number",
+                        "name": "phoneNumber",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "User input text",
+                        "name": "text",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "USSD service code",
+                        "name": "serviceCode",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Network code",
+                        "name": "networkCode",
+                        "in": "formData"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "USSD response (CON/END)",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "END An error occurred. Please try again.",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/webhooks/yellowcard": {
             "post": {
                 "description": "Handle incoming webhooks from YellowCard payment service",
@@ -50,7 +208,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/github_com_Shamba-Records-Limited_microvault_pkg_payment_yellowcard.WebhookEvent"
+                            "$ref": "#/definitions/yellowcard.WebhookEvent"
                         }
                     }
                 ],
@@ -84,6 +242,46 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "controllers.ChallengeResponse": {
+            "type": "object",
+            "properties": {
+                "challenge_id": {
+                    "type": "string"
+                },
+                "expires_at": {
+                    "type": "integer"
+                },
+                "transaction": {
+                    "type": "string"
+                }
+            }
+        },
+        "controllers.VerifyRequest": {
+            "type": "object",
+            "required": [
+                "challenge_id",
+                "signed_transaction"
+            ],
+            "properties": {
+                "challenge_id": {
+                    "type": "string"
+                },
+                "signed_transaction": {
+                    "type": "string"
+                }
+            }
+        },
+        "controllers.VerifyResponse": {
+            "type": "object",
+            "properties": {
+                "expires_at": {
+                    "type": "integer"
+                },
+                "token": {
+                    "type": "string"
+                }
+            }
+        },
         "fiber.Error": {
             "type": "object",
             "properties": {
@@ -95,7 +293,22 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_Shamba-Records-Limited_microvault_pkg_payment_yellowcard.SettlementInfo": {
+        "middleware.Response": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "integer"
+                },
+                "data": {},
+                "message": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "yellowcard.SettlementInfo": {
             "type": "object",
             "properties": {
                 "cryptoAmount": {
@@ -127,11 +340,11 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_Shamba-Records-Limited_microvault_pkg_payment_yellowcard.WebhookEvent": {
+        "yellowcard.WebhookEvent": {
             "type": "object",
             "properties": {
                 "data": {
-                    "$ref": "#/definitions/github_com_Shamba-Records-Limited_microvault_pkg_payment_yellowcard.WebhookPayload"
+                    "$ref": "#/definitions/yellowcard.WebhookPayload"
                 },
                 "event": {
                     "type": "string"
@@ -141,7 +354,7 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_Shamba-Records-Limited_microvault_pkg_payment_yellowcard.WebhookPayload": {
+        "yellowcard.WebhookPayload": {
             "type": "object",
             "properties": {
                 "amount": {
@@ -172,7 +385,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "settlementInfo": {
-                    "$ref": "#/definitions/github_com_Shamba-Records-Limited_microvault_pkg_payment_yellowcard.SettlementInfo"
+                    "$ref": "#/definitions/yellowcard.SettlementInfo"
                 },
                 "status": {
                     "type": "string"

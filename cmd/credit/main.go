@@ -13,7 +13,9 @@ import (
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
 	"github.com/Shamba-Records-Limited/microvault/pkg/account"
+	"github.com/Shamba-Records-Limited/microvault/pkg/auth"
 	"github.com/Shamba-Records-Limited/microvault/pkg/controllers"
+	"github.com/Shamba-Records-Limited/microvault/pkg/validation"
 	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
@@ -67,6 +69,19 @@ func main() {
 		log.Fatalf("Failed to connect to Redis: %v", err)
 	}
 	log.Println("Redis connected successfully")
+
+	// ---- 3b. Auth services ----
+	challengeStore, err := auth.NewRedisStore(redisClient, "microvault:auth")
+	if err != nil {
+		log.Fatalf("Failed to initialize challenge store: %v", err)
+	}
+	challengeService, err := auth.NewChallengeService(&cfg.Auth, &cfg.Stellar, challengeStore)
+	if err != nil {
+		log.Fatalf("Failed to initialize challenge service: %v", err)
+	}
+	jwtService := auth.NewJWTService(&cfg.Auth)
+	validationService := validation.NewValidatorService()
+	authController := controllers.NewAuthController(challengeService, jwtService, cfg.Stellar.AdminPublicKey, validationService)
 
 	// ---- 4. Repositories ----
 	repos, err := repository.NewRepositories(db)
@@ -191,6 +206,9 @@ func main() {
 	)
 	ussdService.RegisterProvider("africastalking", atUSSDProvider)
 
+	// ---- 13b. USSD controller ----
+	ussdCtrl := controllers.NewUSSDController(ussdService)
+
 	// ---- 14. Webhook service + controller ----
 	webhookSvc := webhook.NewService(disbursementAdapter, nil, disbursementAdapter)
 	webhookCtrl := controllers.NewWebhookController(webhookSvc, cfg.Payments.YellowCard.WebhookSecret)
@@ -230,23 +248,16 @@ func main() {
 		return c.SendFile("./cmd/credit/docs/redoc-static.html")
 	})
 
-	// USSD callback
-	app.Post("/ussd/:provider", func(c *fiber.Ctx) error {
-		provider := c.Params("provider")
-		data := make(map[string]string)
-		c.Request().PostArgs().VisitAll(func(key, value []byte) {
-			data[string(key)] = string(value)
-		})
-		resp, err := ussdService.HandleRequest(c.Context(), provider, data)
-		if err != nil {
-			logger.Error("USSD request failed", "provider", provider, "error", err)
-			return c.Status(fiber.StatusInternalServerError).SendString("END An error occurred. Please try again.")
-		}
-		return c.SendString(resp.(string))
-	})
+	// Core API routes (from microvault)
+	api := app.Group("/api/v1")
+	api.Get("/auth/challenge", middleware.FormatResponse(), authController.GetChallenge)
+	api.Post("/auth/verify", middleware.FormatResponse(), authController.VerifyChallenge)
 
-	// YellowCard webhook
-	app.Post("/webhooks/yellowcard", webhookCtrl.HandleYellowCardWebhook)
+	// USSD callback — supports multiple providers via URL param
+	api.Post("/mobile/ussd/:provider", ussdCtrl.HandleCallback)
+
+	// Webhook routes
+	api.Post("/webhooks/yellowcard", webhookCtrl.HandleYellowCardWebhook)
 
 	// ---- 17. Start server ----
 	sigChan := make(chan os.Signal, 1)
