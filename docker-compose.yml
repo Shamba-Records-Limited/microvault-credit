@@ -83,44 +83,6 @@ services:
       - go-mod-cache:/go/pkg/mod
     restart: "no"
 
-  core-with-air:
-    build:
-      context: ..
-      dockerfile: microvault-credit/Dockerfile.dev
-    working_dir: /app/microvault
-    command: sh -c "mkdir -p tmp/core && air -c .air-core.toml"
-    ports:
-      - "8080:8080"
-    env_file: .env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-      docs:
-        condition: service_completed_successfully
-    volumes:
-      - ../:/app
-      - go-mod-cache:/go/pkg/mod
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "wget",
-          "--no-verbose",
-          "--tries=1",
-          "--spider",
-          "http://localhost:8080/health",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
   credit-with-air:
     build:
       context: ..
@@ -135,10 +97,9 @@ services:
         condition: service_completed_successfully
       docs:
         condition: service_completed_successfully
-      core-with-air:
-        condition: service_started
     volumes:
       - ../:/app
+      - ../microvault:/microvault
       - go-mod-cache:/go/pkg/mod
     healthcheck:
       test:
