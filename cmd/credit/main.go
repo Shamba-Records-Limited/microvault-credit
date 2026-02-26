@@ -14,16 +14,8 @@ import (
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
 	"github.com/Shamba-Records-Limited/microvault/pkg/account"
 	"github.com/Shamba-Records-Limited/microvault/pkg/auth"
-	"github.com/Shamba-Records-Limited/microvault/pkg/controllers"
-	"github.com/Shamba-Records-Limited/microvault/pkg/validation"
-	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
-	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
-	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
-	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
-	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
-	"github.com/Shamba-Records-Limited/microvault/pkg/user"
-	"github.com/Shamba-Records-Limited/microvault/pkg/webhook"
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
+	"github.com/Shamba-Records-Limited/microvault/pkg/controllers"
 	"github.com/Shamba-Records-Limited/microvault/pkg/health"
 	"github.com/Shamba-Records-Limited/microvault/pkg/middleware"
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/sms"
@@ -31,6 +23,15 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd"
 	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
 	atussd "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/providers/africastalking"
+	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
+	"github.com/Shamba-Records-Limited/microvault/pkg/pin"
+	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
+	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
+	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
+	"github.com/Shamba-Records-Limited/microvault/pkg/user"
+	"github.com/Shamba-Records-Limited/microvault/pkg/validation"
+	"github.com/Shamba-Records-Limited/microvault/pkg/webhook"
 	"github.com/Shamba-Records-Limited/microvault/platform/cache"
 	"github.com/Shamba-Records-Limited/microvault/platform/database"
 	"github.com/gofiber/fiber/v2"
@@ -188,6 +189,12 @@ func main() {
 	// ---- 12b. Rate service adapter ----
 	rateSvc := adapters.NewRateServiceAdapter(offRampSvc)
 
+	// ---- 12c. Account notifier + PIN service ----
+	accountNotifier := mvnotifications.NewSMSAccountNotifier(notifier, nil)
+	pinRepo := pin.NewSecurityQuestionRepository(db)
+	pinService := pin.NewService(coreRepos.User, pinRepo, accountNotifier)
+	log.Println("PIN service initialized")
+
 	// ---- 13. USSD stack ----
 	sessionManager := ussd.NewSessionManager(redisClient, 0) // default 5min TTL
 	menuRegistry := ussd.NewMenuRegistry()
@@ -196,7 +203,7 @@ func main() {
 	standardPreset := &ussd.StandardLoanMenuPreset{}
 	standardPreset.Initialize(menuRegistry)
 
-	ussdHandler := ussd.NewUSSDHandler(sessionManager, menuRegistry, userAdapter, loanAdapter, rateSvc)
+	ussdHandler := ussd.NewUSSDHandler(sessionManager, menuRegistry, userAdapter, loanAdapter, rateSvc, pinService, accountNotifier)
 	ussdService := ussd.NewUSSDService(ussdHandler)
 
 	// Register Africa's Talking USSD provider
