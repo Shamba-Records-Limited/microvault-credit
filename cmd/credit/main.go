@@ -121,7 +121,7 @@ func main() {
 
 	// Resolve SMS provider and create notifier + loan notifier.
 	atProvider, _ := smsService.GetProvider("africastalking")
-	notifier := mvnotifications.NewSMSNotifier(atProvider, "microvault")
+	notifier := mvnotifications.NewSMSNotifier(atProvider, cfg.Mobile.AfricasTalking.ResolveSenderID())
 	loanNotifier := mvnotifications.NewSMSLoanNotifier(notifier, nil)
 
 	// ---- 8. YellowCard adapter ----
@@ -262,6 +262,11 @@ func main() {
 
 	// USSD callback — supports multiple providers via URL param
 	api.Post("/mobile/ussd/:provider", ussdCtrl.HandleCallback)
+
+	// SMS delivery report callback — supports multiple providers via URL param
+	smsCallbackHandler := sms.NewDeliveryReportHandler()
+	smsCallbackCtrl := controllers.NewSMSCallbackController(smsCallbackHandler)
+	api.Post("/mobile/sms/:provider/delivery", smsCallbackCtrl.HandleDeliveryReport)
 
 	// Webhook routes
 	api.Post("/webhooks/yellowcard", webhookCtrl.HandleYellowCardWebhook)
