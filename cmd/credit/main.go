@@ -192,7 +192,7 @@ func main() {
 	// ---- 12c. Account notifier + PIN service ----
 	accountNotifier := mvnotifications.NewSMSAccountNotifier(notifier, nil)
 	pinRepo := pin.NewSecurityQuestionRepository(db)
-	pinService := pin.NewService(coreRepos.User, pinRepo, accountNotifier)
+	pinService := pin.NewService(coreRepos.User, pinRepo, accountNotifier, cfg.Auth.PINLockoutDuration)
 	log.Println("PIN service initialized")
 
 	// ---- 13. USSD stack ----

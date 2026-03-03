@@ -7,6 +7,7 @@ services:
       POSTGRES_USER: ${DB_USER:?You must provide the 'DB_USER' variable in the .env file}
       POSTGRES_PASSWORD: ${DB_PASSWORD:?You must provide the 'DB_PASSWORD' variable in the .env file}
       POSTGRES_DB: ${DB_NAME:?You must provide the 'DB_NAME' variable in the .env file}
+      PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "5434:5432"
     volumes:
@@ -17,6 +18,9 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
+    networks:
+      microvault-credit:
+        ipv4_address: 172.19.0.4
 
   redis:
     image: redis:7-alpine
@@ -33,6 +37,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
+    networks:
+      - microvault-credit
 
   minio:
     image: minio/minio:latest
@@ -54,6 +60,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 5s
+    networks:
+      - microvault-credit
 
   migrate:
     build:
@@ -70,6 +78,8 @@ services:
       - ../:/app
       - go-mod-cache:/go/pkg/mod
     restart: "no"
+    networks:
+      - microvault-credit
 
   docs:
     build:
@@ -115,6 +125,15 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    networks:
+      - microvault-credit
+
+networks:
+  microvault-credit:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.19.0.0/16
 
 volumes:
   postgres_data:
