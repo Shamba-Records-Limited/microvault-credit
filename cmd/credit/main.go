@@ -12,6 +12,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/adapters"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
+	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
 	"github.com/Shamba-Records-Limited/microvault/pkg/account"
 	"github.com/Shamba-Records-Limited/microvault/pkg/auth"
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
@@ -132,7 +133,7 @@ func main() {
 	)
 
 	// ---- 9. Treasury transfer bridge ----
-	treasuryTransfer := ussdadapters.NewStellarTreasuryTransfer(stellarSvc)
+	treasuryTransfer := ussdadapters.NewStellarTreasuryTransfer(stellarSvc, logger)
 
 	// ---- 10. Off-ramp adapter ----
 	offRampSvc := ussdadapters.NewYellowCardOffRampAdapter(ussdadapters.YellowCardOffRampConfig{
@@ -140,6 +141,7 @@ func main() {
 		Treasury:     treasuryTransfer,
 		BusinessID:   cfg.Payments.YellowCard.BusinessID,
 		BusinessName: cfg.Payments.YellowCard.BusinessName,
+		Logger:       logger,
 	})
 
 	// ---- 10b. User + Account + Transaction services ----
@@ -166,17 +168,17 @@ func main() {
 		log.Fatalf("Failed to create user service adapter: %v", err)
 	}
 
+	// ---- 10d. Loan product service ----
+	loanProductSvc := loanproduct.NewService(repos.LoanProduct)
+
 	// ---- 11. LoanServiceAdapter (USSD LoanService) ----
-	// 5000 USDC = 50_000_000_000 stroops auto-approve limit
-	loanAdapter := adapters.NewLoanServiceAdapter(
-		loanSvc,
-		stellarSvc,
-		offRampSvc,
-		loanNotifier,
-		txnSvc,
-		logger,
-		50_000_000_000,
+	ctx := context.Background()
+	loanAdapter, err := adapters.NewLoanServiceAdapter(
+		ctx, loanSvc, loanProductSvc, stellarSvc, offRampSvc, loanNotifier, txnSvc, logger,
 	)
+	if err != nil {
+		log.Fatalf("Failed to create loan service adapter: %v", err)
+	}
 
 	// ---- 12. DisbursementStatusAdapter (webhook callbacks) ----
 	disbursementAdapter := adapters.NewDisbursementStatusAdapter(
