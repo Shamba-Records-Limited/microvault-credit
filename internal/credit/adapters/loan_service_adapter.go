@@ -388,22 +388,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			}
 		}
 
-		// Notify user of successful disbursement (best-effort).
-		if a.loanNotifier != nil && req.PhoneNumber != "" {
-			loanNumber := ""
-			if createResp.LoanNumber != nil {
-				loanNumber = *createResp.LoanNumber
-			}
-			if smsErr := a.loanNotifier.NotifyLoanDisbursed(ctx, contracts.LoanNotification{
-				LoanID:          loanID,
-				LoanNumber:      loanNumber,
-				PhoneNumber:     req.PhoneNumber,
-				DisplayAmount:   notifyAmount,
-				DisplayCurrency: notifyCurrency,
-			}); smsErr != nil {
-				a.logger.Warn("disbursement SMS failed", "loan_id", loanID, "error", smsErr)
-			}
-		}
+		// Disbursement SMS is sent by the webhook handler (DisbursementStatusAdapter)
+		// when YellowCard confirms completion — not here, to avoid duplicates.
 	}
 
 	duration := time.Since(start)
