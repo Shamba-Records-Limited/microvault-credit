@@ -1,11 +1,13 @@
 package models
 
 import (
+	"fmt"
 	"time"
 
 	transactions "github.com/Shamba-Records-Limited/microvault/pkg/models"
 	users "github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -38,16 +40,16 @@ type Loan struct {
 	RampProvider        *string        `json:"ramp_provider,omitempty" gorm:"type:varchar(50)"`
 	RampRequestID       *string        `json:"ramp_request_id,omitempty" gorm:"type:varchar(100);index"`
 	RampFiatAmount      *int64         `json:"ramp_fiat_amount,omitempty" gorm:"type:bigint"`
-	RampFiatCurr        *string        `json:"ramp_fiat_currency,omitempty" gorm:"type:varchar(10)"`
+	RampFiatCurr        *string        `json:"ramp_fiat_currency,omitempty" gorm:"column:ramp_fiat_currency;type:varchar(10)"`
 	MomoProvider        *string        `json:"momo_provider,omitempty" gorm:"type:varchar(50)"`
-	MomoTxID            *string        `json:"momo_transaction_id,omitempty" gorm:"type:varchar(100);index"`
+	MomoTxID            *string        `json:"momo_transaction_id,omitempty" gorm:"column:momo_transaction_id;type:varchar(100);index"`
 	MomoStatus          *string        `json:"momo_status,omitempty" gorm:"type:varchar(20)"`
 	SettlementMethod    *string        `json:"settlement_method,omitempty" gorm:"type:varchar(20)"`
 	DisbursementStatus  *string        `json:"disbursement_status,omitempty" gorm:"type:varchar(30);index"`
 	RampSequenceID      *string        `json:"ramp_sequence_id,omitempty" gorm:"type:varchar(200);index"`
 	DisbursementRateBps *int64         `json:"disbursement_rate_bps,omitempty" gorm:"type:bigint"`
-	DisbursementAmtKES  *int64         `json:"disbursement_amount_kes,omitempty" gorm:"type:bigint"`
-	RepaymentAmtKES     *int64         `json:"repayment_amount_kes,omitempty" gorm:"type:bigint"`
+	DisbursementAmtKES  *int64         `json:"disbursement_amount_kes,omitempty" gorm:"column:disbursement_amount_kes;type:bigint"`
+	RepaymentAmtKES     *int64         `json:"repayment_amount_kes,omitempty" gorm:"column:repayment_amount_kes;type:bigint"`
 	ConversionSpreadBps *int32         `json:"conversion_spread_bps,omitempty" gorm:"type:int"`
 	BorrowIndex         *int64         `json:"borrow_index,omitempty" gorm:"type:bigint"`
 	RampFeeUSD          *int64         `json:"ramp_fee_usd,omitempty" gorm:"type:bigint"`
@@ -67,18 +69,28 @@ func (Loan) TableName() string {
 	return "loans"
 }
 
-// BeforeCreate sets the ID before creating a new loan
+// BeforeCreate sets the ID and generates a loan number before creating a new loan.
 func (loan *Loan) BeforeCreate(tx *gorm.DB) error {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return err
 	}
 	loan.ID = id.String()
+
+	// Generate a human-readable loan number from the UUIDv7 timestamp + random suffix.
+	// Format: LN-<unix_ms_hex>-<4_random_hex> e.g. "LN-018F3A2B1C-A7F2"
+	if loan.LoanNumber == nil {
+		ts := time.Now().UnixMilli()
+		short := id.String()[24:28] // 4 hex chars from the random portion
+		num := fmt.Sprintf("LN-%X-%s", ts, short)
+		loan.LoanNumber = &num
+	}
 	return nil
 }
 
-// LoanProduct represents a loan product with specific terms
-// Amounts stored in smallest unit, rates in basis points
+// LoanProduct represents a loan product with specific terms.
+// MinAmount and MaxAmount are denominated in the fiat Currency (stored as cents).
+// Rates are in basis points (1 bps = 0.01 %).
 type LoanProduct struct {
 	ID                        string         `json:"id" gorm:"type:uuid;primaryKey"`
 	Name                      string         `json:"name" gorm:"type:varchar(100);uniqueIndex;not null"`
@@ -88,9 +100,10 @@ type LoanProduct struct {
 	OriginationFeeBps         *int32         `json:"origination_fee_bps,omitempty" gorm:"type:int"`
 	MinAmount                 int64          `json:"min_amount" gorm:"type:bigint;not null"`
 	MaxAmount                 int64          `json:"max_amount" gorm:"type:bigint;not null"`
+	Currency                  string         `json:"currency" gorm:"type:varchar(10);not null;default:'KES'"`
 	MinDurationDays           int            `json:"min_duration_days" gorm:"type:int;not null"`
 	MaxDurationDays           int            `json:"max_duration_days" gorm:"type:int;not null"`
-	AllowedRepaymentSchedules []string       `json:"allowed_repayment_schedules" gorm:"type:jsonb"`
+	AllowedRepaymentSchedules datatypes.JSONSlice[string] `json:"allowed_repayment_schedules" gorm:"type:jsonb"`
 	MaxCreditMultiplierBps    int32          `json:"max_credit_multiplier_bps" gorm:"type:int;not null"`
 	RequiresCollateral        bool           `json:"requires_collateral" gorm:"type:boolean;not null;default:false"`
 	CollateralBps             *int32         `json:"collateral_bps,omitempty" gorm:"type:int"`

@@ -60,6 +60,7 @@ func (s *service) Create(ctx context.Context, req CreateLoanProductRequest) (*Lo
 		OriginationFeeBps:         req.OriginationFeeBps,
 		MinAmount:                 req.MinAmount,
 		MaxAmount:                 req.MaxAmount,
+		Currency:                  req.Currency,
 		MinDurationDays:           req.MinDurationDays,
 		MaxDurationDays:           req.MaxDurationDays,
 		AllowedRepaymentSchedules: req.AllowedRepaymentSchedules,
@@ -218,6 +219,9 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanProductRe
 	if req.MaxAmount != nil {
 		product.MaxAmount = *req.MaxAmount
 	}
+	if req.Currency != nil {
+		product.Currency = *req.Currency
+	}
 	if req.MinDurationDays != nil {
 		product.MinDurationDays = *req.MinDurationDays
 	}
@@ -243,11 +247,11 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanProductRe
 		product.IsActive = *req.IsActive
 	}
 
-	// Validate updated ranges
-	if product.MaxAmount <= product.MinAmount {
+	// Validate updated ranges — equal values are valid (fixed-amount / fixed-duration products).
+	if product.MaxAmount < product.MinAmount {
 		return nil, ErrInvalidAmountRange
 	}
-	if product.MaxDurationDays <= product.MinDurationDays {
+	if product.MaxDurationDays < product.MinDurationDays {
 		return nil, ErrInvalidDurationRange
 	}
 
@@ -310,8 +314,12 @@ func (s *service) validateCreateRequest(req CreateLoanProductRequest) error {
 		return ErrInvalidMaxAmount
 	}
 
-	if req.MaxAmount <= req.MinAmount {
+	if req.MaxAmount < req.MinAmount {
 		return ErrInvalidAmountRange
+	}
+
+	if req.Currency == "" {
+		return ErrInvalidInput
 	}
 
 	if req.MinDurationDays <= 0 {
@@ -322,7 +330,7 @@ func (s *service) validateCreateRequest(req CreateLoanProductRequest) error {
 		return ErrInvalidMaxDuration
 	}
 
-	if req.MaxDurationDays <= req.MinDurationDays {
+	if req.MaxDurationDays < req.MinDurationDays {
 		return ErrInvalidDurationRange
 	}
 
@@ -344,6 +352,7 @@ func toLoanProductResponse(product *models.LoanProduct) *LoanProductResponse {
 		OriginationFeeBps:         product.OriginationFeeBps,
 		MinAmount:                 product.MinAmount,
 		MaxAmount:                 product.MaxAmount,
+		Currency:                  product.Currency,
 		MinDurationDays:           product.MinDurationDays,
 		MaxDurationDays:           product.MaxDurationDays,
 		AllowedRepaymentSchedules: product.AllowedRepaymentSchedules,

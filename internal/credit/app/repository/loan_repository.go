@@ -200,10 +200,17 @@ func (r *loanRepository) Update(ctx context.Context, loan *models.Loan) error {
 			"settlement_method":    loan.SettlementMethod,
 			"disbursement_status":  loan.DisbursementStatus,
 			"ramp_sequence_id":     loan.RampSequenceID,
-			"origination_fee":      loan.OriginationFee,
-			"origination_fee_pct": loan.OriginationFeeBps,
-			"total_amount":        loan.TotalAmount,
-			"updated_at":          time.Now(),
+			"origination_fee":          loan.OriginationFee,
+			"origination_fee_bps":     loan.OriginationFeeBps,
+			"total_amount":            loan.TotalAmount,
+			"disbursement_rate_bps":   loan.DisbursementRateBps,
+			"disbursement_amount_kes": loan.DisbursementAmtKES,
+			"repayment_amount_kes":    loan.RepaymentAmtKES,
+			"conversion_spread_bps":   loan.ConversionSpreadBps,
+			"borrow_index":            loan.BorrowIndex,
+			"ramp_fee_usd":            loan.RampFeeUSD,
+			"ramp_fee_local":          loan.RampFeeLocal,
+			"updated_at":              time.Now(),
 		})
 	if result.RowsAffected == 0 {
 		return ErrLoanNotFound

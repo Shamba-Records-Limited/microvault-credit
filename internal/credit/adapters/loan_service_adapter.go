@@ -7,12 +7,13 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services"
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
+	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
-	"github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd"
 	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
+	"github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
 )
@@ -20,37 +21,86 @@ import (
 // Compile-time check.
 var _ ussd.LoanService = (*LoanServiceAdapter)(nil)
 
-// LoanServiceAdapter implements ussd.LoanService by orchestrating credit's loan
-// service, Stellar vault, YellowCard off-ramp, and SMS notifications.
+// LoanServiceAdapter implements [ussd.LoanService] by orchestrating credit's
+// loan service, Stellar vault, YellowCard off-ramp, and SMS notifications.
+//
+// The active loan product is loaded once at construction and cached in
+// productConfig; the USSD handler reads it via [GetProductConfig].
 type LoanServiceAdapter struct {
-	loanSvc      loan.Service
-	stellarSvc   stellar.Service
-	offRampSvc   ussdadapters.OffRampService
-	loanNotifier contracts.LoanNotifier
-	txnSvc       transaction.Service
-	logger       *slog.Logger
-	defaultLimit int64 // auto-approve limit in stroops
+	loanSvc       loan.Service
+	productSvc    loanproduct.Service
+	stellarSvc    stellar.Service
+	offRampSvc    ussdadapters.OffRampService
+	loanNotifier  contracts.LoanNotifier
+	txnSvc        transaction.Service
+	logger        *slog.Logger
+	productConfig *ussd.LoanProductConfig
 }
 
-// NewLoanServiceAdapter creates a new LoanServiceAdapter.
+// NewLoanServiceAdapter creates a new [LoanServiceAdapter].
+//
+// It loads the highest-priority active loan product from the database and
+// caches its configuration. Returns an error if no active product is found.
 func NewLoanServiceAdapter(
+	ctx context.Context,
 	loanSvc loan.Service,
+	productSvc loanproduct.Service,
 	stellarSvc stellar.Service,
 	offRampSvc ussdadapters.OffRampService,
 	loanNotifier contracts.LoanNotifier,
 	txnSvc transaction.Service,
 	logger *slog.Logger,
-	defaultLimit int64,
-) *LoanServiceAdapter {
-	return &LoanServiceAdapter{
-		loanSvc:      loanSvc,
-		stellarSvc:   stellarSvc,
-		offRampSvc:   offRampSvc,
-		loanNotifier: loanNotifier,
-		txnSvc:       txnSvc,
-		logger:       logger,
-		defaultLimit: defaultLimit,
+) (*LoanServiceAdapter, error) {
+	// Load the highest-priority active product (ordered by priority_order ASC).
+	products, err := productSvc.GetActive(ctx, services.Pagination{Page: 1, PageSize: 1})
+	if err != nil {
+		return nil, fmt.Errorf("load active loan product: %w", err)
 	}
+	if len(products.Data) == 0 {
+		return nil, fmt.Errorf("no active loan product found; run the 000006 migration to seed one")
+	}
+	p := products.Data[0]
+
+	schedule := "lump_sum"
+	if len(p.AllowedRepaymentSchedules) > 0 {
+		schedule = p.AllowedRepaymentSchedules[0]
+	}
+
+	cfg := &ussd.LoanProductConfig{
+		ProductID:         p.ID,
+		MinAmountCents:    p.MinAmount,
+		MaxAmountCents:    p.MaxAmount,
+		Currency:          p.Currency,
+		DurationDays:      p.MinDurationDays,
+		RepaymentSchedule: schedule,
+		InterestRateBps:   p.InterestRateBps,
+	}
+
+	logger.Info("loan product loaded",
+		"product_id", p.ID,
+		"name", p.Name,
+		"currency", p.Currency,
+		"min_amount_cents", p.MinAmount,
+		"max_amount_cents", p.MaxAmount,
+		"duration_days", p.MinDurationDays,
+	)
+
+	return &LoanServiceAdapter{
+		loanSvc:       loanSvc,
+		productSvc:    productSvc,
+		stellarSvc:    stellarSvc,
+		offRampSvc:    offRampSvc,
+		loanNotifier:  loanNotifier,
+		txnSvc:        txnSvc,
+		logger:        logger,
+		productConfig: cfg,
+	}, nil
+}
+
+// GetProductConfig returns the cached loan product configuration.
+// Returns nil if no product was loaded (should not happen after successful construction).
+func (a *LoanServiceAdapter) GetProductConfig() *ussd.LoanProductConfig {
+	return a.productConfig
 }
 
 // RequestLoan implements ussd.LoanService. It orchestrates the full loan
@@ -59,8 +109,10 @@ func NewLoanServiceAdapter(
 func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequest) (interface{}, error) {
 	start := time.Now()
 
-	// Step 1: Auto-approve eligibility check.
-	// Use KES for notifications when local amount is available
+	// Amount validation is handled by the USSD handler against the loan product
+	// config (fiat-denominated limits). By this point the request is pre-approved.
+
+	// Use KES for notifications when local amount is available.
 	notifyAmount := float64(req.PrincipalAmount) / 1e7 // fallback USD
 	notifyCurrency := "USD"
 	if req.LocalAmount > 0 {
@@ -68,40 +120,16 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		notifyCurrency = req.LocalCurrency
 	}
 
-	if req.PrincipalAmount > a.defaultLimit {
-		reason := "Loan amount exceeds the current limit"
-		a.logger.Warn("loan rejected: exceeds limit",
-			"user_id", req.UserID,
-			"amount", req.PrincipalAmount,
-			"limit", a.defaultLimit,
-		)
-
-		// Notify user of rejection (best-effort).
-		if a.loanNotifier != nil && req.PhoneNumber != "" {
-			if smsErr := a.loanNotifier.NotifyLoanRejected(ctx, contracts.LoanNotification{
-				PhoneNumber:     req.PhoneNumber,
-				DisplayAmount:   notifyAmount,
-				DisplayCurrency: notifyCurrency,
-				Reason:          reason,
-			}); smsErr != nil {
-				a.logger.Warn("rejection SMS failed", "user_id", req.UserID, "error", smsErr)
-			}
-		}
-
-		return &ussd.LoanApproval{
-			Approved: false,
-			Reason:   reason,
-		}, nil
-	}
-	a.logger.Info("loan eligibility check",
+	a.logger.Info("loan request received",
 		"user_id", req.UserID,
-		"amount", req.PrincipalAmount,
-		"limit", a.defaultLimit,
-		"approved", true,
+		"product_id", req.ProductID,
+		"amount_stroops", req.PrincipalAmount,
+		"local_amount_cents", req.LocalAmount,
+		"currency", req.LocalCurrency,
 	)
 
-	// Step 2: Query dynamic vault APR instead of hardcoded rate.
-	interestRateBps := int32(500) // fallback 5%
+	// Step 1: Query dynamic vault APR; fall back to product rate.
+	interestRateBps := a.productConfig.InterestRateBps
 	aprWad, err := a.stellarSvc.GetBorrowAPR(ctx)
 	if err != nil {
 		a.logger.Warn("failed to fetch vault APR, using fallback", "error", err)
@@ -109,17 +137,18 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		interestRateBps = int32(aprWad / 1e14) // WAD (1e18) → bps (1e4)
 	}
 
-	// Step 3: Create loan record.
+	// Step 2: Create loan record.
+	productID := req.ProductID
 	createResp, err := a.loanSvc.Create(ctx, loan.CreateLoanRequest{
 		UserID:            req.UserID,
 		AccountID:         req.AccountID,
+		ProductID:         &productID,
 		PrincipalAmount:   req.PrincipalAmount,
 		PrincipalAsset:    req.PrincipalAsset,
 		InterestRateBps:   interestRateBps,
 		DurationDays:      req.DurationDays,
 		RepaymentSchedule: req.RepaymentSched,
 	})
-	_ = notifyCurrency // used in logging context
 	if err != nil {
 		a.logger.Error("failed to create loan record", "user_id", req.UserID, "error", err)
 		return nil, fmt.Errorf("create loan: %w", err)
@@ -132,8 +161,9 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		"asset", req.PrincipalAsset,
 	)
 
-	// Step 4: Auto-approve.
-	_, err = a.loanSvc.Approve(ctx, loanID, loan.ApproveLoanRequest{ApprovedBy: "system"})
+	// Step 3: Auto-approve.
+	// Use the nil UUID for system auto-approvals (approved_by is UUID in the DB).
+	_, err = a.loanSvc.Approve(ctx, loanID, loan.ApproveLoanRequest{ApprovedBy: "00000000-0000-0000-0000-000000000000"})
 	if err != nil {
 		a.logger.Error("failed to approve loan", "loan_id", loanID, "error", err)
 		return nil, fmt.Errorf("approve loan: %w", err)
@@ -157,9 +187,9 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		}
 	}
 
-	// Step 5: Borrow from Stellar vault.
+	// Step 4: Borrow from Stellar vault.
 	borrowResp, err := a.stellarSvc.BorrowFromVault(ctx, stellar.BorrowRequest{
-		RecipientAddress: req.AccountID,
+		RecipientAddress: req.StellarAddress,
 		Amount:           req.PrincipalAmount,
 	})
 	if err != nil {
@@ -229,7 +259,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		a.logger.Info("loan marked disbursed", "loan_id", loanID, "vault_tx_hash", borrowResp.TxHash)
 	}
 
-	// Step 7: Initiate off-ramp.
+	// Step 6: Initiate off-ramp.
 	amountUSD := float64(req.PrincipalAmount) / 1e7
 	offRampResult, err := a.offRampSvc.InitiateOffRamp(ctx, ussdadapters.OffRampRequest{
 		LoanID:           loanID,
@@ -244,9 +274,33 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		SettlementMethod: "direct",
 		IdempotencyKey:   loanID,
 	})
-	if err != nil {
-		// Non-fatal: loan is disbursed, off-ramp can retry.
-		a.logger.Warn("off-ramp failed", "loan_id", loanID, "error", err)
+	offRampFailed := err != nil
+	if offRampFailed {
+		a.logger.Error("off-ramp failed — vault borrow succeeded, USDC in treasury, fiat not disbursed",
+			"loan_id", loanID,
+			"vault_tx_hash", borrowResp.TxHash,
+			"error", err,
+		)
+		// Mark as offramp_failed so a retry mechanism can pick it up.
+		offRampFailedStatus := "offramp_failed"
+		_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
+			DisbursementStatus: &offRampFailedStatus,
+		})
+
+		// Notify user of failure (best-effort).
+		if a.loanNotifier != nil && req.PhoneNumber != "" {
+			loanNumber := ""
+			if createResp.LoanNumber != nil {
+				loanNumber = *createResp.LoanNumber
+			}
+			_ = a.loanNotifier.NotifyLoanFailed(ctx, contracts.LoanNotification{
+				LoanID:          loanID,
+				LoanNumber:      loanNumber,
+				PhoneNumber:     req.PhoneNumber,
+				DisplayAmount:   notifyAmount,
+				DisplayCurrency: notifyCurrency,
+			})
+		}
 	} else {
 		a.logger.Info("off-ramp initiated",
 			"loan_id", loanID,
@@ -270,7 +324,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			}
 		}
 
-		// Step 8: Update loan with off-ramp details, fees, and conversion data.
+		// Step 7: Update loan with off-ramp details, fees, and conversion data.
 		rampProvider := "yellowcard"
 		rampFiatAmount := int64(offRampResult.AmountLocal * 100) // cents
 		actualMethod := offRampResult.SettlementMethod
@@ -308,7 +362,6 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 
 		_, updateErr := a.loanSvc.Update(ctx, loanID, updateReq)
 		if updateErr != nil {
-			// Non-fatal.
 			a.logger.Warn("failed to record off-ramp details", "loan_id", loanID, "error", updateErr)
 		} else {
 			a.logger.Info("loan updated with off-ramp details", "loan_id", loanID)
@@ -334,24 +387,44 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 				a.logger.Warn("failed to record off-ramp transaction", "loan_id", loanID, "error", txnErr)
 			}
 		}
+
+		// Disbursement SMS is sent by the webhook handler (DisbursementStatusAdapter)
+		// when YellowCard confirms completion — not here, to avoid duplicates.
 	}
 
 	duration := time.Since(start)
-	a.logger.Info("loan disbursement completed",
-		"loan_id", loanID,
-		"tx_hash", borrowResp.TxHash,
-		"total_duration_ms", duration.Milliseconds(),
-	)
+	if offRampFailed {
+		a.logger.Warn("loan disbursement partial — vault borrow ok, off-ramp failed (retryable)",
+			"loan_id", loanID,
+			"vault_tx_hash", borrowResp.TxHash,
+			"disbursement_status", "offramp_failed",
+			"total_duration_ms", duration.Milliseconds(),
+		)
+	} else {
+		a.logger.Info("loan disbursement completed successfully",
+			"loan_id", loanID,
+			"vault_tx_hash", borrowResp.TxHash,
+			"offramp_request_id", offRampResult.RequestID,
+			"settlement_method", offRampResult.SettlementMethod,
+			"amount_local", offRampResult.AmountLocal,
+			"currency", offRampResult.LocalCurrency,
+			"total_duration_ms", duration.Milliseconds(),
+		)
+	}
 
 	// Return as map for USSD handler type assertions.
 	totalAmount := req.PrincipalAmount
 	if createResp.TotalAmount != nil {
 		totalAmount = *createResp.TotalAmount
 	}
+	status := "disbursed"
+	if offRampFailed {
+		status = "offramp_failed"
+	}
 	return map[string]interface{}{
 		"id":           loanID,
 		"loan_number":  createResp.LoanNumber,
-		"status":       "disbursed",
+		"status":       status,
 		"total_amount": totalAmount,
 	}, nil
 }
@@ -384,31 +457,31 @@ func (a *LoanServiceAdapter) GetUserLoans(ctx context.Context, userID string) ([
 }
 
 // CheckLoanEligibility implements ussd.LoanService.
+//
+// Fiat-denominated limit checks are performed by the USSD handler using
+// [GetProductConfig]. This method fetches the dynamic vault APR and always
+// approves the request (the amount has already been validated).
 func (a *LoanServiceAdapter) CheckLoanEligibility(ctx context.Context, userID string, amount int64, duration int) (*ussd.LoanApproval, error) {
-	approved := amount <= a.defaultLimit
-	reason := "approved"
-	if !approved {
-		reason = fmt.Sprintf("Amount exceeds limit of %d stroops", a.defaultLimit)
-	}
-
-	// Fetch dynamic APR from vault.
-	interestRate := 0.05 // 5% fallback
+	// Fetch dynamic APR from vault; fall back to product rate.
+	fallbackRate := float64(a.productConfig.InterestRateBps) / 10000.0 // bps → decimal
+	interestRate := fallbackRate
 	aprWad, err := a.stellarSvc.GetBorrowAPR(ctx)
-	if err == nil && aprWad > 0 {
+	if err != nil {
+		a.logger.Warn("failed to fetch vault APR for eligibility, using fallback", "error", err)
+	} else if aprWad > 0 {
 		interestRate = float64(aprWad) / 1e18 // WAD → decimal (e.g. 0.08 for 8%)
 	}
 
 	a.logger.Info("eligibility check",
 		"user_id", userID,
 		"amount", amount,
-		"approved", approved,
-		"reason", reason,
+		"approved", true,
 		"interest_rate", interestRate,
 	)
 
 	return &ussd.LoanApproval{
-		Approved:     approved,
-		Reason:       reason,
+		Approved:     true,
+		Reason:       "approved",
 		InterestRate: interestRate * 100, // decimal → percentage (e.g. 8.0 for 8%)
 	}, nil
 }

@@ -100,7 +100,7 @@ func (r *loanProductRepository) GetByID(ctx context.Context, id string) (*models
 }
 
 // GetAllActive returns all active loan products.
-func (r *loanProductRepository) GetAllActive(ctx context.Context, offset int, limit int) ([]*models.LoanProduct, error) {
+func (r *loanProductRepository) GetAllActive(ctx context.Context, limit int, offset int) ([]*models.LoanProduct, error) {
 	var products []*models.LoanProduct
 	result := r.db.WithContext(ctx).
 		Where("is_active = ? AND deleted_at IS NULL", true).
@@ -116,7 +116,7 @@ func (r *loanProductRepository) GetAllActive(ctx context.Context, offset int, li
 }
 
 // GetAll returns all loan products.
-func (r *loanProductRepository) GetAll(ctx context.Context, offset int, limit int) ([]*models.LoanProduct, error) {
+func (r *loanProductRepository) GetAll(ctx context.Context, limit int, offset int) ([]*models.LoanProduct, error) {
 	var products []*models.LoanProduct
 	result := r.db.WithContext(ctx).
 		Order("priority_order ASC, name ASC").
@@ -145,6 +145,7 @@ func (r *loanProductRepository) Update(ctx context.Context, product *models.Loan
 			"origination_fee_bps":         product.OriginationFeeBps,
 			"min_amount":                  product.MinAmount,
 			"max_amount":                  product.MaxAmount,
+			"currency":                    product.Currency,
 			"min_duration_days":           product.MinDurationDays,
 			"max_duration_days":           product.MaxDurationDays,
 			"allowed_repayment_schedules": product.AllowedRepaymentSchedules,
