@@ -180,6 +180,9 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanRequest) 
 	if req.VaultTxStatus != nil {
 		loan.VaultTxStatus = req.VaultTxStatus
 	}
+	if req.VaultRepayTxHash != nil {
+		loan.VaultRepayTxHash = req.VaultRepayTxHash
+	}
 	if req.RampProvider != nil {
 		loan.RampProvider = req.RampProvider
 	}
@@ -474,6 +477,7 @@ func toLoanResponse(loan *models.Loan) *LoanResponse {
 		DefaultedAt:         loan.DefaultedAt,
 		VaultTxHash:         loan.VaultTxHash,
 		VaultTxStatus:       loan.VaultTxStatus,
+		VaultRepayTxHash:    loan.VaultRepayTxHash,
 		RampProvider:        loan.RampProvider,
 		RampRequestID:       loan.RampRequestID,
 		RampFiatAmount:      loan.RampFiatAmount,

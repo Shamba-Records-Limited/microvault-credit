@@ -5,19 +5,21 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
-	"github.com/Shamba-Records-Limited/microvault/pkg/models"
+	txmodels "github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
+	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
 	"github.com/Shamba-Records-Limited/microvault/pkg/webhook"
 )
 
 // Compile-time checks.
 var (
-	_ webhook.DisbursementUpdater    = (*DisbursementStatusAdapter)(nil)
-	_ webhook.RefundPendingFetcher   = (*DisbursementStatusAdapter)(nil)
-	_ webhook.TransactionRecorder    = (*DisbursementStatusAdapter)(nil)
+	_ webhook.DisbursementUpdater  = (*DisbursementStatusAdapter)(nil)
+	_ webhook.RefundPendingFetcher = (*DisbursementStatusAdapter)(nil)
+	_ webhook.TransactionRecorder  = (*DisbursementStatusAdapter)(nil)
 )
 
 // DisbursementStatusAdapter implements webhook.DisbursementUpdater,
@@ -27,6 +29,7 @@ type DisbursementStatusAdapter struct {
 	repo         repository.LoanRepository
 	loanNotifier contracts.LoanNotifier
 	txnSvc       transaction.Service
+	stellarSvc   stellar.Service
 	logger       *slog.Logger
 }
 
@@ -35,12 +38,14 @@ func NewDisbursementStatusAdapter(
 	repo repository.LoanRepository,
 	loanNotifier contracts.LoanNotifier,
 	txnSvc transaction.Service,
+	stellarSvc stellar.Service,
 	logger *slog.Logger,
 ) *DisbursementStatusAdapter {
 	return &DisbursementStatusAdapter{
 		repo:         repo,
 		loanNotifier: loanNotifier,
 		txnSvc:       txnSvc,
+		stellarSvc:   stellarSvc,
 		logger:       logger,
 	}
 }
@@ -85,6 +90,120 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 		}
 	}
 
+	// Trigger vault repay when USDC is confirmed to still be in treasury.
+	switch status {
+	case yellowcard.DisbursementComplete:
+		// Fiat complete: YC fronted fiat, USDC still in treasury → repay.
+		// Direct complete: USDC sent to YC wallet → do NOT repay.
+		if loan.SettlementMethod != nil && *loan.SettlementMethod == "fiat" {
+			a.repayVaultIfNeeded(ctx, loan, "fiat_complete")
+		}
+	case yellowcard.DisbursementFailed:
+		// Fiat failed: USDC never left treasury → repay.
+		// Direct failed: USDC is at YC awaiting refund → do NOT repay (RefundPoller handles).
+		if loan.SettlementMethod == nil || *loan.SettlementMethod != "direct" {
+			a.repayVaultIfNeeded(ctx, loan, "fiat_failed")
+		}
+	}
+
+	return nil
+}
+
+// repayVaultIfNeeded checks whether USDC is still in the treasury for this loan
+// and, if so, calls RepayToVault to return it to the pool. Idempotent: skips if
+// VaultRepayTxHash is already set.
+func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan *models.Loan, trigger string) {
+	// Idempotency: already repaid.
+	if loan.VaultRepayTxHash != nil && *loan.VaultRepayTxHash != "" {
+		a.logger.Info("vault repay already completed, skipping",
+			"loan_id", loan.ID,
+			"repay_tx_hash", *loan.VaultRepayTxHash,
+		)
+		return
+	}
+
+	// No vault borrow happened — nothing to repay.
+	if loan.VaultTxHash == nil || *loan.VaultTxHash == "" {
+		return
+	}
+
+	if a.stellarSvc == nil {
+		a.logger.Error("stellar service not configured, cannot repay vault", "loan_id", loan.ID)
+		return
+	}
+
+	amount := loan.PrincipalAmount
+	a.logger.Info("initiating vault repay",
+		"loan_id", loan.ID,
+		"amount_stroops", amount,
+		"trigger", trigger,
+		"settlement_method", loan.SettlementMethod,
+	)
+
+	repayResp, err := a.stellarSvc.RepayToVault(ctx, stellar.RepayRequest{Amount: amount})
+	if err != nil {
+		a.logger.Error("CRITICAL: vault repay failed — USDC stuck in treasury",
+			"loan_id", loan.ID,
+			"amount_stroops", amount,
+			"trigger", trigger,
+			"error", err,
+		)
+		// Don't fail the parent operation. The loan has no repay_tx_hash,
+		// making it queryable for manual retry or a background sweep.
+		return
+	}
+
+	// Persist repay tx hash on the loan.
+	loan.VaultRepayTxHash = &repayResp.TxHash
+	if err := a.repo.Update(ctx, loan); err != nil {
+		a.logger.Error("failed to save vault repay tx hash",
+			"loan_id", loan.ID,
+			"repay_tx_hash", repayResp.TxHash,
+			"error", err,
+		)
+	}
+
+	// Record vault_repay transaction for audit trail.
+	if a.txnSvc != nil {
+		desc := fmt.Sprintf("Vault repay (trigger: %s)", trigger)
+		txnResp, txnErr := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
+			UserID:        &loan.UserID,
+			LoanID:        &loan.ID,
+			TxType:        txmodels.TxTypeVaultRepay,
+			TxCategory:    txmodels.TxCategoryOnChain,
+			Amount:        repayResp.AmountRepaid,
+			Asset:         "USDC",
+			StellarTxHash: &repayResp.TxHash,
+			Description:   &desc,
+		})
+		if txnErr != nil {
+			a.logger.Warn("failed to record vault repay transaction",
+				"loan_id", loan.ID,
+				"error", txnErr,
+			)
+		} else if txnResp != nil {
+			s := txmodels.TxStatusSuccess
+			_, _ = a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{Status: &s})
+		}
+	}
+
+	a.logger.Info("vault repay completed",
+		"loan_id", loan.ID,
+		"repay_tx_hash", repayResp.TxHash,
+		"amount_repaid", repayResp.AmountRepaid,
+		"trigger", trigger,
+	)
+}
+
+// RepayVault returns borrowed USDC from treasury to the vault pool for the
+// loan identified by sequenceID. No-op if already repaid.
+func (a *DisbursementStatusAdapter) RepayVault(sequenceID string) error {
+	ctx := context.Background()
+	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
+	if err != nil {
+		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
+	}
+	a.repayVaultIfNeeded(ctx, loan, "explicit_repay")
 	return nil
 }
 
@@ -219,8 +338,8 @@ func (a *DisbursementStatusAdapter) RecordFiatFailover(ctx context.Context, rec 
 	_, err := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
 		UserID:           &rec.UserID,
 		LoanID:           &rec.LoanID,
-		TxType:           models.TxTypeFiatFailover,
-		TxCategory:       models.TxCategoryOffChain,
+		TxType:           txmodels.TxTypeFiatFailover,
+		TxCategory:       txmodels.TxCategoryOffChain,
 		Amount:           rec.RampFiatAmount,
 		Asset:            asset,
 		ExternalID:       &newRequestID,
@@ -234,13 +353,13 @@ func (a *DisbursementStatusAdapter) RecordFiatFailover(ctx context.Context, rec 
 func mapDisbursementToTxStatus(disbursementStatus string) string {
 	switch disbursementStatus {
 	case yellowcard.DisbursementComplete:
-		return models.TxStatusSuccess
+		return txmodels.TxStatusSuccess
 	case yellowcard.DisbursementFailed:
-		return models.TxStatusFailed
+		return txmodels.TxStatusFailed
 	case yellowcard.DisbursementProcessing, yellowcard.DisbursementDirectSubmitted:
-		return models.TxStatusSubmitted
+		return txmodels.TxStatusSubmitted
 	case yellowcard.DisbursementRefundPending, yellowcard.DisbursementRefundReceived:
-		return models.TxStatusPending
+		return txmodels.TxStatusPending
 	default:
 		return ""
 	}

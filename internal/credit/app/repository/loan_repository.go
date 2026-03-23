@@ -190,6 +190,7 @@ func (r *loanRepository) Update(ctx context.Context, loan *models.Loan) error {
 			"defaulted_at":        loan.DefaultedAt,
 			"vault_tx_hash":       loan.VaultTxHash,
 			"vault_tx_status":     loan.VaultTxStatus,
+			"vault_repay_tx_hash": loan.VaultRepayTxHash,
 			"ramp_provider":       loan.RampProvider,
 			"ramp_request_id":     loan.RampRequestID,
 			"ramp_fiat_amount":    loan.RampFiatAmount,

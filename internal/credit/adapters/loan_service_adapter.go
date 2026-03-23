@@ -287,6 +287,40 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			DisbursementStatus: &offRampFailedStatus,
 		})
 
+		// USDC never left treasury — repay vault immediately.
+		repayResp, repayErr := a.stellarSvc.RepayToVault(ctx, stellar.RepayRequest{Amount: borrowResp.AmountBorrowed})
+		if repayErr != nil {
+			a.logger.Error("CRITICAL: vault repay failed after off-ramp init failure",
+				"loan_id", loanID,
+				"amount_stroops", borrowResp.AmountBorrowed,
+				"error", repayErr,
+			)
+		} else {
+			_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{VaultRepayTxHash: &repayResp.TxHash})
+
+			if a.txnSvc != nil {
+				repayDesc := "Vault repay after off-ramp init failure"
+				txnResp, txnErr := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
+					UserID:        &req.UserID,
+					LoanID:        &loanID,
+					TxType:        models.TxTypeVaultRepay,
+					TxCategory:    models.TxCategoryOnChain,
+					Amount:        repayResp.AmountRepaid,
+					Asset:         "USDC",
+					StellarTxHash: &repayResp.TxHash,
+					Description:   &repayDesc,
+				})
+				if txnErr == nil && txnResp != nil {
+					s := models.TxStatusSuccess
+					_, _ = a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{Status: &s})
+				}
+			}
+			a.logger.Info("vault repaid after off-ramp init failure",
+				"loan_id", loanID,
+				"repay_tx_hash", repayResp.TxHash,
+			)
+		}
+
 		// Notify user of failure (best-effort).
 		if a.loanNotifier != nil && req.PhoneNumber != "" {
 			loanNumber := ""

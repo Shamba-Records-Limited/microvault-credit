@@ -18,6 +18,7 @@ type CreateLoanRequest struct {
 type UpdateLoanRequest struct {
 	VaultTxHash         *string `json:"vault_tx_hash,omitempty"`
 	VaultTxStatus       *string `json:"vault_tx_status,omitempty"`
+	VaultRepayTxHash    *string `json:"vault_repay_tx_hash,omitempty"`
 	RampProvider        *string `json:"ramp_provider,omitempty"`
 	RampRequestID       *string `json:"ramp_request_id,omitempty"`
 	RampFiatAmount      *int64  `json:"ramp_fiat_amount,omitempty"`
@@ -84,6 +85,7 @@ type LoanResponse struct {
 	DefaultedAt         *time.Time `json:"defaulted_at,omitempty"`
 	VaultTxHash         *string    `json:"vault_tx_hash,omitempty"`
 	VaultTxStatus       *string    `json:"vault_tx_status,omitempty"`
+	VaultRepayTxHash    *string    `json:"vault_repay_tx_hash,omitempty"`
 	RampProvider        *string    `json:"ramp_provider,omitempty"`
 	RampRequestID       *string    `json:"ramp_request_id,omitempty"`
 	RampFiatAmount      *int64     `json:"ramp_fiat_amount,omitempty"`

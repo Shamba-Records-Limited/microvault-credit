@@ -37,6 +37,7 @@ type Loan struct {
 	DefaultedAt         *time.Time     `json:"defaulted_at,omitempty" gorm:"type:timestamp"`
 	VaultTxHash         *string        `json:"vault_tx_hash,omitempty" gorm:"type:varchar(64);index"`
 	VaultTxStatus       *string        `json:"vault_tx_status,omitempty" gorm:"type:varchar(20)"`
+	VaultRepayTxHash    *string        `json:"vault_repay_tx_hash,omitempty" gorm:"type:varchar(64);index"`
 	RampProvider        *string        `json:"ramp_provider,omitempty" gorm:"type:varchar(50)"`
 	RampRequestID       *string        `json:"ramp_request_id,omitempty" gorm:"type:varchar(100);index"`
 	RampFiatAmount      *int64         `json:"ramp_fiat_amount,omitempty" gorm:"type:bigint"`

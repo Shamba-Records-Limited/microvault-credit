@@ -185,6 +185,7 @@ func main() {
 		repos.Loan,
 		loanNotifier,
 		txnSvc,
+		stellarSvc,
 		logger,
 	)
 
