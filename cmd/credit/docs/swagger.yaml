@@ -76,9 +76,9 @@ definitions:
   yellowcard.WebhookPayload:
     properties:
       amount:
-        type: integer
+        type: number
       convertedAmount:
-        type: integer
+        type: number
       country:
         type: string
       createdAt:

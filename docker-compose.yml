@@ -20,7 +20,7 @@ services:
       start_period: 5s
     networks:
       microvault-credit:
-        ipv4_address: 172.19.0.4
+        ipv4_address: 172.20.0.4
 
   redis:
     image: redis:7-alpine
@@ -133,7 +133,7 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.19.0.0/16
+        - subnet: 172.20.0.0/16
 
 volumes:
   postgres_data:
