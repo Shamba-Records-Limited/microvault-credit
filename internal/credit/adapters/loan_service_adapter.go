@@ -259,20 +259,26 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		a.logger.Info("loan marked disbursed", "loan_id", loanID, "vault_tx_hash", borrowResp.TxHash)
 	}
 
-	// Step 6: Initiate off-ramp.
+	// Step 6: Initiate off-ramp. PayoutMethod selects the provider via the
+	// routing service in cmd/credit/main.go: empty/"mobile_money" → YC,
+	// "cash_pickup" → MoneyGram. Cash pickup uses BirthDate + ChildAccountIndex
+	// to drive SEP-9 prefill and the SEP-10 child memo respectively.
 	amountUSD := float64(req.PrincipalAmount) / 1e7
 	offRampResult, err := a.offRampSvc.InitiateOffRamp(ctx, ussdadapters.OffRampRequest{
-		LoanID:           loanID,
-		UserID:           req.UserID,
-		RecipientName:    req.RecipientName,
-		AmountUSD:        amountUSD,
-		AmountStroops:    req.PrincipalAmount,
-		DestinationPhone: req.PhoneNumber,
-		CountryCode:      req.CountryCode,
-		NetworkCode:      req.NetworkCode,
-		NetworkName:      req.NetworkName,
-		SettlementMethod: "direct",
-		IdempotencyKey:   loanID,
+		LoanID:            loanID,
+		UserID:            req.UserID,
+		RecipientName:     req.RecipientName,
+		AmountUSD:         amountUSD,
+		AmountStroops:     req.PrincipalAmount,
+		DestinationPhone:  req.PhoneNumber,
+		CountryCode:       req.CountryCode,
+		NetworkCode:       req.NetworkCode,
+		NetworkName:       req.NetworkName,
+		SettlementMethod:  "direct",
+		IdempotencyKey:    loanID,
+		PayoutMethod:      req.PayoutMethod,
+		BirthDate:         req.BirthDate,
+		ChildAccountIndex: req.ChildAccountIndex,
 	})
 	offRampFailed := err != nil
 	if offRampFailed {
@@ -359,62 +365,117 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		}
 
 		// Step 7: Update loan with off-ramp details, fees, and conversion data.
-		rampProvider := "yellowcard"
-		rampFiatAmount := int64(offRampResult.AmountLocal * 100) // cents
-		actualMethod := offRampResult.SettlementMethod
+		// Branch on PayoutMethod: cash pickup persists MG-specific identifiers
+		// and leaves rate/fee fields null until the poller fills them in from
+		// MG's `pending_user_transfer_complete` payload.
+		isCashPickup := req.PayoutMethod == ussdadapters.PayoutMethodCashPickup
 		rampDisbStatus := "processing"
-		feeUSD := int64(offRampResult.Fee * 100)       // USD cents
-		feeLocal := int64(offRampResult.FeeLocal * 100) // KES cents
+		actualMethod := offRampResult.SettlementMethod
 
-		updateReq := loan.UpdateLoanRequest{
-			RampProvider:       &rampProvider,
-			RampRequestID:      &offRampResult.RequestID,
-			RampSequenceID:     &offRampResult.SequenceID,
-			RampFiatAmount:     &rampFiatAmount,
-			RampFiatCurr:       &offRampResult.LocalCurrency,
-			SettlementMethod:   &actualMethod,
-			DisbursementStatus: &rampDisbStatus,
-			RampFeeUSD:         &feeUSD,
-			RampFeeLocal:       &feeLocal,
-		}
+		var updateReq loan.UpdateLoanRequest
+		var rampFiatAmount int64
+		var providerLabel string
 
-		// Persist conversion data when local currency info is available.
-		if req.ConversionRate > 0 {
-			disbursementRateBps := int64(req.ConversionRate * 10000)
-			updateReq.DisbursementRateBps = &disbursementRateBps
-		}
-		if req.LocalAmount > 0 {
-			updateReq.DisbursementAmtKES = &req.LocalAmount
-			// Indicative repayment in KES: total USDC owed → KES at current rate.
-			totalUSDC := req.PrincipalAmount
-			if createResp.TotalAmount != nil {
-				totalUSDC = *createResp.TotalAmount
+		if isCashPickup {
+			providerLabel = "moneygram"
+			updateReq = loan.UpdateLoanRequest{
+				RampProvider:       &providerLabel,
+				RampRequestID:      &offRampResult.RequestID,
+				RampSequenceID:     &offRampResult.SequenceID,
+				SettlementMethod:   &actualMethod,
+				DisbursementStatus: &rampDisbStatus,
+				RampInteractiveURL: &offRampResult.InteractiveURL,
 			}
-			repaymentKES := int64(float64(totalUSDC) / 1e7 * req.ConversionRate * 100)
-			updateReq.RepaymentAmtKES = &repaymentKES
+			// ChildAccountIndex re-derives the SEP-10 memo on poller restart.
+			if req.ChildAccountIndex > 0 {
+				idx := int32(req.ChildAccountIndex)
+				updateReq.RampChildAccountIndex = &idx
+			}
+			// Audit trail of what the user saw at USSD entry time. The poller
+			// records MG's locked amount_out separately on completion.
+			if req.LocalAmount > 0 {
+				requested := float64(req.LocalAmount) / 100.0
+				updateReq.RequestedLocalAmount = &requested
+			}
+			if req.ConversionRate > 0 {
+				updateReq.EntryRateUsed = &req.ConversionRate
+				src := "yellowcard_fallback" // FX orchestrator (Phase 3.3) will override with "moneygram_fx_rate" when MG REST is wired
+				updateReq.EntryRateSource = &src
+			}
+		} else {
+			// YellowCard mobile-money path — preserve the existing behaviour.
+			providerLabel = "yellowcard"
+			rampFiatAmount = int64(offRampResult.AmountLocal * 100) // cents
+			feeUSD := int64(offRampResult.Fee * 100)                // USD cents
+			feeLocal := int64(offRampResult.FeeLocal * 100)         // KES cents
+
+			updateReq = loan.UpdateLoanRequest{
+				RampProvider:       &providerLabel,
+				RampRequestID:      &offRampResult.RequestID,
+				RampSequenceID:     &offRampResult.SequenceID,
+				RampFiatAmount:     &rampFiatAmount,
+				RampFiatCurr:       &offRampResult.LocalCurrency,
+				SettlementMethod:   &actualMethod,
+				DisbursementStatus: &rampDisbStatus,
+				RampFeeUSD:         &feeUSD,
+				RampFeeLocal:       &feeLocal,
+			}
+
+			// Persist conversion data when local currency info is available.
+			if req.ConversionRate > 0 {
+				disbursementRateBps := int64(req.ConversionRate * 10000)
+				updateReq.DisbursementRateBps = &disbursementRateBps
+			}
+			if req.LocalAmount > 0 {
+				updateReq.DisbursementAmtKES = &req.LocalAmount
+				// Indicative repayment in KES: total USDC owed → KES at current rate.
+				totalUSDC := req.PrincipalAmount
+				if createResp.TotalAmount != nil {
+					totalUSDC = *createResp.TotalAmount
+				}
+				repaymentKES := int64(float64(totalUSDC) / 1e7 * req.ConversionRate * 100)
+				updateReq.RepaymentAmtKES = &repaymentKES
+			}
 		}
 
 		_, updateErr := a.loanSvc.Update(ctx, loanID, updateReq)
 		if updateErr != nil {
 			a.logger.Warn("failed to record off-ramp details", "loan_id", loanID, "error", updateErr)
 		} else {
-			a.logger.Info("loan updated with off-ramp details", "loan_id", loanID)
+			a.logger.Info("loan updated with off-ramp details",
+				"loan_id", loanID,
+				"provider", providerLabel,
+				"settlement_method", actualMethod,
+			)
 		}
 
-		// Record off-ramp transaction.
+		// Record off-ramp transaction (txnSvc is opt-in).
 		if a.txnSvc != nil {
-			offRampDesc := fmt.Sprintf("Off-ramp via YellowCard (%s)", offRampResult.SettlementMethod)
-			provider := "yellowcard"
+			var providerCap string
+			if isCashPickup {
+				providerCap = "MoneyGram"
+			} else {
+				providerCap = "YellowCard"
+			}
+			offRampDesc := fmt.Sprintf("Off-ramp via %s (%s)", providerCap, actualMethod)
+			// Cash pickup AmountLocal is unknown at initiation — record 0 and
+			// let the poller backfill via a separate ledger entry on completion.
+			amount := rampFiatAmount
+			asset := offRampResult.LocalCurrency
+			if isCashPickup {
+				amount = 0
+				asset = "" // unknown until pending_user_transfer_complete
+			}
 			_, txnErr := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
 				UserID:           &req.UserID,
 				AccountID:        &req.AccountID,
 				LoanID:           &loanID,
 				TxType:           models.TxTypeOffRamp,
 				TxCategory:       models.TxCategoryOffChain,
-				Amount:           rampFiatAmount,
-				Asset:            offRampResult.LocalCurrency,
+				Amount:           amount,
+				Asset:            asset,
 				ExternalID:       &offRampResult.RequestID,
-				ExternalProvider: &provider,
+				ExternalProvider: &providerLabel,
 				Description:      &offRampDesc,
 			})
 			if txnErr != nil {
@@ -422,8 +483,12 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			}
 		}
 
-		// Disbursement SMS is sent by the webhook handler (DisbursementStatusAdapter)
-		// when YellowCard confirms completion — not here, to avoid duplicates.
+		// Disbursement SMS handling differs by provider:
+		//   YC: webhook handler (DisbursementStatusAdapter) sends on completion.
+		//   MG: USSD/SMS layer in the poller will deliver the interactive URL
+		//       immediately (so the user can open the webview) and the cash-
+		//       pickup reference on `pending_user_transfer_complete`.
+		// Either way, this code path stays silent to avoid duplicate SMS.
 	}
 
 	duration := time.Since(start)

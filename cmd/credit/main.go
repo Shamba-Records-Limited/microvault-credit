@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	_ "github.com/Shamba-Records-Limited/microvault-credit/cmd/credit/docs"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/adapters"
@@ -25,6 +26,7 @@ import (
 	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
 	atussd "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/providers/africastalking"
 	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/pin"
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
@@ -135,14 +137,90 @@ func main() {
 	// ---- 9. Treasury transfer bridge ----
 	treasuryTransfer := ussdadapters.NewStellarTreasuryTransfer(stellarSvc, logger)
 
-	// ---- 10. Off-ramp adapter ----
-	offRampSvc := ussdadapters.NewYellowCardOffRampAdapter(ussdadapters.YellowCardOffRampConfig{
+	// ---- 10. Off-ramp adapters ----
+	ycOffRamp := ussdadapters.NewYellowCardOffRampAdapter(ussdadapters.YellowCardOffRampConfig{
 		Adapter:      ycAdapter,
 		Treasury:     treasuryTransfer,
 		BusinessID:   cfg.Payments.YellowCard.BusinessID,
 		BusinessName: cfg.Payments.YellowCard.BusinessName,
 		Logger:       logger,
 	})
+
+	// MoneyGram cash-pickup off-ramp is opt-in via MONEYGRAM_ENABLED. When
+	// disabled, the routing service falls back to YC for everything.
+	var mgOffRamp ussdadapters.OffRampService
+	if cfg.Payments.MoneyGram.Enabled {
+		if err := cfg.Payments.MoneyGram.Validate(); err != nil {
+			log.Fatalf("MoneyGram config invalid: %v", err)
+		}
+
+		// Always fetch and validate the TOML at boot so the SIGNING_KEY,
+		// passphrase, and USDC issuer are pinned to env-configured expectations.
+		// An explicit MONEYGRAM_TRANSFER_SERVER_URL override skips trusting
+		// the TOML's TRANSFER_SERVER_SEP0024 — useful for staging — but
+		// validation still runs to detect rotations.
+		mgInitCtx, mgInitCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer mgInitCancel()
+
+		tomlDoc, err := moneygram.FetchTOML(mgInitCtx, nil, cfg.Payments.MoneyGram.HomeDomain)
+		if err != nil {
+			log.Fatalf("MoneyGram TOML fetch failed: %v", err)
+		}
+		if err := tomlDoc.Validate(moneygram.ValidateOptions{
+			ExpectedNetworkPassphrase: cfg.Payments.MoneyGram.NetworkPassphrase,
+			ExpectedSigningKey:        cfg.Payments.MoneyGram.ServerSigningKey,
+			ExpectedUSDCIssuer:        cfg.Payments.MoneyGram.USDCIssuer,
+		}); err != nil {
+			log.Fatalf("MoneyGram TOML validation failed: %v", err)
+		}
+
+		transferServerURL := cfg.Payments.MoneyGram.TransferServerURL
+		if transferServerURL == "" {
+			transferServerURL = tomlDoc.TransferServerSEP24
+		}
+
+		mgClient, err := moneygram.New(moneygram.Config{
+			HomeDomain:        cfg.Payments.MoneyGram.HomeDomain,
+			WebAuthEndpoint:   tomlDoc.WebAuthEndpoint,
+			TransferServerURL: transferServerURL,
+			ServerSigningKey:  cfg.Payments.MoneyGram.ServerSigningKey,
+			NetworkPassphrase: cfg.Payments.MoneyGram.NetworkPassphrase,
+			USDCIssuer:        cfg.Payments.MoneyGram.USDCIssuer,
+			TreasurySecret:    cfg.Stellar.TreasurySecretKey,
+			REST: moneygram.RESTConfig{
+				BaseURL:       cfg.Payments.MoneyGram.FXRateURL,
+				OAuthTokenURL: cfg.Payments.MoneyGram.OAuthURL,
+				ClientID:      cfg.Payments.MoneyGram.ClientID,
+				ClientSecret:  cfg.Payments.MoneyGram.ClientSecret,
+				Scope:         "fx_rate",
+			},
+			Logger: logger,
+		})
+		if err != nil {
+			log.Fatalf("MoneyGram client init failed: %v", err)
+		}
+
+		mgAdapter, err := ussdadapters.NewMoneyGramOffRampAdapter(ussdadapters.MoneyGramOffRampConfig{
+			Client: mgClient,
+			Logger: logger,
+		})
+		if err != nil {
+			log.Fatalf("MoneyGram adapter init failed: %v", err)
+		}
+		mgOffRamp = mgAdapter
+		logger.Info("moneygram off-ramp enabled",
+			"home_domain", cfg.Payments.MoneyGram.HomeDomain,
+			"has_rest_credentials", cfg.Payments.MoneyGram.HasRESTCredentials(),
+		)
+	}
+
+	// Routing wrapper: dispatches by OffRampRequest.PayoutMethod. Empty
+	// PayoutMethod defaults to mobile money for back-compat with USSD code
+	// paths that don't set it.
+	offRampSvc, err := ussdadapters.NewRoutingOffRampService(ycOffRamp, mgOffRamp)
+	if err != nil {
+		log.Fatalf("Failed to wire off-ramp router: %v", err)
+	}
 
 	// ---- 10b. User + Account + Transaction services ----
 	userSvc := user.NewService(coreRepos.User)

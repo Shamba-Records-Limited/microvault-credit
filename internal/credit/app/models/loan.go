@@ -55,6 +55,22 @@ type Loan struct {
 	BorrowIndex         *int64         `json:"borrow_index,omitempty" gorm:"type:bigint"`
 	RampFeeUSD          *int64         `json:"ramp_fee_usd,omitempty" gorm:"type:bigint"`
 	RampFeeLocal        *int64         `json:"ramp_fee_local,omitempty" gorm:"type:bigint"`
+
+	// MoneyGram cash-pickup off-ramp fields. See migration 000008 and
+	// internal-docs/moneygram-integration.md §13. Empty for YellowCard loans.
+	RampInteractiveURL     *string  `json:"ramp_interactive_url,omitempty" gorm:"type:text"`
+	RampExternalRef        *string  `json:"ramp_external_ref,omitempty" gorm:"type:text;index:idx_loans_ramp_external_ref,where:ramp_external_ref IS NOT NULL"`
+	RampMoreInfoURL        *string  `json:"ramp_more_info_url,omitempty" gorm:"type:text"`
+	RampChildAccountIndex  *int32   `json:"ramp_child_account_index,omitempty" gorm:"type:int"`
+
+	// FX rate audit captured at off-ramp initiation (MG cash pickup populates
+	// these; YC direct settlement leaves them null because YC locks the rate
+	// inside its own API).
+	EntryRateUsed         *float64 `json:"entry_rate_used,omitempty" gorm:"type:numeric(20,6)"`
+	EntryRateSource       *string  `json:"entry_rate_source,omitempty" gorm:"type:varchar(40)"`
+	EntryBufferPct        *float64 `json:"entry_buffer_pct,omitempty" gorm:"type:numeric(6,4)"`
+	RequestedLocalAmount  *float64 `json:"requested_local_amount,omitempty" gorm:"type:numeric(20,2)"`
+
 	CreatedAt           time.Time      `json:"created_at" gorm:"autoCreateTime;not null"`
 	UpdatedAt           time.Time      `json:"updated_at" gorm:"autoUpdateTime;not null"`
 	DeletedAt           gorm.DeletedAt `json:"deleted_at" gorm:"index"`

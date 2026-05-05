@@ -243,6 +243,30 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanRequest) 
 	if req.RampFeeLocal != nil {
 		loan.RampFeeLocal = req.RampFeeLocal
 	}
+	if req.RampInteractiveURL != nil {
+		loan.RampInteractiveURL = req.RampInteractiveURL
+	}
+	if req.RampExternalRef != nil {
+		loan.RampExternalRef = req.RampExternalRef
+	}
+	if req.RampMoreInfoURL != nil {
+		loan.RampMoreInfoURL = req.RampMoreInfoURL
+	}
+	if req.RampChildAccountIndex != nil {
+		loan.RampChildAccountIndex = req.RampChildAccountIndex
+	}
+	if req.EntryRateUsed != nil {
+		loan.EntryRateUsed = req.EntryRateUsed
+	}
+	if req.EntryRateSource != nil {
+		loan.EntryRateSource = req.EntryRateSource
+	}
+	if req.EntryBufferPct != nil {
+		loan.EntryBufferPct = req.EntryBufferPct
+	}
+	if req.RequestedLocalAmount != nil {
+		loan.RequestedLocalAmount = req.RequestedLocalAmount
+	}
 
 	// Update in database
 	if err := s.repo.Update(ctx, loan); err != nil {
@@ -495,6 +519,16 @@ func toLoanResponse(loan *models.Loan) *LoanResponse {
 		BorrowIndex:         loan.BorrowIndex,
 		RampFeeUSD:          loan.RampFeeUSD,
 		RampFeeLocal:        loan.RampFeeLocal,
+
+		RampInteractiveURL:    loan.RampInteractiveURL,
+		RampExternalRef:       loan.RampExternalRef,
+		RampMoreInfoURL:       loan.RampMoreInfoURL,
+		RampChildAccountIndex: loan.RampChildAccountIndex,
+		EntryRateUsed:         loan.EntryRateUsed,
+		EntryRateSource:       loan.EntryRateSource,
+		EntryBufferPct:        loan.EntryBufferPct,
+		RequestedLocalAmount:  loan.RequestedLocalAmount,
+
 		CreatedAt:           loan.CreatedAt,
 		UpdatedAt:           loan.UpdatedAt,
 	}
