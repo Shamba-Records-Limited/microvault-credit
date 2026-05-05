@@ -25,6 +25,7 @@ var (
 	ErrFailedToDeleteLoansByUserID    = errors.New("failed to delete loans by user ID")
 	ErrFailedToGetLoanBySequenceID   = errors.New("failed to get loan by sequence ID")
 	ErrFailedToGetLoansByDisbStatus  = errors.New("failed to get loans by disbursement status")
+	ErrFailedToGetActiveByProvider   = errors.New("failed to get active loans by ramp provider")
 )
 
 // LoanRepository defines the interface for loanRespository data access.
@@ -39,6 +40,16 @@ type LoanRepository interface {
 	GetActiveLoansByStatus(ctx context.Context, status string, limit, offset int) ([]*models.Loan, error)
 	GetBySequenceID(ctx context.Context, sequenceID string) (*models.Loan, error)
 	GetByDisbursementStatus(ctx context.Context, status string, limit int) ([]*models.Loan, error)
+
+	// GetActiveByProvider returns loans where ramp_provider matches the given
+	// provider and disbursement_status is in a non-terminal state. Used by
+	// provider-specific pollers to enumerate work.
+	GetActiveByProvider(ctx context.Context, provider string, limit int) ([]*models.Loan, error)
+
+	// GetActiveByUserAndProvider scopes the same query to a single user.
+	// Used as the dedupe gate: a non-empty result means the user already has
+	// an in-flight off-ramp for that provider and a new request should fail.
+	GetActiveByUserAndProvider(ctx context.Context, userID, provider string) ([]*models.Loan, error)
 
 	// Update operations
 	Update(ctx context.Context, loan *models.Loan) error

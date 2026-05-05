@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
@@ -149,6 +150,7 @@ func main() {
 	// MoneyGram cash-pickup off-ramp is opt-in via MONEYGRAM_ENABLED. When
 	// disabled, the routing service falls back to YC for everything.
 	var mgOffRamp ussdadapters.OffRampService
+	var fxOrch *moneygram.FXOrchestrator
 	if cfg.Payments.MoneyGram.Enabled {
 		if err := cfg.Payments.MoneyGram.Validate(); err != nil {
 			log.Fatalf("MoneyGram config invalid: %v", err)
@@ -212,6 +214,28 @@ func main() {
 			"home_domain", cfg.Payments.MoneyGram.HomeDomain,
 			"has_rest_credentials", cfg.Payments.MoneyGram.HasRESTCredentials(),
 		)
+
+		// FX orchestrator: MG primary (when REST creds are wired), YC fallback,
+		// stale cache last resort. Buffers + caps come from defaults — surface
+		// as env vars when ops needs to tune them per environment.
+		ycFallback := moneygram.FallbackRateFunc(func(ctx context.Context, currency string) (float64, error) {
+			rates, err := ycAdapter.GetRates(ctx, currency)
+			if err != nil {
+				return 0, err
+			}
+			if len(rates) == 0 {
+				return 0, fmt.Errorf("yellowcard: no rates for %s", currency)
+			}
+			return rates[0].Sell, nil
+		})
+		fxOrch, err = mgClient.NewFXOrchestrator(ycFallback, moneygram.FXOrchestratorConfig{})
+		if err != nil {
+			log.Fatalf("MoneyGram FX orchestrator init failed: %v", err)
+		}
+		logger.Info("moneygram FX orchestrator wired",
+			"primary_active", mgClient.HasFXRate(),
+			"fallback_active", true,
+		)
 	}
 
 	// Routing wrapper: dispatches by OffRampRequest.PayoutMethod. Empty
@@ -256,6 +280,9 @@ func main() {
 	)
 	if err != nil {
 		log.Fatalf("Failed to create loan service adapter: %v", err)
+	}
+	if fxOrch != nil {
+		loanAdapter.SetFXOrchestrator(fxOrch)
 	}
 
 	// ---- 12. DisbursementStatusAdapter (webhook callbacks) ----

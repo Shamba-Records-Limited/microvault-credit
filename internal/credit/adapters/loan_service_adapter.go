@@ -14,6 +14,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd"
 	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
 	"github.com/Shamba-Records-Limited/microvault/pkg/models"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
 )
@@ -35,6 +36,18 @@ type LoanServiceAdapter struct {
 	txnSvc        transaction.Service
 	logger        *slog.Logger
 	productConfig *ussd.LoanProductConfig
+
+	// fxOrch is optional. When set (MoneyGram enabled), cash-pickup loans
+	// re-quote the rate at off-ramp time so the locked MG corridor view
+	// drives the audit fields rather than the YC rate that flowed through
+	// LoanRequest.ConversionRate from USSD entry. Mobile-money loans ignore it.
+	fxOrch *moneygram.FXOrchestrator
+}
+
+// SetFXOrchestrator wires the optional MoneyGram FX orchestrator. Call from
+// main.go after MoneyGram is enabled. Idempotent — passing nil clears.
+func (a *LoanServiceAdapter) SetFXOrchestrator(o *moneygram.FXOrchestrator) {
+	a.fxOrch = o
 }
 
 // NewLoanServiceAdapter creates a new [LoanServiceAdapter].
@@ -264,6 +277,36 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	// "cash_pickup" → MoneyGram. Cash pickup uses BirthDate + ChildAccountIndex
 	// to drive SEP-9 prefill and the SEP-10 child memo respectively.
 	amountUSD := float64(req.PrincipalAmount) / 1e7
+
+	// Cash-pickup pre-checks: enforce MG corridor caps and re-quote the rate
+	// from MG (with YC fallback) so the audit trail reflects the actual
+	// source. Validation happens before any off-ramp HTTP call so we don't
+	// leave a half-initialised SEP-24 transaction on the anchor.
+	var fxQuote *moneygram.FXQuoteResult
+	if req.PayoutMethod == ussdadapters.PayoutMethodCashPickup && a.fxOrch != nil {
+		if err := a.fxOrch.ValidateAmount(amountUSD); err != nil {
+			a.logger.Error("cash pickup amount out of corridor range",
+				"loan_id", loanID, "amount_usd", amountUSD, "error", err)
+			return nil, err
+		}
+		quote, qErr := a.fxOrch.Quote(ctx, moneygram.FXQuoteRequest{
+			OriginatingCountry: "USA",
+			DestinationCountry: "KEN",
+			SendCurrency:       "USD",
+			ReceiveCurrency:    req.LocalCurrency,
+		})
+		if qErr != nil {
+			a.logger.Error("FX quote failed for cash pickup",
+				"loan_id", loanID, "error", qErr)
+			return nil, fmt.Errorf("cash pickup FX quote: %w", qErr)
+		}
+		fxQuote = quote
+		a.logger.Info("cash pickup FX quote",
+			"loan_id", loanID,
+			"rate", quote.Rate, "source", quote.Source, "buffer_pct", quote.BufferPct,
+		)
+	}
+
 	offRampResult, err := a.offRampSvc.InitiateOffRamp(ctx, ussdadapters.OffRampRequest{
 		LoanID:            loanID,
 		UserID:            req.UserID,
@@ -397,9 +440,15 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 				requested := float64(req.LocalAmount) / 100.0
 				updateReq.RequestedLocalAmount = &requested
 			}
-			if req.ConversionRate > 0 {
+			// Prefer the FX orchestrator's output (real source + buffer);
+			// fall back to LoanRequest.ConversionRate when MG isn't wired.
+			if fxQuote != nil {
+				updateReq.EntryRateUsed = &fxQuote.Rate
+				updateReq.EntryRateSource = &fxQuote.Source
+				updateReq.EntryBufferPct = &fxQuote.BufferPct
+			} else if req.ConversionRate > 0 {
 				updateReq.EntryRateUsed = &req.ConversionRate
-				src := "yellowcard_fallback" // FX orchestrator (Phase 3.3) will override with "moneygram_fx_rate" when MG REST is wired
+				src := moneygram.RateSourceFallback
 				updateReq.EntryRateSource = &src
 			}
 		} else {
