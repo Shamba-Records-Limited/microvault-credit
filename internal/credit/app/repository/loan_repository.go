@@ -23,9 +23,9 @@ var (
 	ErrFailedToRestoreLoan            = errors.New("failed to restore loan")
 	ErrFailedToDeleteLoan             = errors.New("failed to delete loan")
 	ErrFailedToDeleteLoansByUserID    = errors.New("failed to delete loans by user ID")
-	ErrFailedToGetLoanBySequenceID   = errors.New("failed to get loan by sequence ID")
-	ErrFailedToGetLoansByDisbStatus  = errors.New("failed to get loans by disbursement status")
-	ErrFailedToGetActiveByProvider   = errors.New("failed to get active loans by ramp provider")
+	ErrFailedToGetLoanBySequenceID    = errors.New("failed to get loan by sequence ID")
+	ErrFailedToGetLoansByDisbStatus   = errors.New("failed to get loans by disbursement status")
+	ErrFailedToGetActiveByProvider    = errors.New("failed to get active loans by ramp provider")
 )
 
 // LoanRepository defines the interface for loanRespository data access.
@@ -44,7 +44,7 @@ type LoanRepository interface {
 	// GetActiveByProvider returns loans where ramp_provider matches the given
 	// provider and disbursement_status is in a non-terminal state. Used by
 	// provider-specific pollers to enumerate work.
-	GetActiveByProvider(ctx context.Context, provider string, limit int) ([]*models.Loan, error)
+	GetActiveByProvider(ctx context.Context, provider string, limit int, offset int) ([]*models.Loan, error)
 
 	// GetActiveByUserAndProvider scopes the same query to a single user.
 	// Used as the dedupe gate: a non-empty result means the user already has
@@ -152,6 +152,36 @@ func (r *loanRepository) GetActiveLoansByStatus(ctx context.Context, status stri
 	return loans, nil
 }
 
+func (r *loanRepository) GetActiveByProvider(ctx context.Context, provider string, limit, offset int) ([]*models.Loan, error) {
+	var loans []*models.Loan
+	result := r.db.WithContext(ctx).
+		Where("ramp_provider = ? AND disbursement_status IN ? AND deleted_at IS NULL",
+			provider, []string{models.DisbursementStatusPending, models.DisbursementStatusProcessing}).
+		Order("created_at DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&loans)
+	if result.Error != nil {
+		log.Printf("GetActiveByProvider: database error: %v", result.Error)
+		return nil, ErrFailedToGetActiveByProvider
+	}
+	return loans, nil
+}
+
+func (r *loanRepository) GetActiveByUserAndProvider(ctx context.Context, userID, provider string) ([]*models.Loan, error) {
+	var loans []*models.Loan
+	result := r.db.WithContext(ctx).
+		Where("user_id = ? AND ramp_provider = ? AND disbursement_status IN ? AND deleted_at IS NULL",
+			userID, provider, []string{models.DisbursementStatusPending, models.DisbursementStatusProcessing}).
+		Order("created_at DESC").
+		Find(&loans)
+	if result.Error != nil {
+		log.Printf("GetActiveByUserAndProvider: database error: %v", result.Error)
+		return nil, ErrFailedToGetActiveByProvider
+	}
+	return loans, nil
+}
+
 // GetBySequenceID retrieves a loan by its YellowCard ramp sequence ID.
 func (r *loanRepository) GetBySequenceID(ctx context.Context, sequenceID string) (*models.Loan, error) {
 	var loan models.Loan
@@ -193,26 +223,26 @@ func (r *loanRepository) Update(ctx context.Context, loan *models.Loan) error {
 		Model(loan).
 		Where("id = ? AND deleted_at IS NULL", loan.ID).
 		Updates(map[string]interface{}{
-			"status":              loan.Status,
-			"approved_at":         loan.ApprovedAt,
-			"approved_by":         loan.ApprovedBy,
-			"disbursed_at":        loan.DisbursedAt,
-			"repaid_at":           loan.RepaidAt,
-			"defaulted_at":        loan.DefaultedAt,
-			"vault_tx_hash":       loan.VaultTxHash,
-			"vault_tx_status":     loan.VaultTxStatus,
-			"vault_repay_tx_hash": loan.VaultRepayTxHash,
-			"ramp_provider":       loan.RampProvider,
-			"ramp_request_id":     loan.RampRequestID,
-			"ramp_fiat_amount":    loan.RampFiatAmount,
-			"ramp_fiat_currency":  loan.RampFiatCurr,
-			"momo_provider":       loan.MomoProvider,
-			"momo_transaction_id":  loan.MomoTxID,
-			"momo_status":          loan.MomoStatus,
-			"settlement_method":    loan.SettlementMethod,
-			"disbursement_status":  loan.DisbursementStatus,
-			"ramp_sequence_id":     loan.RampSequenceID,
-			"origination_fee":          loan.OriginationFee,
+			"status":                  loan.Status,
+			"approved_at":             loan.ApprovedAt,
+			"approved_by":             loan.ApprovedBy,
+			"disbursed_at":            loan.DisbursedAt,
+			"repaid_at":               loan.RepaidAt,
+			"defaulted_at":            loan.DefaultedAt,
+			"vault_tx_hash":           loan.VaultTxHash,
+			"vault_tx_status":         loan.VaultTxStatus,
+			"vault_repay_tx_hash":     loan.VaultRepayTxHash,
+			"ramp_provider":           loan.RampProvider,
+			"ramp_request_id":         loan.RampRequestID,
+			"ramp_fiat_amount":        loan.RampFiatAmount,
+			"ramp_fiat_currency":      loan.RampFiatCurr,
+			"momo_provider":           loan.MomoProvider,
+			"momo_transaction_id":     loan.MomoTxID,
+			"momo_status":             loan.MomoStatus,
+			"settlement_method":       loan.SettlementMethod,
+			"disbursement_status":     loan.DisbursementStatus,
+			"ramp_sequence_id":        loan.RampSequenceID,
+			"origination_fee":         loan.OriginationFee,
 			"origination_fee_bps":     loan.OriginationFeeBps,
 			"total_amount":            loan.TotalAmount,
 			"disbursement_rate_bps":   loan.DisbursementRateBps,
