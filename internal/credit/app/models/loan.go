@@ -63,6 +63,12 @@ type Loan struct {
 	RampMoreInfoURL       *string `json:"ramp_more_info_url,omitempty" gorm:"type:text"`
 	RampChildAccountIndex *int32  `json:"ramp_child_account_index,omitempty" gorm:"type:int"`
 
+	// MG's SEP-24 withdraw_memo, captured at first poll. The Stellar ingest
+	// worker matches inbound USDC refunds against this column. See migration
+	// 000009.
+	RampWithdrawMemo     *string `json:"ramp_withdraw_memo,omitempty" gorm:"type:varchar(64);index:idx_loans_ramp_withdraw_memo,where:ramp_withdraw_memo IS NOT NULL"`
+	RampWithdrawMemoType *string `json:"ramp_withdraw_memo_type,omitempty" gorm:"type:varchar(16)"`
+
 	// FX rate audit captured at off-ramp initiation (MG cash pickup populates
 	// these; YC direct settlement leaves them null because YC locks the rate
 	// inside its own API).

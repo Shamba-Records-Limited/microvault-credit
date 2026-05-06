@@ -139,7 +139,30 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		"amount_stroops", req.PrincipalAmount,
 		"local_amount_cents", req.LocalAmount,
 		"currency", req.LocalCurrency,
+		"payout_method", req.PayoutMethod,
 	)
+
+	// Phase 3.6 dedupe gate: reject if the user already has an in-flight
+	// MoneyGram off-ramp. Cash pickup interactives are stateful in MG —
+	// kicking off a second one before the first resolves leaves the user
+	// confused about which reference number is theirs and risks SMS
+	// crossing in the wires. YC mobile money is idempotent at the
+	// channel level so the gate doesn't apply there.
+	if req.PayoutMethod == ussdadapters.PayoutMethodCashPickup {
+		active, dErr := a.loanSvc.GetActiveByUserAndProvider(ctx, req.UserID, "moneygram")
+		if dErr != nil {
+			a.logger.Error("dedupe gate query failed", "user_id", req.UserID, "error", dErr)
+			return nil, fmt.Errorf("check active moneygram loans: %w", dErr)
+		}
+		if len(active) > 0 {
+			a.logger.Warn("rejecting duplicate moneygram off-ramp request",
+				"user_id", req.UserID,
+				"existing_loan_id", active[0].ID,
+				"existing_status", strDeref(active[0].DisbursementStatus),
+			)
+			return nil, fmt.Errorf("you already have a MoneyGram cash pickup in progress (loan %s); complete it before starting another", active[0].ID)
+		}
+	}
 
 	// Step 1: Query dynamic vault APR; fall back to product rate.
 	interestRateBps := a.productConfig.InterestRateBps
@@ -632,4 +655,12 @@ func (a *LoanServiceAdapter) CheckLoanEligibility(ctx context.Context, userID st
 		Reason:       "approved",
 		InterestRate: interestRate * 100, // decimal → percentage (e.g. 8.0 for 8%)
 	}, nil
+}
+
+// strDeref safely dereferences an optional string for log output.
+func strDeref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

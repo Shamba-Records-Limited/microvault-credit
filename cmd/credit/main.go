@@ -29,6 +29,7 @@ import (
 	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
+	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/pin"
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
@@ -151,6 +152,7 @@ func main() {
 	// disabled, the routing service falls back to YC for everything.
 	var mgOffRamp ussdadapters.OffRampService
 	var fxOrch *moneygram.FXOrchestrator
+	var mgClient *moneygram.Client
 	if cfg.Payments.MoneyGram.Enabled {
 		if err := cfg.Payments.MoneyGram.Validate(); err != nil {
 			log.Fatalf("MoneyGram config invalid: %v", err)
@@ -181,7 +183,7 @@ func main() {
 			transferServerURL = tomlDoc.TransferServerSEP24
 		}
 
-		mgClient, err := moneygram.New(moneygram.Config{
+		mgClient, err = moneygram.New(moneygram.Config{
 			HomeDomain:        cfg.Payments.MoneyGram.HomeDomain,
 			WebAuthEndpoint:   tomlDoc.WebAuthEndpoint,
 			TransferServerURL: transferServerURL,
@@ -328,7 +330,7 @@ func main() {
 	webhookSvc := webhook.NewService(disbursementAdapter, nil, disbursementAdapter)
 	webhookCtrl := controllers.NewWebhookController(webhookSvc, cfg.Payments.YellowCard.WebhookSecret)
 
-	// ---- 15. Refund poller ----
+	// ---- 15. Refund poller (YellowCard) ----
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())
 	refundPoller := webhook.NewRefundPoller(
 		ycAdapter,
@@ -340,6 +342,28 @@ func main() {
 		webhook.DefaultRefundPollerConfig(),
 	)
 	go refundPoller.Start(pollerCtx)
+
+	// ---- 15b. MoneyGram cash-pickup poller ----
+	// MG doesn't publish webhooks; this poller drives state transitions
+	// by GET /transaction every 30s. Constructed only when MG is enabled.
+	if mgClient != nil {
+		mgPollerAdapter := adapters.NewMoneyGramPollerAdapter(loanSvc, logger)
+		mgPoller, mgErr := mgpoller.NewPoller(
+			mgClient,
+			mgPollerAdapter,     // LoanFetcher
+			mgPollerAdapter,     // LoanRecorder
+			disbursementAdapter, // DisbursementUpdater (shared with YC)
+			treasuryTransfer,    // TreasuryTransfer for SendUSDC at pending_user_transfer_start
+			nil,                 // AlertService — ops alerts via logging for now
+			mgpoller.DefaultConfig(),
+			logger,
+		)
+		if mgErr != nil {
+			log.Fatalf("MoneyGram poller init failed: %v", mgErr)
+		}
+		go mgPoller.Start(pollerCtx)
+		logger.Info("moneygram poller started", "interval", mgpoller.DefaultConfig().PollInterval)
+	}
 
 	// ---- 16. Fiber app + middleware + routes ----
 	app := fiber.New()

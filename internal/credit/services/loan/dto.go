@@ -48,6 +48,8 @@ type UpdateLoanRequest struct {
 	RampExternalRef       *string  `json:"ramp_external_ref,omitempty"`
 	RampMoreInfoURL       *string  `json:"ramp_more_info_url,omitempty"`
 	RampChildAccountIndex *int32   `json:"ramp_child_account_index,omitempty"`
+	RampWithdrawMemo      *string  `json:"ramp_withdraw_memo,omitempty"`
+	RampWithdrawMemoType  *string  `json:"ramp_withdraw_memo_type,omitempty"`
 	EntryRateUsed         *float64 `json:"entry_rate_used,omitempty"`
 	EntryRateSource       *string  `json:"entry_rate_source,omitempty"`
 	EntryBufferPct        *float64 `json:"entry_buffer_pct,omitempty"`
@@ -122,6 +124,8 @@ type LoanResponse struct {
 	RampExternalRef       *string  `json:"ramp_external_ref,omitempty"`
 	RampMoreInfoURL       *string  `json:"ramp_more_info_url,omitempty"`
 	RampChildAccountIndex *int32   `json:"ramp_child_account_index,omitempty"`
+	RampWithdrawMemo      *string  `json:"ramp_withdraw_memo,omitempty"`
+	RampWithdrawMemoType  *string  `json:"ramp_withdraw_memo_type,omitempty"`
 	EntryRateUsed         *float64 `json:"entry_rate_used,omitempty"`
 	EntryRateSource       *string  `json:"entry_rate_source,omitempty"`
 	EntryBufferPct        *float64 `json:"entry_buffer_pct,omitempty"`
