@@ -6,202 +6,181 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
-	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/stellaranchor"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 )
 
-// MoneyGramPollerAdapter satisfies mgpoller.LoanFetcher and
-// mgpoller.LoanRecorder by translating between the poller's projection
-// (LoanRecord) and the credit service's loan model.
-//
-// LoanFetcher: scans `loans` rows where ramp_provider = "moneygram" and
-// disbursement_status is in the active set, projecting each into a
-// LoanRecord the poller can drive.
-//
-// LoanRecorder: writes the latest fields from a polled MG transaction
-// onto the matching loan row. RecordSendUSDC is a no-op for now — the
-// poller already uses MG's own stellar_transaction_id as the next-best
-// idempotency marker. Add a dedicated column in a follow-up if the
-// observation window proves problematic in production.
-type MoneyGramPollerAdapter struct {
-	loanSvc loan.Service
-	logger  *slog.Logger
-}
-
-// NewMoneyGramPollerAdapter constructs the adapter. logger may be nil.
-func NewMoneyGramPollerAdapter(loanSvc loan.Service, logger *slog.Logger) *MoneyGramPollerAdapter {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &MoneyGramPollerAdapter{
-		loanSvc: loanSvc,
-		logger:  logger.With("component", "moneygram_poller_adapter"),
-	}
-}
-
-// Compile-time interface satisfaction.
+// Compile-time checks.
 var (
 	_ mgpoller.LoanFetcher  = (*MoneyGramPollerAdapter)(nil)
 	_ mgpoller.LoanRecorder = (*MoneyGramPollerAdapter)(nil)
 )
 
-// GetActiveMoneyGramLoans implements mgpoller.LoanFetcher.
-func (a *MoneyGramPollerAdapter) GetActiveMoneyGramLoans(ctx context.Context, limit int) ([]mgpoller.LoanRecord, error) {
-	loans, err := a.loanSvc.GetActiveByProvider(ctx, "moneygram", limit)
-	if err != nil {
-		return nil, fmt.Errorf("get active moneygram loans: %w", err)
-	}
+// MoneyGramPollerAdapter bridges microvault-credit's loan repository to the
+// generic mgpoller in microvault. mgpoller defines the state machine and
+// HTTP loop; this adapter supplies the persistence half — projecting loan
+// rows into mgpoller.LoanRecord and writing the per-tick deltas back to the
+// loan via the loan service's typed update path.
+type MoneyGramPollerAdapter struct {
+	repo    repository.LoanRepository
+	loanSvc loan.Service
+	logger  *slog.Logger
+}
 
+// NewMoneyGramPollerAdapter builds the adapter. repo and loanSvc are
+// required; logger may be nil.
+func NewMoneyGramPollerAdapter(
+	repo repository.LoanRepository,
+	loanSvc loan.Service,
+	logger *slog.Logger,
+) (*MoneyGramPollerAdapter, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("moneygram poller adapter: repo is required")
+	}
+	if loanSvc == nil {
+		return nil, fmt.Errorf("moneygram poller adapter: loan service is required")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &MoneyGramPollerAdapter{
+		repo:    repo,
+		loanSvc: loanSvc,
+		logger:  logger.With("component", "mgpoller_adapter"),
+	}, nil
+}
+
+// GetActiveMoneyGramLoans returns the loans the mgpoller should evaluate
+// this tick: ramp_provider="moneygram" with non-terminal disbursement_status.
+func (a *MoneyGramPollerAdapter) GetActiveMoneyGramLoans(ctx context.Context, limit int) ([]mgpoller.LoanRecord, error) {
+	loans, err := a.repo.GetActiveMoneyGramLoans(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]mgpoller.LoanRecord, 0, len(loans))
 	for _, l := range loans {
-		// Skip loans without the data the poller needs to drive state.
-		// In normal operation these fields are populated by the MG branch
-		// in loan_service_adapter; defensive null-checks here keep a
-		// half-initialised row from crashing the poller loop.
-		if l.RampRequestID == nil || *l.RampRequestID == "" {
+		if l == nil {
 			continue
 		}
-		rec := mgpoller.LoanRecord{
-			LoanID:           l.ID,
-			MoneyGramTxID:    *l.RampRequestID,
-			PrincipalStroops: l.PrincipalAmount,
-			UserID:           l.UserID,
-			DisbursementStatus: strDerefAdapter(l.DisbursementStatus),
-		}
-		if l.RampSequenceID != nil {
-			rec.SequenceID = *l.RampSequenceID
-		} else {
-			rec.SequenceID = l.ID
-		}
-		if l.RampChildAccountIndex != nil {
-			rec.ChildAccountIndex = uint32(*l.RampChildAccountIndex)
-		}
-		if l.RequestedLocalAmount != nil {
-			rec.RequestedLocalAmount = *l.RequestedLocalAmount
-		}
-		// PhoneNumber intentionally omitted — LoanResponse doesn't preload
-		// the user record, and the disbursement adapter resolves SMS
-		// recipients independently via NotifyDisbursementComplete /
-		// NotifyDisbursementFailed.
-		out = append(out, rec)
+		out = append(out, projectLoanRecord(l))
 	}
 	return out, nil
 }
 
-// RecordTransactionUpdate implements mgpoller.LoanRecorder. Persists the
-// fields that change as MG advances state: amount_out / _asset / _fee
-// (locked at pending_user_transfer_complete), external_transaction_id
-// (the cash-pickup reference), and more_info_url.
-func (a *MoneyGramPollerAdapter) RecordTransactionUpdate(ctx context.Context, loanID string, tx *moneygram.Transaction) error {
+// RecordTransactionUpdate persists the SEP-24 transaction fields onto the
+// loan: amount_out + currency, fee, MG external reference, MoreInfoURL, and
+// the withdraw memo MG hands back (needed by the Stellar ingest worker for
+// refund matching). All fields are optional in the SEP-24 response — we
+// only set those that arrived non-empty.
+func (a *MoneyGramPollerAdapter) RecordTransactionUpdate(ctx context.Context, loanID string, tx *stellaranchor.Transaction) error {
 	if tx == nil {
+		return fmt.Errorf("moneygram poller adapter: nil transaction for loan %s", loanID)
+	}
+
+	req := loan.UpdateLoanRequest{}
+	any := false
+
+	if v := strings.TrimSpace(tx.AmountOut); v != "" {
+		cents, ok := decimalToCents(v)
+		if ok {
+			req.RampFiatAmount = &cents
+			any = true
+		}
+	}
+	if v := strings.TrimPrefix(strings.TrimSpace(tx.AmountOutAsset), "iso4217:"); v != "" {
+		req.RampFiatCurr = &v
+		any = true
+	}
+	if v := strings.TrimSpace(tx.AmountFee); v != "" {
+		cents, ok := decimalToCents(v)
+		if ok {
+			req.RampFeeLocal = &cents
+			any = true
+		}
+	}
+	if v := strings.TrimSpace(tx.ExternalTransactionID); v != "" {
+		req.RampExternalRef = &v
+		any = true
+	}
+	if v := strings.TrimSpace(tx.MoreInfoURL); v != "" {
+		req.RampMoreInfoURL = &v
+		any = true
+	}
+	if v := strings.TrimSpace(tx.WithdrawMemo); v != "" {
+		req.RampWithdrawMemo = &v
+		any = true
+	}
+	if v := strings.TrimSpace(tx.WithdrawMemoType); v != "" {
+		req.RampWithdrawMemoType = &v
+		any = true
+	}
+
+	if !any {
 		return nil
 	}
 
-	updateReq := loan.UpdateLoanRequest{}
-	hasChanges := false
-
-	// amount_out: parse decimal "1012.00" → cents int64 1012_00.
-	if tx.AmountOut != "" {
-		cents, err := parseDecimalToCents(tx.AmountOut)
-		if err == nil && cents > 0 {
-			updateReq.RampFiatAmount = &cents
-			hasChanges = true
-		}
-	}
-
-	// amount_out_asset: "iso4217:KES" → "KES".
-	if tx.AmountOutAsset != "" {
-		curr := stripISOPrefix(tx.AmountOutAsset)
-		if curr != "" {
-			updateReq.RampFiatCurr = &curr
-			hasChanges = true
-		}
-	}
-
-	// amount_fee: parse decimal → local-currency cents.
-	if tx.AmountFee != "" {
-		cents, err := parseDecimalToCents(tx.AmountFee)
-		if err == nil && cents > 0 {
-			updateReq.RampFeeLocal = &cents
-			hasChanges = true
-		}
-	}
-
-	if tx.ExternalTransactionID != "" {
-		ref := tx.ExternalTransactionID
-		updateReq.RampExternalRef = &ref
-		hasChanges = true
-	}
-
-	if tx.MoreInfoURL != "" {
-		url := tx.MoreInfoURL
-		updateReq.RampMoreInfoURL = &url
-		hasChanges = true
-	}
-
-	// withdraw_memo / withdraw_memo_type: persisted on first observation so
-	// the Stellar ingest worker can match inbound USDC refunds back to the
-	// originating loan. MG sends refunds with the same memo it issued at
-	// SEP-24 init. Idempotent: re-asserting the same value is harmless.
-	if tx.WithdrawMemo != "" {
-		memo := tx.WithdrawMemo
-		updateReq.RampWithdrawMemo = &memo
-		hasChanges = true
-	}
-	if tx.WithdrawMemoType != "" {
-		memoType := tx.WithdrawMemoType
-		updateReq.RampWithdrawMemoType = &memoType
-		hasChanges = true
-	}
-
-	if !hasChanges {
-		return nil
-	}
-
-	if _, err := a.loanSvc.Update(ctx, loanID, updateReq); err != nil {
-		return fmt.Errorf("record moneygram transaction update: %w", err)
+	if _, err := a.loanSvc.Update(ctx, loanID, req); err != nil {
+		return fmt.Errorf("moneygram poller adapter: update loan %s: %w", loanID, err)
 	}
 	return nil
 }
 
-// RecordSendUSDC implements mgpoller.LoanRecorder. No persistent column
-// for the off-ramp USDC tx hash exists today; the poller relies on MG's
-// stellar_transaction_id observation for idempotency. A dedicated column
-// (e.g. ramp_settlement_tx_hash) can be added in a follow-up if needed.
-func (a *MoneyGramPollerAdapter) RecordSendUSDC(_ context.Context, loanID, txHash string) error {
-	a.logger.Info("USDC sent to MoneyGram (idempotency via tx.stellar_transaction_id)",
-		"loan_id", loanID, "stellar_tx_hash", txHash)
+// RecordSendUSDC logs the treasury → MG anchor tx hash. There is no
+// dedicated column on loans for this yet, and the mgpoller already uses
+// MG's own tx.stellar_transaction_id as the idempotency marker, so logging
+// here is sufficient for audit until a column is added.
+func (a *MoneyGramPollerAdapter) RecordSendUSDC(_ context.Context, loanID string, txHash string) error {
+	a.logger.Info("treasury → MoneyGram USDC send recorded",
+		"loan_id", loanID, "tx_hash", txHash)
 	return nil
 }
 
-// parseDecimalToCents converts "1012.00" → 101200 cents. Returns 0 on
-// malformed input; callers should treat 0 as "skip the field".
-func parseDecimalToCents(s string) (int64, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, nil
+// projectLoanRecord maps a Loan row into the mgpoller projection. Pointer
+// fields default to their zero values when nil — the poller skips records
+// without a MoneyGramTxID, which catches the case where Initiate hasn't
+// populated RampRequestID yet.
+func projectLoanRecord(l *models.Loan) mgpoller.LoanRecord {
+	rec := mgpoller.LoanRecord{
+		LoanID:           l.ID,
+		UserID:           l.UserID,
+		PrincipalStroops: l.PrincipalAmount,
 	}
-	var f float64
-	if _, err := fmt.Sscanf(s, "%f", &f); err != nil {
-		return 0, err
+	if l.RampSequenceID != nil {
+		rec.SequenceID = *l.RampSequenceID
 	}
-	return int64(f * 100), nil
+	if l.RampRequestID != nil {
+		rec.MoneyGramTxID = *l.RampRequestID
+	}
+	if l.RampChildAccountIndex != nil {
+		// Stored as int64 to fit the column, fits a uint32 by construction.
+		rec.ChildAccountIndex = uint32(*l.RampChildAccountIndex)
+	}
+	if l.RequestedLocalAmount != nil {
+		// Persisted as cents; the poller's drift check works in major units.
+		rec.RequestedLocalAmount = float64(*l.RequestedLocalAmount) / 100.0
+	}
+	if l.DisbursementStatus != nil {
+		rec.DisbursementStatus = *l.DisbursementStatus
+	}
+	if l.User != nil {
+		rec.PhoneNumber = l.User.MobileNumber
+	}
+	return rec
 }
 
-// stripISOPrefix turns "iso4217:KES" into "KES". Falls through unchanged
-// if the prefix isn't there.
-func stripISOPrefix(asset string) string {
-	if i := strings.Index(asset, ":"); i >= 0 {
-		return asset[i+1:]
+// decimalToCents converts a SEP-24 decimal string (e.g. "1250.00") to an
+// int64 in cents. Returns (0, false) on malformed input — callers should
+// skip the field rather than write a zero.
+func decimalToCents(s string) (int64, bool) {
+	var v float64
+	if _, err := fmt.Sscanf(s, "%f", &v); err != nil {
+		return 0, false
 	}
-	return asset
-}
-
-// strDerefAdapter avoids name collision with strDeref in loan_service_adapter.go.
-func strDerefAdapter(s *string) string {
-	if s == nil {
-		return ""
+	if v < 0 {
+		return 0, false
 	}
-	return *s
+	return int64(v * 100), true
 }

@@ -1,3 +1,5 @@
+-- Revert MoneyGram cash-pickup identifier + FX audit columns from loans.
+
 DROP INDEX IF EXISTS idx_loans_ramp_external_ref;
 
 ALTER TABLE loans DROP COLUMN IF EXISTS requested_local_amount;
