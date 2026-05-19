@@ -5,26 +5,26 @@ import (
 	"fmt"
 
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd"
-	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
 )
 
 // Compile-time check.
 var _ ussd.RateService = (*RateServiceAdapter)(nil)
 
-// RateServiceAdapter implements ussd.RateService using the YellowCard off-ramp adapter's
-// exchange rate endpoint.
+// RateServiceAdapter implements ussd.RateService against any offramp.Quoter
+// (e.g. the YellowCard adapter).
 type RateServiceAdapter struct {
-	offRampSvc ussdadapters.OffRampService
+	quoter offramp.Quoter
 }
 
 // NewRateServiceAdapter creates a new RateServiceAdapter.
-func NewRateServiceAdapter(offRampSvc ussdadapters.OffRampService) *RateServiceAdapter {
-	return &RateServiceAdapter{offRampSvc: offRampSvc}
+func NewRateServiceAdapter(quoter offramp.Quoter) *RateServiceAdapter {
+	return &RateServiceAdapter{quoter: quoter}
 }
 
 // GetExchangeRate returns the buy rate for the given currency (e.g. "KES").
 func (a *RateServiceAdapter) GetExchangeRate(ctx context.Context, currency string) (float64, error) {
-	rate, err := a.offRampSvc.GetExchangeRate(ctx, currency)
+	rate, err := a.quoter.Quote(ctx, offramp.QuoteRequest{Currency: currency})
 	if err != nil {
 		return 0, fmt.Errorf("get exchange rate for %s: %w", currency, err)
 	}
