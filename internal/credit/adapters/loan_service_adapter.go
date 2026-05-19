@@ -15,6 +15,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/stellaranchor"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
@@ -44,6 +45,15 @@ type LoanServiceAdapter struct {
 	productConfig *ussd.LoanProductConfig
 	fxBufferPct   float64
 	dedupe        *dedupeGate
+	fxOrch        *moneygram.FXOrchestrator // optional; wired post-construction
+}
+
+// SetFXOrchestrator attaches a MoneyGram FXOrchestrator after construction.
+// When set, the orchestrator's cascade (MG primary to YC fallback to stale
+// cache) is preferred over the per-provider Quoter for entry-rate quoting.
+// Pass nil to detach.
+func (a *LoanServiceAdapter) SetFXOrchestrator(orch *moneygram.FXOrchestrator) {
+	a.fxOrch = orch
 }
 
 // FXConfig tunes the entry-rate quoting that happens just before the loan is
@@ -131,8 +141,8 @@ func (a *LoanServiceAdapter) GetProductConfig() *ussd.LoanProductConfig {
 }
 
 // RequestLoan implements ussd.LoanService. It orchestrates the full loan
-// disbursement cycle: eligibility → create → approve → vault borrow → disburse
-// → off-ramp → notify.
+// disbursement cycle: eligibility to create to approve to vault borrow to disburse
+// to off-ramp to notify.
 func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequest) (interface{}, error) {
 	start := time.Now()
 
@@ -183,7 +193,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	// and bake the buffer in. The result is recorded on the loan after Create
 	// for downstream drift detection; we do not gate creation on a successful
 	// quote — providers without a Quoter still need to be initiable.
-	entryRate, entryRateSource := a.requoteEntryRate(ctx, providerOpts, req.LocalCurrency)
+	entryRate, entryRateSource, entryBufferPct := a.requoteEntryRate(ctx, providerOpts, req.LocalCurrency, req.CountryCode)
 
 	// Step 1: Query dynamic vault APR; fall back to product rate.
 	interestRateBps := a.productConfig.InterestRateBps
@@ -191,7 +201,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	if err != nil {
 		a.logger.Warn("failed to fetch vault APR, using fallback", "error", err)
 	} else if aprWad > 0 {
-		interestRateBps = int32(aprWad / 1e14) // WAD (1e18) → bps (1e4)
+		interestRateBps = int32(aprWad / 1e14) // WAD (1e18) to bps (1e4)
 	}
 
 	// Step 2: Create loan record.
@@ -221,7 +231,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	// Step 2a: Record entry-rate audit fields + requested local amount on
 	// the freshly created loan so the poller / refund matcher have the
 	// numbers the user saw at quote time.
-	a.persistEntryRate(ctx, loanID, entryRate, entryRateSource, req.LocalAmount, req.ChildAccountIndex)
+	a.persistEntryRate(ctx, loanID, entryRate, entryRateSource, entryBufferPct, req.LocalAmount, req.ChildAccountIndex)
 
 	// Step 3: Auto-approve.
 	// Use the nil UUID for system auto-approvals (approved_by is UUID in the DB).
@@ -485,41 +495,59 @@ func (a *LoanServiceAdapter) buildProviderOptions(payoutMethod string, req *ussd
 	}
 }
 
-// requoteEntryRate asks the resolved provider's Quoter for a fresh rate and
-// applies the configured safety buffer. Returns (rate, source) — source is
-// either the provider ID or "fallback" when the provider doesn't implement
-// Quoter or the quote fails. The returned rate is always non-negative; a
-// zero rate signals "no usable quote" and callers should skip persistence.
-func (a *LoanServiceAdapter) requoteEntryRate(ctx context.Context, opts offramp.ProviderOptions, currency string) (float64, string) {
+// requoteEntryRate asks for a fresh rate and bakes the safety buffer in.
+// Returns (rate, source, bufferPct). The FXOrchestrator path is preferred
+// when wired: it cascades MG primary to YC fallback to stale cache and
+// applies its own buffers (different for primary vs fallback). When the
+// orchestrator isn't set, we fall back to the resolved provider's Quoter
+// and the adapter's flat fxBufferPct. A zero rate signals "no usable
+// quote" — callers should skip persistence.
+func (a *LoanServiceAdapter) requoteEntryRate(
+	ctx context.Context,
+	opts offramp.ProviderOptions,
+	currency, countryCode string,
+) (float64, string, float64) {
 	if currency == "" {
-		return 0, ""
+		return 0, "", 0
 	}
+
+	if a.fxOrch != nil {
+		res, err := a.fxOrch.Quote(ctx, moneygram.FXQuoteRequest{
+			OriginatingCountry: "USA",
+			DestinationCountry: stellaranchor.CountryISO3(countryCode),
+			SendCurrency:       "USD",
+			ReceiveCurrency:    currency,
+		})
+		if err == nil && res != nil && res.Rate > 0 {
+			return res.Rate, res.Source, res.BufferPct
+		}
+		a.logger.Warn("FX orchestrator quote failed, falling back to provider Quoter",
+			"currency", currency, "error", err)
+	}
+
 	p, err := a.offRamps.Resolve(offramp.Request{Options: opts})
 	if err != nil {
 		a.logger.Warn("entry-rate re-quote: registry resolve failed", "error", err)
-		return 0, ""
+		return 0, "", 0
 	}
 	quoter, ok := p.(offramp.Quoter)
 	if !ok {
-		// Provider doesn't expose Quoter — not an error, just leave entry
-		// rate unrecorded.
-		return 0, ""
+		return 0, "", 0
 	}
 	q, err := quoter.Quote(ctx, offramp.QuoteRequest{Currency: currency})
 	if err != nil {
 		a.logger.Warn("entry-rate re-quote failed",
 			"provider", p.ID(), "currency", currency, "error", err)
-		return 0, ""
+		return 0, "", 0
 	}
 	rate := q.BuyRate
 	if rate == 0 {
 		rate = q.Rate
 	}
 	if rate <= 0 {
-		return 0, ""
+		return 0, "", 0
 	}
-	buffered := rate * (1.0 - a.fxBufferPct)
-	return buffered, string(p.ID())
+	return rate * (1.0 - a.fxBufferPct), string(p.ID()), a.fxBufferPct
 }
 
 // persistEntryRate writes the entry-rate audit fields and the requested
@@ -532,6 +560,7 @@ func (a *LoanServiceAdapter) persistEntryRate(
 	loanID string,
 	entryRate float64,
 	entryRateSource string,
+	entryBufferPct float64,
 	localAmountCents int64,
 	childAccountIndex uint32,
 ) {
@@ -547,8 +576,8 @@ func (a *LoanServiceAdapter) persistEntryRate(
 		req.EntryRateSource = &v
 		any = true
 	}
-	if a.fxBufferPct > 0 {
-		v := a.fxBufferPct
+	if entryBufferPct > 0 {
+		v := entryBufferPct
 		req.EntryBufferPct = &v
 		any = true
 	}
@@ -737,13 +766,13 @@ func (a *LoanServiceAdapter) GetUserLoans(ctx context.Context, userID string) ([
 // approves the request (the amount has already been validated).
 func (a *LoanServiceAdapter) CheckLoanEligibility(ctx context.Context, userID string, amount int64, duration int) (*ussd.LoanApproval, error) {
 	// Fetch dynamic APR from vault; fall back to product rate.
-	fallbackRate := float64(a.productConfig.InterestRateBps) / 10000.0 // bps → decimal
+	fallbackRate := float64(a.productConfig.InterestRateBps) / 10000.0 // bps to decimal
 	interestRate := fallbackRate
 	aprWad, err := a.stellarSvc.GetBorrowAPR(ctx)
 	if err != nil {
 		a.logger.Warn("failed to fetch vault APR for eligibility, using fallback", "error", err)
 	} else if aprWad > 0 {
-		interestRate = float64(aprWad) / 1e18 // WAD → decimal (e.g. 0.08 for 8%)
+		interestRate = float64(aprWad) / 1e18 // WAD to decimal (e.g. 0.08 for 8%)
 	}
 
 	a.logger.Info("eligibility check",
@@ -756,7 +785,7 @@ func (a *LoanServiceAdapter) CheckLoanEligibility(ctx context.Context, userID st
 	return &ussd.LoanApproval{
 		Approved:     true,
 		Reason:       "approved",
-		InterestRate: interestRate * 100, // decimal → percentage (e.g. 8.0 for 8%)
+		InterestRate: interestRate * 100, // decimal to percentage (e.g. 8.0 for 8%)
 	}, nil
 }
 

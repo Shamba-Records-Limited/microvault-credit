@@ -28,6 +28,7 @@ var (
 	ErrFailedToGetLoanByWithdrawMemo  = errors.New("failed to get loan by ramp withdraw memo")
 	ErrFailedToGetLoanByExternalRef   = errors.New("failed to get loan by ramp external ref")
 	ErrFailedToGetActiveMGLoans       = errors.New("failed to get active MoneyGram loans")
+	ErrFailedToGetActiveByProvider    = errors.New("failed to get active loans by provider")
 )
 
 // LoanRepository defines the interface for loanRespository data access.

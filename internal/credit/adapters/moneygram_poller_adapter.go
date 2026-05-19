@@ -128,12 +128,12 @@ func (a *MoneyGramPollerAdapter) RecordTransactionUpdate(ctx context.Context, lo
 	return nil
 }
 
-// RecordSendUSDC logs the treasury → MG anchor tx hash. There is no
+// RecordSendUSDC logs the treasury to MG anchor tx hash. There is no
 // dedicated column on loans for this yet, and the mgpoller already uses
 // MG's own tx.stellar_transaction_id as the idempotency marker, so logging
 // here is sufficient for audit until a column is added.
 func (a *MoneyGramPollerAdapter) RecordSendUSDC(_ context.Context, loanID string, txHash string) error {
-	a.logger.Info("treasury → MoneyGram USDC send recorded",
+	a.logger.Info("treasury to MoneyGram USDC send recorded",
 		"loan_id", loanID, "tx_hash", txHash)
 	return nil
 }

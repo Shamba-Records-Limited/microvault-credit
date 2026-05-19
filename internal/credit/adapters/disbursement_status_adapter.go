@@ -93,14 +93,14 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 	// Trigger vault repay when USDC is confirmed to still be in treasury.
 	switch status {
 	case yellowcard.DisbursementComplete:
-		// Fiat complete: YC fronted fiat, USDC still in treasury → repay.
-		// Direct complete: USDC sent to YC wallet → do NOT repay.
+		// Fiat complete: YC fronted fiat, USDC still in treasury to repay.
+		// Direct complete: USDC sent to YC wallet to do NOT repay.
 		if loan.SettlementMethod != nil && *loan.SettlementMethod == "fiat" {
 			a.repayVaultIfNeeded(ctx, loan, "fiat_complete")
 		}
 	case yellowcard.DisbursementFailed:
-		// Fiat failed: USDC never left treasury → repay.
-		// Direct failed: USDC is at YC awaiting refund → do NOT repay (RefundPoller handles).
+		// Fiat failed: USDC never left treasury to repay.
+		// Direct failed: USDC is at YC awaiting refund to do NOT repay (RefundPoller handles).
 		if loan.SettlementMethod == nil || *loan.SettlementMethod != "direct" {
 			a.repayVaultIfNeeded(ctx, loan, "fiat_failed")
 		}

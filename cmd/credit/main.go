@@ -141,40 +141,36 @@ func main() {
 	// ---- 9. Treasury transfer bridge ----
 	treasuryTransfer := ussdadapters.NewStellarTreasuryTransfer(stellarSvc, logger)
 
-	// ---- 10. Off-ramp registry ----
-	// YellowCard is wired as the mobile-money default. MoneyGram is added
-	// alongside in the cash-pickup wiring block below when REST + SEP-1
-	// config is present.
-	offRampSvc := ussdadapters.NewYellowCardOffRampAdapter(ussdadapters.YellowCardOffRampConfig{
+	// ---- 10. Off-ramp adapters ----
+	// Both YellowCard (mobile money) and MoneyGram (cash pickup) are
+	// platform defaults — no env-gate. Each provider is built and
+	// registered once; the registry drives per-request dispatch inside
+	// LoanServiceAdapter, the YC adapter is passed directly to the YC-
+	// specific refund poller and rate service, and the FXOrchestrator
+	// cascades MG to YC for rate quoting inside the loan adapter.
+
+	// 10a. YellowCard off-ramp adapter
+	ycOffRamp := ussdadapters.NewYellowCardOffRampAdapter(ussdadapters.YellowCardOffRampConfig{
 		Adapter:      ycAdapter,
 		Treasury:     treasuryTransfer,
 		BusinessID:   cfg.Payments.YellowCard.BusinessID,
 		BusinessName: cfg.Payments.YellowCard.BusinessName,
 		Logger:       logger,
 	})
-	offRampRegistry := offramp.NewRegistry()
-	if err := offRampRegistry.Register(offRampSvc); err != nil {
-		log.Fatalf("Failed to register YellowCard off-ramp: %v", err)
-	}
-	if err := offRampRegistry.Alias(offramp.PayoutMethodMobileMoney, offramp.ProviderYellowCard); err != nil {
-		log.Fatalf("Failed to alias mobile_money → yellowcard: %v", err)
-	}
 
-	// ---- 10a. MoneyGram cash-pickup adapter ----
-	// MG is the platform's default cash-pickup anchor: we always fetch the
-	// anchor's TOML, validate it against the pinned signing key + network
-	// passphrase, construct the SDK client, register the adapter, and alias
-	// cash_pickup → moneygram. Boot fails loudly if any of that breaks.
+	// 10b. MoneyGram client — fetch TOML, pin signing key + USDC issuer,
+	// construct the SDK. Boot fails loudly if any step breaks.
 	if err := cfg.Payments.MoneyGram.Validate(); err != nil {
 		log.Fatalf("MoneyGram config invalid: %v", err)
 	}
-	tomlCtx, tomlCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	mgTOML, err := stellaranchor.FetchTOML(tomlCtx, nil, cfg.Payments.MoneyGram.HomeDomain)
-	tomlCancel()
+	mgInitCtx, mgInitCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer mgInitCancel()
+
+	tomlDoc, err := stellaranchor.FetchTOML(mgInitCtx, nil, cfg.Payments.MoneyGram.HomeDomain)
 	if err != nil {
-		log.Fatalf("MoneyGram TOML fetch failed for %s: %v", cfg.Payments.MoneyGram.HomeDomain, err)
+		log.Fatalf("MoneyGram TOML fetch failed: %v", err)
 	}
-	if err := mgTOML.Validate(stellaranchor.ValidateOptions{
+	if err := tomlDoc.Validate(stellaranchor.ValidateOptions{
 		ExpectedNetworkPassphrase: cfg.Payments.MoneyGram.NetworkPassphrase,
 		ExpectedSigningKey:        cfg.Payments.MoneyGram.ServerSigningKey,
 		ExpectedUSDCIssuer:        cfg.Payments.MoneyGram.USDCIssuer,
@@ -182,150 +178,82 @@ func main() {
 		log.Fatalf("MoneyGram TOML validation failed: %v", err)
 	}
 
-	// TransferServerURL override from env wins over the TOML; otherwise
-	// fall back to whatever the anchor publishes.
+	// MONEYGRAM_TRANSFER_SERVER_URL override wins over TOML; otherwise
+	// trust the anchor's published TRANSFER_SERVER_SEP0024.
 	transferServerURL := cfg.Payments.MoneyGram.TransferServerURL
 	if transferServerURL == "" {
-		transferServerURL = mgTOML.TransferServerSEP24
+		transferServerURL = tomlDoc.TransferServerSEP24
 	}
 
-	mgCfg := moneygram.Config{
+	mgClient, err := moneygram.New(moneygram.Config{
 		HomeDomain:        cfg.Payments.MoneyGram.HomeDomain,
-		WebAuthEndpoint:   mgTOML.WebAuthEndpoint,
+		WebAuthEndpoint:   tomlDoc.WebAuthEndpoint,
 		TransferServerURL: transferServerURL,
 		ServerSigningKey:  cfg.Payments.MoneyGram.ServerSigningKey,
 		NetworkPassphrase: cfg.Payments.MoneyGram.NetworkPassphrase,
 		USDCIssuer:        cfg.Payments.MoneyGram.USDCIssuer,
 		TreasurySecret:    cfg.Stellar.TreasurySecretKey,
-		Logger:            logger,
-	}
-	if cfg.Payments.MoneyGram.HasRESTCredentials() {
-		mgCfg.REST = moneygram.RESTConfig{
+		REST: moneygram.RESTConfig{
 			BaseURL:       cfg.Payments.MoneyGram.FXRateURL,
 			OAuthTokenURL: cfg.Payments.MoneyGram.OAuthURL,
 			ClientID:      cfg.Payments.MoneyGram.ClientID,
 			ClientSecret:  cfg.Payments.MoneyGram.ClientSecret,
-		}
-	}
-	mgClient, err := moneygram.New(mgCfg)
+			Scope:         "fx_rate",
+		},
+		Logger: logger,
+	})
 	if err != nil {
-		log.Fatalf("MoneyGram client construction failed: %v", err)
+		log.Fatalf("MoneyGram client init failed: %v", err)
 	}
-	mgAdapter, err := ussdadapters.NewMoneyGramOffRampAdapter(ussdadapters.MoneyGramOffRampConfig{
+
+	// 10c. MoneyGram off-ramp adapter
+	mgOffRamp, err := ussdadapters.NewMoneyGramOffRampAdapter(ussdadapters.MoneyGramOffRampConfig{
 		Client: mgClient,
 		Logger: logger,
 	})
 	if err != nil {
-		log.Fatalf("MoneyGram off-ramp adapter construction failed: %v", err)
+		log.Fatalf("MoneyGram adapter init failed: %v", err)
 	}
-	if err := offRampRegistry.Register(mgAdapter); err != nil {
+	logger.Info("moneygram off-ramp wired",
+		"home_domain", cfg.Payments.MoneyGram.HomeDomain,
+		"has_rest_credentials", cfg.Payments.MoneyGram.HasRESTCredentials(),
+	)
+
+	// 10d. FX orchestrator: MG primary, YC fallback, stale cache last resort.
+	ycFallback := moneygram.FallbackRateFunc(func(ctx context.Context, currency string) (float64, error) {
+		rates, err := ycAdapter.GetRates(ctx, currency)
+		if err != nil {
+			return 0, err
+		}
+		if len(rates) == 0 {
+			return 0, fmt.Errorf("yellowcard: no rates for %s", currency)
+		}
+		return rates[0].Sell, nil
+	})
+	fxOrch, err := mgClient.NewFXOrchestrator(ycFallback, moneygram.FXOrchestratorConfig{})
+	if err != nil {
+		log.Fatalf("MoneyGram FX orchestrator init failed: %v", err)
+	}
+	logger.Info("moneygram FX orchestrator wired",
+		"primary_active", mgClient.HasFXRate(),
+		"fallback_active", true,
+	)
+
+	// 10e. Registry — drives per-request provider dispatch in LoanServiceAdapter.
+	offRampRegistry := offramp.NewRegistry()
+	if err := offRampRegistry.Register(ycOffRamp); err != nil {
+		log.Fatalf("Failed to register YellowCard off-ramp: %v", err)
+	}
+	if err := offRampRegistry.Register(mgOffRamp); err != nil {
 		log.Fatalf("Failed to register MoneyGram off-ramp: %v", err)
 	}
+	if err := offRampRegistry.Alias(offramp.PayoutMethodMobileMoney, offramp.ProviderYellowCard); err != nil {
+		log.Fatalf("Failed to alias mobile_money to yellowcard: %v", err)
+	}
 	if err := offRampRegistry.Alias(offramp.PayoutMethodCashPickup, offramp.ProviderMoneyGram); err != nil {
-		log.Fatalf("Failed to alias cash_pickup → moneygram: %v", err)
-	}
-	log.Printf("MoneyGram cash-pickup registered (home: %s, REST: %t)",
-		cfg.Payments.MoneyGram.HomeDomain, cfg.Payments.MoneyGram.HasRESTCredentials())
-
-	// MoneyGram cash-pickup off-ramp is opt-in via MONEYGRAM_ENABLED. When
-	// disabled, the routing service falls back to YC for everything.
-	var mgOffRamp ussdadapters.OffRampService
-	var fxOrch *moneygram.FXOrchestrator
-	var mgClient *moneygram.Client
-	if cfg.Payments.MoneyGram.Enabled {
-		if err := cfg.Payments.MoneyGram.Validate(); err != nil {
-			log.Fatalf("MoneyGram config invalid: %v", err)
-		}
-
-		// Always fetch and validate the TOML at boot so the SIGNING_KEY,
-		// passphrase, and USDC issuer are pinned to env-configured expectations.
-		// An explicit MONEYGRAM_TRANSFER_SERVER_URL override skips trusting
-		// the TOML's TRANSFER_SERVER_SEP0024 — useful for staging — but
-		// validation still runs to detect rotations.
-		mgInitCtx, mgInitCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer mgInitCancel()
-
-		tomlDoc, err := moneygram.FetchTOML(mgInitCtx, nil, cfg.Payments.MoneyGram.HomeDomain)
-		if err != nil {
-			log.Fatalf("MoneyGram TOML fetch failed: %v", err)
-		}
-		if err := tomlDoc.Validate(moneygram.ValidateOptions{
-			ExpectedNetworkPassphrase: cfg.Payments.MoneyGram.NetworkPassphrase,
-			ExpectedSigningKey:        cfg.Payments.MoneyGram.ServerSigningKey,
-			ExpectedUSDCIssuer:        cfg.Payments.MoneyGram.USDCIssuer,
-		}); err != nil {
-			log.Fatalf("MoneyGram TOML validation failed: %v", err)
-		}
-
-		transferServerURL := cfg.Payments.MoneyGram.TransferServerURL
-		if transferServerURL == "" {
-			transferServerURL = tomlDoc.TransferServerSEP24
-		}
-
-		mgClient, err = moneygram.New(moneygram.Config{
-			HomeDomain:        cfg.Payments.MoneyGram.HomeDomain,
-			WebAuthEndpoint:   tomlDoc.WebAuthEndpoint,
-			TransferServerURL: transferServerURL,
-			ServerSigningKey:  cfg.Payments.MoneyGram.ServerSigningKey,
-			NetworkPassphrase: cfg.Payments.MoneyGram.NetworkPassphrase,
-			USDCIssuer:        cfg.Payments.MoneyGram.USDCIssuer,
-			TreasurySecret:    cfg.Stellar.TreasurySecretKey,
-			REST: moneygram.RESTConfig{
-				BaseURL:       cfg.Payments.MoneyGram.FXRateURL,
-				OAuthTokenURL: cfg.Payments.MoneyGram.OAuthURL,
-				ClientID:      cfg.Payments.MoneyGram.ClientID,
-				ClientSecret:  cfg.Payments.MoneyGram.ClientSecret,
-				Scope:         "fx_rate",
-			},
-			Logger: logger,
-		})
-		if err != nil {
-			log.Fatalf("MoneyGram client init failed: %v", err)
-		}
-
-		mgAdapter, err := ussdadapters.NewMoneyGramOffRampAdapter(ussdadapters.MoneyGramOffRampConfig{
-			Client: mgClient,
-			Logger: logger,
-		})
-		if err != nil {
-			log.Fatalf("MoneyGram adapter init failed: %v", err)
-		}
-		mgOffRamp = mgAdapter
-		logger.Info("moneygram off-ramp enabled",
-			"home_domain", cfg.Payments.MoneyGram.HomeDomain,
-			"has_rest_credentials", cfg.Payments.MoneyGram.HasRESTCredentials(),
-		)
-
-		// FX orchestrator: MG primary (when REST creds are wired), YC fallback,
-		// stale cache last resort. Buffers + caps come from defaults — surface
-		// as env vars when ops needs to tune them per environment.
-		ycFallback := moneygram.FallbackRateFunc(func(ctx context.Context, currency string) (float64, error) {
-			rates, err := ycAdapter.GetRates(ctx, currency)
-			if err != nil {
-				return 0, err
-			}
-			if len(rates) == 0 {
-				return 0, fmt.Errorf("yellowcard: no rates for %s", currency)
-			}
-			return rates[0].Sell, nil
-		})
-		fxOrch, err = mgClient.NewFXOrchestrator(ycFallback, moneygram.FXOrchestratorConfig{})
-		if err != nil {
-			log.Fatalf("MoneyGram FX orchestrator init failed: %v", err)
-		}
-		logger.Info("moneygram FX orchestrator wired",
-			"primary_active", mgClient.HasFXRate(),
-			"fallback_active", true,
-		)
+		log.Fatalf("Failed to alias cash_pickup to moneygram: %v", err)
 	}
 
-	// Routing wrapper: dispatches by OffRampRequest.PayoutMethod. Empty
-	// PayoutMethod defaults to mobile money for back-compat with USSD code
-	// paths that don't set it.
-	offRampSvc, err := ussdadapters.NewRoutingOffRampService(ycOffRamp, mgOffRamp)
-	if err != nil {
-		log.Fatalf("Failed to wire off-ramp router: %v", err)
-	}
 
 	// ---- 10b. User + Account + Transaction services ----
 	userSvc := user.NewService(coreRepos.User)
@@ -377,7 +305,9 @@ func main() {
 	)
 
 	// ---- 12b. Rate service adapter ----
-	rateSvc := adapters.NewRateServiceAdapter(offRampSvc)
+	// YC is the canonical Quoter for the USSD pre-loan rate display. MG's
+	// FX cascade is consumed inside the loan adapter, not here.
+	rateSvc := adapters.NewRateServiceAdapter(ycOffRamp)
 
 	// ---- 12c. Account notifier + PIN service ----
 	accountNotifier := mvnotifications.NewSMSAccountNotifier(notifier, nil)
@@ -414,7 +344,7 @@ func main() {
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())
 	refundPoller := webhook.NewRefundPoller(
 		ycAdapter,
-		offRampSvc,
+		ycOffRamp,
 		disbursementAdapter,
 		disbursementAdapter,
 		nil, // AlertService — ops alerts via logging for now
@@ -424,8 +354,8 @@ func main() {
 	go refundPoller.Start(pollerCtx)
 
 	// MoneyGram SEP-24 lifecycle poller.
-	// Drives pending_user_transfer_start → SendUSDC, pending_user_transfer_complete
-	// → backfill amount_out + cash-pickup reference, terminal → finalise.
+	// Drives pending_user_transfer_start to SendUSDC, pending_user_transfer_complete
+	// to backfill amount_out + cash-pickup reference, terminal to finalise.
 	mgPollerAdapter, err := adapters.NewMoneyGramPollerAdapter(repos.Loan, loanSvc, logger)
 	if err != nil {
 		log.Fatalf("MoneyGram poller adapter construction failed: %v", err)
@@ -435,7 +365,7 @@ func main() {
 		mgPollerAdapter,     // LoanFetcher + LoanRecorder
 		mgPollerAdapter,     // LoanRecorder (same impl)
 		disbursementAdapter, // DisbursementUpdater (reused from YC flow)
-		treasuryTransfer,    // TreasuryTransfer for USDC → MG anchor
+		treasuryTransfer,    // TreasuryTransfer for USDC to MG anchor
 		nil,                 // AlertService — log-only for now
 		mgpoller.DefaultConfig(),
 		logger,
