@@ -12,11 +12,18 @@ import (
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd"
-	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
 	"github.com/Shamba-Records-Limited/microvault/pkg/models"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
 )
+
+// DefaultFXBufferPct is the safety margin applied to the re-quoted FX rate
+// when persisting entry_rate_used on the loan. 2% is the operating norm
+// inherited from the integration plan; override via FXConfig if needed.
+const DefaultFXBufferPct = 0.02
 
 // Compile-time check.
 var _ ussd.LoanService = (*LoanServiceAdapter)(nil)
@@ -30,11 +37,21 @@ type LoanServiceAdapter struct {
 	loanSvc       loan.Service
 	productSvc    loanproduct.Service
 	stellarSvc    stellar.Service
-	offRampSvc    ussdadapters.OffRampService
+	offRamps      *offramp.Registry
 	loanNotifier  contracts.LoanNotifier
 	txnSvc        transaction.Service
 	logger        *slog.Logger
 	productConfig *ussd.LoanProductConfig
+	fxBufferPct   float64
+	dedupe        *dedupeGate
+}
+
+// FXConfig tunes the entry-rate quoting that happens just before the loan is
+// initiated against a provider. BufferPct is applied multiplicatively to the
+// quoted buy rate (entry_rate_used = buy_rate * (1 - BufferPct)) and recorded
+// on the loan for downstream drift detection.
+type FXConfig struct {
+	BufferPct float64 // 0.02 = 2 %. Falls back to DefaultFXBufferPct when ≤ 0.
 }
 
 // NewLoanServiceAdapter creates a new [LoanServiceAdapter].
@@ -46,11 +63,19 @@ func NewLoanServiceAdapter(
 	loanSvc loan.Service,
 	productSvc loanproduct.Service,
 	stellarSvc stellar.Service,
-	offRampSvc ussdadapters.OffRampService,
+	offRamps *offramp.Registry,
 	loanNotifier contracts.LoanNotifier,
 	txnSvc transaction.Service,
+	fxCfg FXConfig,
 	logger *slog.Logger,
 ) (*LoanServiceAdapter, error) {
+	if offRamps == nil {
+		return nil, fmt.Errorf("offramp registry is required")
+	}
+	bufferPct := fxCfg.BufferPct
+	if bufferPct <= 0 {
+		bufferPct = DefaultFXBufferPct
+	}
 	// Load the highest-priority active product (ordered by priority_order ASC).
 	products, err := productSvc.GetActive(ctx, services.Pagination{Page: 1, PageSize: 1})
 	if err != nil {
@@ -89,11 +114,13 @@ func NewLoanServiceAdapter(
 		loanSvc:       loanSvc,
 		productSvc:    productSvc,
 		stellarSvc:    stellarSvc,
-		offRampSvc:    offRampSvc,
+		offRamps:      offRamps,
 		loanNotifier:  loanNotifier,
 		txnSvc:        txnSvc,
 		logger:        logger,
 		productConfig: cfg,
+		fxBufferPct:   bufferPct,
+		dedupe:        newDedupeGate(60 * time.Second),
 	}, nil
 }
 
@@ -112,6 +139,22 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	// Amount validation is handled by the USSD handler against the loan product
 	// config (fiat-denominated limits). By this point the request is pre-approved.
 
+	payoutMethod := req.PayoutMethod
+	if payoutMethod == "" {
+		payoutMethod = offramp.PayoutMethodMobileMoney
+	}
+
+	// Dedupe gate — same (user, method, amount) within 60s is treated as a
+	// USSD/carrier replay and rejected before any state mutates.
+	if !a.dedupe.check(dedupeKey(req.UserID, payoutMethod, req.PrincipalAmount)) {
+		a.logger.Warn("duplicate loan request suppressed",
+			"user_id", req.UserID,
+			"payout_method", payoutMethod,
+			"amount_stroops", req.PrincipalAmount,
+		)
+		return nil, ErrDuplicateLoanRequest
+	}
+
 	// Use KES for notifications when local amount is available.
 	notifyAmount := float64(req.PrincipalAmount) / 1e7 // fallback USD
 	notifyCurrency := "USD"
@@ -126,7 +169,21 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		"amount_stroops", req.PrincipalAmount,
 		"local_amount_cents", req.LocalAmount,
 		"currency", req.LocalCurrency,
+		"payout_method", payoutMethod,
 	)
+
+	// Build provider-specific options once, ahead of any FX work, so the
+	// resolved Provider is the one that will both quote and initiate.
+	providerOpts, err := a.buildProviderOptions(payoutMethod, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Re-quote FX against the chosen provider's Quoter (if it exposes one)
+	// and bake the buffer in. The result is recorded on the loan after Create
+	// for downstream drift detection; we do not gate creation on a successful
+	// quote — providers without a Quoter still need to be initiable.
+	entryRate, entryRateSource := a.requoteEntryRate(ctx, providerOpts, req.LocalCurrency)
 
 	// Step 1: Query dynamic vault APR; fall back to product rate.
 	interestRateBps := a.productConfig.InterestRateBps
@@ -160,6 +217,11 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		"amount", req.PrincipalAmount,
 		"asset", req.PrincipalAsset,
 	)
+
+	// Step 2a: Record entry-rate audit fields + requested local amount on
+	// the freshly created loan so the poller / refund matcher have the
+	// numbers the user saw at quote time.
+	a.persistEntryRate(ctx, loanID, entryRate, entryRateSource, req.LocalAmount, req.ChildAccountIndex)
 
 	// Step 3: Auto-approve.
 	// Use the nil UUID for system auto-approvals (approved_by is UUID in the DB).
@@ -259,9 +321,9 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		a.logger.Info("loan marked disbursed", "loan_id", loanID, "vault_tx_hash", borrowResp.TxHash)
 	}
 
-	// Step 6: Initiate off-ramp.
+	// Step 6: Initiate off-ramp against the resolved provider.
 	amountUSD := float64(req.PrincipalAmount) / 1e7
-	offRampResult, err := a.offRampSvc.InitiateOffRamp(ctx, ussdadapters.OffRampRequest{
+	offrampReq := offramp.Request{
 		LoanID:           loanID,
 		UserID:           req.UserID,
 		RecipientName:    req.RecipientName,
@@ -271,9 +333,20 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		CountryCode:      req.CountryCode,
 		NetworkCode:      req.NetworkCode,
 		NetworkName:      req.NetworkName,
-		SettlementMethod: "direct",
 		IdempotencyKey:   loanID,
-	})
+		PayoutMethod:     payoutMethod,
+		Options:          providerOpts,
+	}
+	provider, resolveErr := a.offRamps.Resolve(offrampReq)
+	if resolveErr != nil {
+		a.logger.Error("off-ramp registry resolve failed",
+			"loan_id", loanID,
+			"payout_method", payoutMethod,
+			"error", resolveErr,
+		)
+		return nil, fmt.Errorf("resolve off-ramp provider: %w", resolveErr)
+	}
+	offRampResult, err := provider.Initiate(ctx, offrampReq)
 	offRampFailed := err != nil
 	if offRampFailed {
 		a.logger.Error("off-ramp failed — vault borrow succeeded, USDC in treasury, fiat not disbursed",
@@ -344,86 +417,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			"amount_local", offRampResult.AmountLocal,
 			"currency", offRampResult.LocalCurrency,
 		)
-
-		// Slippage guard (log-only, no blocking).
-		if req.LocalAmount > 0 {
-			deviation := (offRampResult.AmountLocal - float64(req.LocalAmount)/100.0) / (float64(req.LocalAmount) / 100.0)
-			if deviation < -0.02 || deviation > 0.02 {
-				a.logger.Warn("SLIPPAGE ALERT: >2% deviation",
-					"loan_id", loanID,
-					"expected_local", float64(req.LocalAmount)/100.0,
-					"actual_local", offRampResult.AmountLocal,
-					"deviation_pct", deviation*100,
-				)
-			}
-		}
-
-		// Step 7: Update loan with off-ramp details, fees, and conversion data.
-		rampProvider := "yellowcard"
-		rampFiatAmount := int64(offRampResult.AmountLocal * 100) // cents
-		actualMethod := offRampResult.SettlementMethod
-		rampDisbStatus := "processing"
-		feeUSD := int64(offRampResult.Fee * 100)       // USD cents
-		feeLocal := int64(offRampResult.FeeLocal * 100) // KES cents
-
-		updateReq := loan.UpdateLoanRequest{
-			RampProvider:       &rampProvider,
-			RampRequestID:      &offRampResult.RequestID,
-			RampSequenceID:     &offRampResult.SequenceID,
-			RampFiatAmount:     &rampFiatAmount,
-			RampFiatCurr:       &offRampResult.LocalCurrency,
-			SettlementMethod:   &actualMethod,
-			DisbursementStatus: &rampDisbStatus,
-			RampFeeUSD:         &feeUSD,
-			RampFeeLocal:       &feeLocal,
-		}
-
-		// Persist conversion data when local currency info is available.
-		if req.ConversionRate > 0 {
-			disbursementRateBps := int64(req.ConversionRate * 10000)
-			updateReq.DisbursementRateBps = &disbursementRateBps
-		}
-		if req.LocalAmount > 0 {
-			updateReq.DisbursementAmtKES = &req.LocalAmount
-			// Indicative repayment in KES: total USDC owed → KES at current rate.
-			totalUSDC := req.PrincipalAmount
-			if createResp.TotalAmount != nil {
-				totalUSDC = *createResp.TotalAmount
-			}
-			repaymentKES := int64(float64(totalUSDC) / 1e7 * req.ConversionRate * 100)
-			updateReq.RepaymentAmtKES = &repaymentKES
-		}
-
-		_, updateErr := a.loanSvc.Update(ctx, loanID, updateReq)
-		if updateErr != nil {
-			a.logger.Warn("failed to record off-ramp details", "loan_id", loanID, "error", updateErr)
-		} else {
-			a.logger.Info("loan updated with off-ramp details", "loan_id", loanID)
-		}
-
-		// Record off-ramp transaction.
-		if a.txnSvc != nil {
-			offRampDesc := fmt.Sprintf("Off-ramp via YellowCard (%s)", offRampResult.SettlementMethod)
-			provider := "yellowcard"
-			_, txnErr := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
-				UserID:           &req.UserID,
-				AccountID:        &req.AccountID,
-				LoanID:           &loanID,
-				TxType:           models.TxTypeOffRamp,
-				TxCategory:       models.TxCategoryOffChain,
-				Amount:           rampFiatAmount,
-				Asset:            offRampResult.LocalCurrency,
-				ExternalID:       &offRampResult.RequestID,
-				ExternalProvider: &provider,
-				Description:      &offRampDesc,
-			})
-			if txnErr != nil {
-				a.logger.Warn("failed to record off-ramp transaction", "loan_id", loanID, "error", txnErr)
-			}
-		}
-
-		// Disbursement SMS is sent by the webhook handler (DisbursementStatusAdapter)
-		// when YellowCard confirms completion — not here, to avoid duplicates.
+		a.recordSuccessfulInitiate(ctx, loanID, payoutMethod, provider.ID(), offRampResult, req, createResp)
 	}
 
 	duration := time.Since(start)
@@ -435,9 +429,10 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			"total_duration_ms", duration.Milliseconds(),
 		)
 	} else {
-		a.logger.Info("loan disbursement completed successfully",
+		a.logger.Info("loan off-ramp initiated successfully",
 			"loan_id", loanID,
 			"vault_tx_hash", borrowResp.TxHash,
+			"payout_method", payoutMethod,
 			"offramp_request_id", offRampResult.RequestID,
 			"settlement_method", offRampResult.SettlementMethod,
 			"amount_local", offRampResult.AmountLocal,
@@ -446,14 +441,19 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		)
 	}
 
-	// Return as map for USSD handler type assertions.
+	// Return as map for USSD handler type assertions. For mobile-money the
+	// result is a synchronous disbursement; for cash-pickup it's an
+	// awaiting-user state — the poller advances it later.
 	totalAmount := req.PrincipalAmount
 	if createResp.TotalAmount != nil {
 		totalAmount = *createResp.TotalAmount
 	}
 	status := "disbursed"
-	if offRampFailed {
+	switch {
+	case offRampFailed:
 		status = "offramp_failed"
+	case payoutMethod == offramp.PayoutMethodCashPickup:
+		status = "awaiting_user"
 	}
 	return map[string]interface{}{
 		"id":           loanID,
@@ -461,6 +461,246 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		"status":       status,
 		"total_amount": totalAmount,
 	}, nil
+}
+
+// buildProviderOptions assembles the typed Options payload for the chosen
+// payout method. MoneyGram requires BirthDate + ChildAccountIndex (its
+// adapter rejects nil/wrong-type); YellowCard takes a SettlementMethod.
+func (a *LoanServiceAdapter) buildProviderOptions(payoutMethod string, req *ussd.LoanRequest) (offramp.ProviderOptions, error) {
+	switch payoutMethod {
+	case offramp.PayoutMethodMobileMoney:
+		return yellowcard.Options{
+			SettlementMethod: yellowcard.SettlementMethodDirect,
+		}, nil
+	case offramp.PayoutMethodCashPickup:
+		if req.BirthDate == "" {
+			return nil, fmt.Errorf("cash-pickup requires BirthDate on LoanRequest")
+		}
+		return moneygram.Options{
+			BirthDate:         req.BirthDate,
+			ChildAccountIndex: req.ChildAccountIndex,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported payout method %q", payoutMethod)
+	}
+}
+
+// requoteEntryRate asks the resolved provider's Quoter for a fresh rate and
+// applies the configured safety buffer. Returns (rate, source) — source is
+// either the provider ID or "fallback" when the provider doesn't implement
+// Quoter or the quote fails. The returned rate is always non-negative; a
+// zero rate signals "no usable quote" and callers should skip persistence.
+func (a *LoanServiceAdapter) requoteEntryRate(ctx context.Context, opts offramp.ProviderOptions, currency string) (float64, string) {
+	if currency == "" {
+		return 0, ""
+	}
+	p, err := a.offRamps.Resolve(offramp.Request{Options: opts})
+	if err != nil {
+		a.logger.Warn("entry-rate re-quote: registry resolve failed", "error", err)
+		return 0, ""
+	}
+	quoter, ok := p.(offramp.Quoter)
+	if !ok {
+		// Provider doesn't expose Quoter — not an error, just leave entry
+		// rate unrecorded.
+		return 0, ""
+	}
+	q, err := quoter.Quote(ctx, offramp.QuoteRequest{Currency: currency})
+	if err != nil {
+		a.logger.Warn("entry-rate re-quote failed",
+			"provider", p.ID(), "currency", currency, "error", err)
+		return 0, ""
+	}
+	rate := q.BuyRate
+	if rate == 0 {
+		rate = q.Rate
+	}
+	if rate <= 0 {
+		return 0, ""
+	}
+	buffered := rate * (1.0 - a.fxBufferPct)
+	return buffered, string(p.ID())
+}
+
+// persistEntryRate writes the entry-rate audit fields and the requested
+// local amount + child-account index onto the freshly created loan. Each
+// field is optional; nil values are skipped via the UpdateLoanRequest's
+// pointer semantics. Errors are logged, not returned — this is audit data,
+// not load-bearing for the disbursement path.
+func (a *LoanServiceAdapter) persistEntryRate(
+	ctx context.Context,
+	loanID string,
+	entryRate float64,
+	entryRateSource string,
+	localAmountCents int64,
+	childAccountIndex uint32,
+) {
+	req := loan.UpdateLoanRequest{}
+	any := false
+	if entryRate > 0 {
+		v := entryRate
+		req.EntryRateUsed = &v
+		any = true
+	}
+	if entryRateSource != "" {
+		v := entryRateSource
+		req.EntryRateSource = &v
+		any = true
+	}
+	if a.fxBufferPct > 0 {
+		v := a.fxBufferPct
+		req.EntryBufferPct = &v
+		any = true
+	}
+	if localAmountCents > 0 {
+		v := localAmountCents
+		req.RequestedLocalAmount = &v
+		any = true
+	}
+	if childAccountIndex > 0 {
+		v := int64(childAccountIndex)
+		req.RampChildAccountIndex = &v
+		any = true
+	}
+	if !any {
+		return
+	}
+	if _, err := a.loanSvc.Update(ctx, loanID, req); err != nil {
+		a.logger.Warn("failed to persist entry-rate audit fields",
+			"loan_id", loanID, "error", err)
+	}
+}
+
+// recordSuccessfulInitiate persists the off-ramp results onto the loan,
+// branching on payout method. YellowCard returns a locked AmountLocal +
+// fees that are persisted immediately; MoneyGram returns an interactive
+// URL with no locked amount — the poller backfills those later.
+func (a *LoanServiceAdapter) recordSuccessfulInitiate(
+	ctx context.Context,
+	loanID string,
+	payoutMethod string,
+	providerID offramp.ProviderID,
+	result *offramp.Result,
+	req *ussd.LoanRequest,
+	createResp *loan.LoanResponse,
+) {
+	rampProvider := string(providerID)
+	updateReq := loan.UpdateLoanRequest{
+		RampProvider:   &rampProvider,
+		RampRequestID:  &result.RequestID,
+		RampSequenceID: &result.SequenceID,
+	}
+	if result.SettlementMethod != "" {
+		v := result.SettlementMethod
+		updateReq.SettlementMethod = &v
+	}
+
+	switch payoutMethod {
+	case offramp.PayoutMethodCashPickup:
+		// MG returned the interactive URL; persist what's known and let the
+		// poller backfill amount_out / external_ref / withdraw_memo.
+		mgInitiated := "mg_initiated"
+		updateReq.DisbursementStatus = &mgInitiated
+		if mg, ok := result.Provider.(moneygram.CashPickupPayload); ok {
+			if mg.InteractiveURL != "" {
+				v := mg.InteractiveURL
+				updateReq.RampInteractiveURL = &v
+			}
+		}
+		if _, err := a.loanSvc.Update(ctx, loanID, updateReq); err != nil {
+			a.logger.Warn("failed to record cash-pickup initiation",
+				"loan_id", loanID, "error", err)
+		}
+
+		// SMS user the interactive URL so they can complete KYC.
+		if a.loanNotifier != nil && req.PhoneNumber != "" {
+			if mg, ok := result.Provider.(moneygram.CashPickupPayload); ok && mg.InteractiveURL != "" {
+				notification := contracts.LoanNotification{
+					LoanID:          loanID,
+					PhoneNumber:     req.PhoneNumber,
+					DisplayAmount:   float64(req.PrincipalAmount) / 1e7,
+					DisplayCurrency: "USD",
+					InteractiveURL:  mg.InteractiveURL,
+				}
+				if createResp.LoanNumber != nil {
+					notification.LoanNumber = *createResp.LoanNumber
+				}
+				if smsErr := a.loanNotifier.NotifyLoanCashPickupInitiated(ctx, notification); smsErr != nil {
+					a.logger.Warn("cash-pickup SMS failed",
+						"loan_id", loanID, "error", smsErr)
+				}
+			}
+		}
+
+	default:
+		// Mobile-money: existing YC path — locked AmountLocal + fees.
+		rampFiatAmount := int64(result.AmountLocal * 100) // cents
+		rampDisbStatus := "processing"
+		feeUSD := int64(result.Fee * 100)
+		feeLocal := int64(result.FeeLocal * 100)
+		updateReq.RampFiatAmount = &rampFiatAmount
+		updateReq.RampFiatCurr = &result.LocalCurrency
+		updateReq.DisbursementStatus = &rampDisbStatus
+		updateReq.RampFeeUSD = &feeUSD
+		updateReq.RampFeeLocal = &feeLocal
+
+		// Slippage guard (log-only, no blocking).
+		if req.LocalAmount > 0 {
+			deviation := (result.AmountLocal - float64(req.LocalAmount)/100.0) / (float64(req.LocalAmount) / 100.0)
+			if deviation < -0.02 || deviation > 0.02 {
+				a.logger.Warn("SLIPPAGE ALERT: >2% deviation",
+					"loan_id", loanID,
+					"expected_local", float64(req.LocalAmount)/100.0,
+					"actual_local", result.AmountLocal,
+					"deviation_pct", deviation*100,
+				)
+			}
+		}
+
+		// Persist conversion data when local currency info is available.
+		if req.ConversionRate > 0 {
+			disbursementRateBps := int64(req.ConversionRate * 10000)
+			updateReq.DisbursementRateBps = &disbursementRateBps
+		}
+		if req.LocalAmount > 0 {
+			updateReq.DisbursementAmtKES = &req.LocalAmount
+			totalUSDC := req.PrincipalAmount
+			if createResp.TotalAmount != nil {
+				totalUSDC = *createResp.TotalAmount
+			}
+			repaymentKES := int64(float64(totalUSDC) / 1e7 * req.ConversionRate * 100)
+			updateReq.RepaymentAmtKES = &repaymentKES
+		}
+
+		if _, err := a.loanSvc.Update(ctx, loanID, updateReq); err != nil {
+			a.logger.Warn("failed to record off-ramp details", "loan_id", loanID, "error", err)
+		} else {
+			a.logger.Info("loan updated with off-ramp details", "loan_id", loanID)
+		}
+
+		// Record off-ramp transaction.
+		if a.txnSvc != nil {
+			offRampDesc := fmt.Sprintf("Off-ramp via %s (%s)", providerID, result.SettlementMethod)
+			provName := string(providerID)
+			if _, txnErr := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
+				UserID:           &req.UserID,
+				AccountID:        &req.AccountID,
+				LoanID:           &loanID,
+				TxType:           models.TxTypeOffRamp,
+				TxCategory:       models.TxCategoryOffChain,
+				Amount:           rampFiatAmount,
+				Asset:            result.LocalCurrency,
+				ExternalID:       &result.RequestID,
+				ExternalProvider: &provName,
+				Description:      &offRampDesc,
+			}); txnErr != nil {
+				a.logger.Warn("failed to record off-ramp transaction", "loan_id", loanID, "error", txnErr)
+			}
+		}
+
+		// Disbursement SMS is sent by the webhook handler (DisbursementStatusAdapter)
+		// when YellowCard confirms completion — not here, to avoid duplicates.
+	}
 }
 
 // GetUserLoans implements ussd.LoanService.

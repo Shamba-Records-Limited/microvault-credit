@@ -39,6 +39,18 @@ type UpdateLoanRequest struct {
 	BorrowIndex         *int64  `json:"borrow_index,omitempty"`
 	RampFeeUSD          *int64  `json:"ramp_fee_usd,omitempty"`
 	RampFeeLocal        *int64  `json:"ramp_fee_local,omitempty"`
+
+	// MoneyGram cash-pickup fields.
+	RampInteractiveURL    *string  `json:"ramp_interactive_url,omitempty"`
+	RampExternalRef       *string  `json:"ramp_external_ref,omitempty"`
+	RampMoreInfoURL       *string  `json:"ramp_more_info_url,omitempty"`
+	RampChildAccountIndex *int64   `json:"ramp_child_account_index,omitempty"`
+	EntryRateUsed         *float64 `json:"entry_rate_used,omitempty"`
+	EntryRateSource       *string  `json:"entry_rate_source,omitempty"`
+	EntryBufferPct        *float64 `json:"entry_buffer_pct,omitempty"`
+	RequestedLocalAmount  *int64   `json:"requested_local_amount,omitempty"`
+	RampWithdrawMemo      *string  `json:"ramp_withdraw_memo,omitempty"`
+	RampWithdrawMemoType  *string  `json:"ramp_withdraw_memo_type,omitempty"`
 }
 
 // ApproveLoanRequest represents the request to approve a loan
@@ -103,6 +115,18 @@ type LoanResponse struct {
 	BorrowIndex         *int64     `json:"borrow_index,omitempty"`
 	RampFeeUSD          *int64     `json:"ramp_fee_usd,omitempty"`
 	RampFeeLocal        *int64     `json:"ramp_fee_local,omitempty"`
+
+	RampInteractiveURL    *string  `json:"ramp_interactive_url,omitempty"`
+	RampExternalRef       *string  `json:"ramp_external_ref,omitempty"`
+	RampMoreInfoURL       *string  `json:"ramp_more_info_url,omitempty"`
+	RampChildAccountIndex *int64   `json:"ramp_child_account_index,omitempty"`
+	EntryRateUsed         *float64 `json:"entry_rate_used,omitempty"`
+	EntryRateSource       *string  `json:"entry_rate_source,omitempty"`
+	EntryBufferPct        *float64 `json:"entry_buffer_pct,omitempty"`
+	RequestedLocalAmount  *int64   `json:"requested_local_amount,omitempty"`
+	RampWithdrawMemo      *string  `json:"ramp_withdraw_memo,omitempty"`
+	RampWithdrawMemoType  *string  `json:"ramp_withdraw_memo_type,omitempty"`
+
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 }
