@@ -25,6 +25,9 @@ var (
 	ErrFailedToDeleteLoansByUserID    = errors.New("failed to delete loans by user ID")
 	ErrFailedToGetLoanBySequenceID   = errors.New("failed to get loan by sequence ID")
 	ErrFailedToGetLoansByDisbStatus  = errors.New("failed to get loans by disbursement status")
+	ErrFailedToGetLoanByWithdrawMemo = errors.New("failed to get loan by ramp withdraw memo")
+	ErrFailedToGetLoanByExternalRef  = errors.New("failed to get loan by ramp external ref")
+	ErrFailedToGetActiveMGLoans      = errors.New("failed to get active MoneyGram loans")
 )
 
 // LoanRepository defines the interface for loanRespository data access.
@@ -39,6 +42,9 @@ type LoanRepository interface {
 	GetActiveLoansByStatus(ctx context.Context, status string, limit, offset int) ([]*models.Loan, error)
 	GetBySequenceID(ctx context.Context, sequenceID string) (*models.Loan, error)
 	GetByDisbursementStatus(ctx context.Context, status string, limit int) ([]*models.Loan, error)
+	GetByRampWithdrawMemo(ctx context.Context, memo string) (*models.Loan, error)
+	GetByRampExternalRef(ctx context.Context, ref string) (*models.Loan, error)
+	GetActiveMoneyGramLoans(ctx context.Context, limit int) ([]*models.Loan, error)
 
 	// Update operations
 	Update(ctx context.Context, loan *models.Loan) error
@@ -174,6 +180,68 @@ func (r *loanRepository) GetByDisbursementStatus(ctx context.Context, status str
 	return loans, nil
 }
 
+// GetByRampWithdrawMemo retrieves a loan by its SEP-24 withdraw memo. Used by
+// the Stellar ingest worker to match an inbound refund USDC payment back to
+// the originating loan.
+func (r *loanRepository) GetByRampWithdrawMemo(ctx context.Context, memo string) (*models.Loan, error) {
+	var loan models.Loan
+	result := r.db.WithContext(ctx).
+		Preload("User").
+		Where("ramp_withdraw_memo = ? AND deleted_at IS NULL", memo).
+		First(&loan)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil, ErrLoanNotFound
+	}
+	if result.Error != nil {
+		log.Printf("GetByRampWithdrawMemo: database error: %v", result.Error)
+		return nil, ErrFailedToGetLoanByWithdrawMemo
+	}
+	return &loan, nil
+}
+
+// GetByRampExternalRef retrieves a loan by its MoneyGram cash-pickup
+// reference number. Used by the support team to look up a loan from a
+// customer-quoted reference.
+func (r *loanRepository) GetByRampExternalRef(ctx context.Context, ref string) (*models.Loan, error) {
+	var loan models.Loan
+	result := r.db.WithContext(ctx).
+		Preload("User").
+		Where("ramp_external_ref = ? AND deleted_at IS NULL", ref).
+		First(&loan)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil, ErrLoanNotFound
+	}
+	if result.Error != nil {
+		log.Printf("GetByRampExternalRef: database error: %v", result.Error)
+		return nil, ErrFailedToGetLoanByExternalRef
+	}
+	return &loan, nil
+}
+
+// GetActiveMoneyGramLoans returns loans currently being driven by the MG
+// poller — ramp_provider="moneygram" with a non-terminal disbursement_status.
+// Preloads User so the poller has the phone number for drift / failure SMS
+// without a second round-trip.
+func (r *loanRepository) GetActiveMoneyGramLoans(ctx context.Context, limit int) ([]*models.Loan, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	terminal := []string{"completed", "failed", "refund_pending", "refund_received"}
+	var loans []*models.Loan
+	result := r.db.WithContext(ctx).
+		Preload("User").
+		Where("ramp_provider = ? AND disbursement_status NOT IN ? AND deleted_at IS NULL",
+			"moneygram", terminal).
+		Order("created_at ASC").
+		Limit(limit).
+		Find(&loans)
+	if result.Error != nil {
+		log.Printf("GetActiveMoneyGramLoans: database error: %v", result.Error)
+		return nil, ErrFailedToGetActiveMGLoans
+	}
+	return loans, nil
+}
+
 // --- Update Operations ---
 
 // Update updates a loan record.
@@ -211,6 +279,18 @@ func (r *loanRepository) Update(ctx context.Context, loan *models.Loan) error {
 			"borrow_index":            loan.BorrowIndex,
 			"ramp_fee_usd":            loan.RampFeeUSD,
 			"ramp_fee_local":          loan.RampFeeLocal,
+
+			"ramp_interactive_url":      loan.RampInteractiveURL,
+			"ramp_external_ref":         loan.RampExternalRef,
+			"ramp_more_info_url":        loan.RampMoreInfoURL,
+			"ramp_child_account_index":  loan.RampChildAccountIndex,
+			"entry_rate_used":           loan.EntryRateUsed,
+			"entry_rate_source":         loan.EntryRateSource,
+			"entry_buffer_pct":          loan.EntryBufferPct,
+			"requested_local_amount":    loan.RequestedLocalAmount,
+			"ramp_withdraw_memo":        loan.RampWithdrawMemo,
+			"ramp_withdraw_memo_type":   loan.RampWithdrawMemoType,
+
 			"updated_at":              time.Now(),
 		})
 	if result.RowsAffected == 0 {

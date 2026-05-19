@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	_ "github.com/Shamba-Records-Limited/microvault-credit/cmd/credit/docs"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/adapters"
@@ -25,7 +26,11 @@ import (
 	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
 	atussd "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/providers/africastalking"
 	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/stellaranchor"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
+	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/pin"
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
@@ -135,7 +140,10 @@ func main() {
 	// ---- 9. Treasury transfer bridge ----
 	treasuryTransfer := ussdadapters.NewStellarTreasuryTransfer(stellarSvc, logger)
 
-	// ---- 10. Off-ramp adapter ----
+	// ---- 10. Off-ramp registry ----
+	// YellowCard is wired as the mobile-money default. MoneyGram is added
+	// alongside in the cash-pickup wiring block below when REST + SEP-1
+	// config is present.
 	offRampSvc := ussdadapters.NewYellowCardOffRampAdapter(ussdadapters.YellowCardOffRampConfig{
 		Adapter:      ycAdapter,
 		Treasury:     treasuryTransfer,
@@ -143,6 +151,80 @@ func main() {
 		BusinessName: cfg.Payments.YellowCard.BusinessName,
 		Logger:       logger,
 	})
+	offRampRegistry := offramp.NewRegistry()
+	if err := offRampRegistry.Register(offRampSvc); err != nil {
+		log.Fatalf("Failed to register YellowCard off-ramp: %v", err)
+	}
+	if err := offRampRegistry.Alias(offramp.PayoutMethodMobileMoney, offramp.ProviderYellowCard); err != nil {
+		log.Fatalf("Failed to alias mobile_money → yellowcard: %v", err)
+	}
+
+	// ---- 10a. MoneyGram cash-pickup adapter ----
+	// MG is the platform's default cash-pickup anchor: we always fetch the
+	// anchor's TOML, validate it against the pinned signing key + network
+	// passphrase, construct the SDK client, register the adapter, and alias
+	// cash_pickup → moneygram. Boot fails loudly if any of that breaks.
+	if err := cfg.Payments.MoneyGram.Validate(); err != nil {
+		log.Fatalf("MoneyGram config invalid: %v", err)
+	}
+	tomlCtx, tomlCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	mgTOML, err := stellaranchor.FetchTOML(tomlCtx, nil, cfg.Payments.MoneyGram.HomeDomain)
+	tomlCancel()
+	if err != nil {
+		log.Fatalf("MoneyGram TOML fetch failed for %s: %v", cfg.Payments.MoneyGram.HomeDomain, err)
+	}
+	if err := mgTOML.Validate(stellaranchor.ValidateOptions{
+		ExpectedNetworkPassphrase: cfg.Payments.MoneyGram.NetworkPassphrase,
+		ExpectedSigningKey:        cfg.Payments.MoneyGram.ServerSigningKey,
+		ExpectedUSDCIssuer:        cfg.Payments.MoneyGram.USDCIssuer,
+	}); err != nil {
+		log.Fatalf("MoneyGram TOML validation failed: %v", err)
+	}
+
+	// TransferServerURL override from env wins over the TOML; otherwise
+	// fall back to whatever the anchor publishes.
+	transferServerURL := cfg.Payments.MoneyGram.TransferServerURL
+	if transferServerURL == "" {
+		transferServerURL = mgTOML.TransferServerSEP24
+	}
+
+	mgCfg := moneygram.Config{
+		HomeDomain:        cfg.Payments.MoneyGram.HomeDomain,
+		WebAuthEndpoint:   mgTOML.WebAuthEndpoint,
+		TransferServerURL: transferServerURL,
+		ServerSigningKey:  cfg.Payments.MoneyGram.ServerSigningKey,
+		NetworkPassphrase: cfg.Payments.MoneyGram.NetworkPassphrase,
+		USDCIssuer:        cfg.Payments.MoneyGram.USDCIssuer,
+		TreasurySecret:    cfg.Stellar.TreasurySecretKey,
+		Logger:            logger,
+	}
+	if cfg.Payments.MoneyGram.HasRESTCredentials() {
+		mgCfg.REST = moneygram.RESTConfig{
+			BaseURL:       cfg.Payments.MoneyGram.FXRateURL,
+			OAuthTokenURL: cfg.Payments.MoneyGram.OAuthURL,
+			ClientID:      cfg.Payments.MoneyGram.ClientID,
+			ClientSecret:  cfg.Payments.MoneyGram.ClientSecret,
+		}
+	}
+	mgClient, err := moneygram.New(mgCfg)
+	if err != nil {
+		log.Fatalf("MoneyGram client construction failed: %v", err)
+	}
+	mgAdapter, err := ussdadapters.NewMoneyGramOffRampAdapter(ussdadapters.MoneyGramOffRampConfig{
+		Client: mgClient,
+		Logger: logger,
+	})
+	if err != nil {
+		log.Fatalf("MoneyGram off-ramp adapter construction failed: %v", err)
+	}
+	if err := offRampRegistry.Register(mgAdapter); err != nil {
+		log.Fatalf("Failed to register MoneyGram off-ramp: %v", err)
+	}
+	if err := offRampRegistry.Alias(offramp.PayoutMethodCashPickup, offramp.ProviderMoneyGram); err != nil {
+		log.Fatalf("Failed to alias cash_pickup → moneygram: %v", err)
+	}
+	log.Printf("MoneyGram cash-pickup registered (home: %s, REST: %t)",
+		cfg.Payments.MoneyGram.HomeDomain, cfg.Payments.MoneyGram.HasRESTCredentials())
 
 	// ---- 10b. User + Account + Transaction services ----
 	userSvc := user.NewService(coreRepos.User)
@@ -174,7 +256,8 @@ func main() {
 	// ---- 11. LoanServiceAdapter (USSD LoanService) ----
 	ctx := context.Background()
 	loanAdapter, err := adapters.NewLoanServiceAdapter(
-		ctx, loanSvc, loanProductSvc, stellarSvc, offRampSvc, loanNotifier, txnSvc, logger,
+		ctx, loanSvc, loanProductSvc, stellarSvc, offRampRegistry, loanNotifier, txnSvc,
+		adapters.FXConfig{BufferPct: adapters.DefaultFXBufferPct}, logger,
 	)
 	if err != nil {
 		log.Fatalf("Failed to create loan service adapter: %v", err)
@@ -223,7 +306,7 @@ func main() {
 	webhookSvc := webhook.NewService(disbursementAdapter, nil, disbursementAdapter)
 	webhookCtrl := controllers.NewWebhookController(webhookSvc, cfg.Payments.YellowCard.WebhookSecret)
 
-	// ---- 15. Refund poller ----
+	// ---- 15. Pollers ----
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())
 	refundPoller := webhook.NewRefundPoller(
 		ycAdapter,
@@ -235,6 +318,29 @@ func main() {
 		webhook.DefaultRefundPollerConfig(),
 	)
 	go refundPoller.Start(pollerCtx)
+
+	// MoneyGram SEP-24 lifecycle poller.
+	// Drives pending_user_transfer_start → SendUSDC, pending_user_transfer_complete
+	// → backfill amount_out + cash-pickup reference, terminal → finalise.
+	mgPollerAdapter, err := adapters.NewMoneyGramPollerAdapter(repos.Loan, loanSvc, logger)
+	if err != nil {
+		log.Fatalf("MoneyGram poller adapter construction failed: %v", err)
+	}
+	mgP, err := mgpoller.NewPoller(
+		mgClient,
+		mgPollerAdapter,     // LoanFetcher + LoanRecorder
+		mgPollerAdapter,     // LoanRecorder (same impl)
+		disbursementAdapter, // DisbursementUpdater (reused from YC flow)
+		treasuryTransfer,    // TreasuryTransfer for USDC → MG anchor
+		nil,                 // AlertService — log-only for now
+		mgpoller.DefaultConfig(),
+		logger,
+	)
+	if err != nil {
+		log.Fatalf("MoneyGram poller construction failed: %v", err)
+	}
+	go mgP.Start(pollerCtx)
+	log.Println("MoneyGram poller started")
 
 	// ---- 16. Fiber app + middleware + routes ----
 	app := fiber.New()

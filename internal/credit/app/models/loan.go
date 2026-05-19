@@ -55,6 +55,31 @@ type Loan struct {
 	BorrowIndex         *int64         `json:"borrow_index,omitempty" gorm:"type:bigint"`
 	RampFeeUSD          *int64         `json:"ramp_fee_usd,omitempty" gorm:"type:bigint"`
 	RampFeeLocal        *int64         `json:"ramp_fee_local,omitempty" gorm:"type:bigint"`
+
+	// MoneyGram cash-pickup fields (see migration 000008).
+	// RampInteractiveURL is the SEP-24 webview URL sent to the user via SMS.
+	// RampExternalRef is the cash-pickup reference number returned post-completion.
+	// RampMoreInfoURL is MG's support deep-link for the transaction.
+	// RampChildAccountIndex is the per-user Stellar derivation index used to
+	// re-derive the SEP-10 child memo on poller restart.
+	RampInteractiveURL    *string `json:"ramp_interactive_url,omitempty" gorm:"type:text"`
+	RampExternalRef       *string `json:"ramp_external_ref,omitempty" gorm:"type:varchar(100);index"`
+	RampMoreInfoURL       *string `json:"ramp_more_info_url,omitempty" gorm:"type:text"`
+	RampChildAccountIndex *int64  `json:"ramp_child_account_index,omitempty" gorm:"type:bigint"`
+
+	// FX audit fields capture the rate the loan was quoted at, the source
+	// label, the entry buffer percentage applied, and the user's originally
+	// requested local amount — used by the poller's drift detection.
+	EntryRateUsed        *float64 `json:"entry_rate_used,omitempty" gorm:"type:numeric(20,8)"`
+	EntryRateSource      *string  `json:"entry_rate_source,omitempty" gorm:"type:varchar(40)"`
+	EntryBufferPct       *float64 `json:"entry_buffer_pct,omitempty" gorm:"type:numeric(6,4)"`
+	RequestedLocalAmount *int64   `json:"requested_local_amount,omitempty" gorm:"type:bigint"`
+
+	// SEP-24 withdraw memo returned on MG's transaction object; used by the
+	// Stellar ingest worker to match refund inbound USDC back to the loan.
+	RampWithdrawMemo     *string `json:"ramp_withdraw_memo,omitempty" gorm:"type:varchar(64);index"`
+	RampWithdrawMemoType *string `json:"ramp_withdraw_memo_type,omitempty" gorm:"type:varchar(10)"`
+
 	CreatedAt           time.Time      `json:"created_at" gorm:"autoCreateTime;not null"`
 	UpdatedAt           time.Time      `json:"updated_at" gorm:"autoUpdateTime;not null"`
 	DeletedAt           gorm.DeletedAt `json:"deleted_at" gorm:"index"`
