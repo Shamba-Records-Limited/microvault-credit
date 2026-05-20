@@ -36,6 +36,7 @@ type Service interface {
 	Disburse(ctx context.Context, id string, req DisburseLoanRequest) (*LoanResponse, error)
 	MarkAsRepaid(ctx context.Context, id string) (*LoanResponse, error)
 	MarkAsDefaulted(ctx context.Context, id string) (*LoanResponse, error)
+	MarkAsOffRampFailed(ctx context.Context, id string) (*LoanResponse, error)
 
 	// Provider-scoped queries — used by the MoneyGram poller and the
 	// dedupe gate in the loan service adapter.
@@ -449,6 +450,30 @@ func (s *service) MarkAsDefaulted(ctx context.Context, id string) (*LoanResponse
 
 	if err := s.repo.Update(ctx, loan); err != nil {
 		log.Printf("MarkAsDefaulted: failed to update loan: %v", err)
+		return nil, err
+	}
+
+	return toLoanResponse(loan), nil
+}
+
+// MarkAsOffRampFailed marks a loan as off-ramp-failed: vault borrow succeeded
+// but fiat disbursement could not complete. Use after the borrowed USDC has
+// been (or is being) repaid to the vault. The borrower owes nothing — this is
+// distinct from LoanStatusDefaulted.
+func (s *service) MarkAsOffRampFailed(ctx context.Context, id string) (*LoanResponse, error) {
+	loan, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, repository.ErrLoanNotFound) {
+			return nil, ErrLoanNotFound
+		}
+		log.Printf("MarkAsOffRampFailed: failed to get loan: %v", err)
+		return nil, err
+	}
+
+	loan.Status = models.LoanStatusOffRampFailed
+
+	if err := s.repo.Update(ctx, loan); err != nil {
+		log.Printf("MarkAsOffRampFailed: failed to update loan: %v", err)
 		return nil, err
 	}
 

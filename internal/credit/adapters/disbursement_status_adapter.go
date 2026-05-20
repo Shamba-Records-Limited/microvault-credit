@@ -99,11 +99,17 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 			a.repayVaultIfNeeded(ctx, loan, "fiat_complete")
 		}
 	case yellowcard.DisbursementFailed:
-		// Fiat failed: USDC never left treasury to repay.
-		// Direct failed: USDC is at YC awaiting refund to do NOT repay (RefundPoller handles).
-		if loan.SettlementMethod == nil || *loan.SettlementMethod != "direct" {
-			a.repayVaultIfNeeded(ctx, loan, "fiat_failed")
+		// Either path: the borrowed USDC is back in (or was never out of)
+		// treasury, so repay the vault. repayVaultIfNeeded is idempotent via
+		// VaultRepayTxHash, so a later RefundPoller cycle won't double-repay.
+		// If USDC is still in flight (e.g. direct failed pre-refund), the
+		// on-chain RepayToVault call will fail; the RefundPoller will retry
+		// once YC returns the USDC.
+		trigger := "fiat_failed"
+		if loan.SettlementMethod != nil && *loan.SettlementMethod == "direct" {
+			trigger = "direct_failed"
 		}
+		a.repayVaultIfNeeded(ctx, loan, trigger)
 	}
 
 	return nil

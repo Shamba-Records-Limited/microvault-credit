@@ -154,6 +154,15 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		payoutMethod = offramp.PayoutMethodMobileMoney
 	}
 
+	// Cash-pickup needs a recipient name for SEP-9 prefill — fail before any
+	// vault mutation rather than after MoneyGram rejects the withdraw call.
+	if payoutMethod == offramp.PayoutMethodCashPickup && req.RecipientName == "" {
+		a.logger.Error("cash-pickup loan rejected: recipient name missing",
+			"user_id", req.UserID,
+		)
+		return nil, fmt.Errorf("cash-pickup requires recipient name (user has no full_name on file)")
+	}
+
 	// Dedupe gate — same (user, method, amount) within 60s is treated as a
 	// USSD/carrier replay and rejected before any state mutates.
 	if !a.dedupe.check(dedupeKey(req.UserID, payoutMethod, req.PrincipalAmount)) {
@@ -248,13 +257,24 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		if createResp.LoanNumber != nil {
 			loanNumber = *createResp.LoanNumber
 		}
-		if smsErr := a.loanNotifier.NotifyLoanApproved(ctx, contracts.LoanNotification{
+		notification := contracts.LoanNotification{
 			LoanID:          loanID,
 			LoanNumber:      loanNumber,
 			PhoneNumber:     req.PhoneNumber,
 			DisplayAmount:   notifyAmount,
 			DisplayCurrency: notifyCurrency,
-		}); smsErr != nil {
+		}
+		// Cash-pickup loans get a scoped copy: the generic "Approved" template
+		// implies a push disbursement, which is misleading here — a follow-up
+		// SMS with the MoneyGram interactive URL is sent once the off-ramp
+		// initiates (see recordSuccessfulInitiate).
+		var smsErr error
+		if payoutMethod == offramp.PayoutMethodCashPickup {
+			smsErr = a.loanNotifier.NotifyLoanCashPickupApproved(ctx, notification)
+		} else {
+			smsErr = a.loanNotifier.NotifyLoanApproved(ctx, notification)
+		}
+		if smsErr != nil {
 			a.logger.Warn("approval SMS failed", "loan_id", loanID, "error", smsErr)
 		}
 	}
@@ -364,11 +384,18 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			"vault_tx_hash", borrowResp.TxHash,
 			"error", err,
 		)
-		// Mark as offramp_failed so a retry mechanism can pick it up.
+		// Mark disbursement_status so a retry mechanism can pick it up, and
+		// flip the loan's top-level Status to LoanStatusOffRampFailed so it
+		// is no longer treated as a live disbursement. This is distinct from
+		// LoanStatusDefaulted — the borrower owes nothing.
 		offRampFailedStatus := "offramp_failed"
 		_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
 			DisbursementStatus: &offRampFailedStatus,
 		})
+		if _, mErr := a.loanSvc.MarkAsOffRampFailed(ctx, loanID); mErr != nil {
+			a.logger.Warn("failed to flip loan status to offramp_failed",
+				"loan_id", loanID, "error", mErr)
+		}
 
 		// USDC never left treasury — repay vault immediately.
 		repayResp, repayErr := a.stellarSvc.RepayToVault(ctx, stellar.RepayRequest{Amount: borrowResp.AmountBorrowed})
@@ -410,7 +437,9 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			if createResp.LoanNumber != nil {
 				loanNumber = *createResp.LoanNumber
 			}
-			_ = a.loanNotifier.NotifyLoanFailed(ctx, contracts.LoanNotification{
+			// Off-ramp failure SMS — distinct from the credit-default copy;
+			// the borrower's USDC never left the treasury (or has been repaid).
+			_ = a.loanNotifier.NotifyLoanOffRampFailed(ctx, contracts.LoanNotification{
 				LoanID:          loanID,
 				LoanNumber:      loanNumber,
 				PhoneNumber:     req.PhoneNumber,

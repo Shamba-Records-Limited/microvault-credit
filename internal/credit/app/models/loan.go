@@ -250,6 +250,12 @@ const (
 	LoanStatusRepaid    = "repaid"
 	LoanStatusDefaulted = "defaulted"
 	LoanStatusCancelled = "cancelled"
+	// LoanStatusOffRampFailed marks a loan whose vault borrow succeeded but
+	// whose fiat disbursement could not be completed. The borrowed USDC has
+	// been (or will be) repaid to the vault; the borrower owes nothing and
+	// did not default. Distinct from LoanStatusDefaulted, which is a
+	// borrower-side credit event.
+	LoanStatusOffRampFailed = "offramp_failed"
 
 	// Repayment Status
 	RepaymentStatusPending = "pending"
