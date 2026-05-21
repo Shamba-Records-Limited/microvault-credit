@@ -98,6 +98,10 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 		if loan.SettlementMethod != nil && *loan.SettlementMethod == "fiat" {
 			a.repayVaultIfNeeded(ctx, loan, "fiat_complete")
 		}
+		// Stamp delivered_amount_kes = ramp_fiat_amount - ramp_fee_local
+		// (both in cents). This is the actual fiat the borrower received;
+		// downstream SMS + UI should prefer this over ramp_fiat_amount.
+		a.recordDeliveredAmount(ctx, loan)
 	case yellowcard.DisbursementFailed:
 		// Either path: the borrowed USDC is back in (or was never out of)
 		// treasury, so repay the vault. repayVaultIfNeeded is idempotent via
@@ -154,13 +158,24 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 			"trigger", trigger,
 			"error", err,
 		)
-		// Don't fail the parent operation. The loan has no repay_tx_hash,
-		// making it queryable for manual retry or a background sweep.
+		// Stamp vault_repay_status=failed so ops can query and retry.
+		// repay_tx_hash stays NULL — the (failed, null hash) combination
+		// is the signal for "needs manual intervention or sweep".
+		failedStatus := models.VaultRepayStatusFailed
+		loan.VaultRepayStatus = &failedStatus
+		if upErr := a.repo.Update(ctx, loan); upErr != nil {
+			a.logger.Error("failed to save vault_repay_status=failed",
+				"loan_id", loan.ID,
+				"error", upErr,
+			)
+		}
 		return
 	}
 
-	// Persist repay tx hash on the loan.
+	// Persist repay tx hash + success status on the loan.
 	loan.VaultRepayTxHash = &repayResp.TxHash
+	successStatus := models.VaultRepayStatusSuccess
+	loan.VaultRepayStatus = &successStatus
 	if err := a.repo.Update(ctx, loan); err != nil {
 		a.logger.Error("failed to save vault repay tx hash",
 			"loan_id", loan.ID,
@@ -198,6 +213,48 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 		"repay_tx_hash", repayResp.TxHash,
 		"amount_repaid", repayResp.AmountRepaid,
 		"trigger", trigger,
+	)
+}
+
+// recordDeliveredAmount computes and persists the net fiat the borrower
+// actually received: ramp_fiat_amount - ramp_fee_local. Both are in cents.
+// Idempotent: skips when DeliveredAmtKES is already set, so a replayed
+// DisbursementComplete webhook won't overwrite. NULL inputs are treated as
+// zero — a missing ramp_fee_local still yields a usable delivered amount.
+func (a *DisbursementStatusAdapter) recordDeliveredAmount(ctx context.Context, loan *models.Loan) {
+	if loan.DeliveredAmtKES != nil {
+		return
+	}
+	if loan.RampFiatAmount == nil {
+		return
+	}
+	gross := *loan.RampFiatAmount
+	fee := int64(0)
+	if loan.RampFeeLocal != nil {
+		fee = *loan.RampFeeLocal
+	}
+	delivered := gross - fee
+	if delivered < 0 {
+		a.logger.Warn("delivered_amount_kes would be negative — skipping",
+			"loan_id", loan.ID,
+			"ramp_fiat_amount", gross,
+			"ramp_fee_local", fee,
+		)
+		return
+	}
+	loan.DeliveredAmtKES = &delivered
+	if err := a.repo.Update(ctx, loan); err != nil {
+		a.logger.Warn("failed to persist delivered_amount_kes",
+			"loan_id", loan.ID,
+			"error", err,
+		)
+		return
+	}
+	a.logger.Info("delivered_amount_kes recorded",
+		"loan_id", loan.ID,
+		"delivered_kes_cents", delivered,
+		"gross_kes_cents", gross,
+		"fee_kes_cents", fee,
 	)
 }
 
@@ -260,9 +317,16 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(sequenceID string
 		loanRef = *loan.LoanReference
 	}
 
+	// Prefer delivered_amount_kes (net of provider fees) over ramp_fiat_amount
+	// so the SMS reflects what the borrower actually received. Fall back to
+	// the gross amount when delivered hasn't been recorded yet (e.g. webhook
+	// arrived out of order).
 	displayAmount := float64(0)
 	displayCurrency := "KES"
-	if loan.RampFiatAmount != nil {
+	switch {
+	case loan.DeliveredAmtKES != nil:
+		displayAmount = float64(*loan.DeliveredAmtKES) / 100
+	case loan.RampFiatAmount != nil:
 		displayAmount = float64(*loan.RampFiatAmount) / 100
 	}
 	if loan.RampFiatCurr != nil {

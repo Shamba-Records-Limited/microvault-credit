@@ -101,6 +101,10 @@ func NewLoanServiceAdapter(
 		schedule = p.AllowedRepaymentSchedules[0]
 	}
 
+	originationFeeBps := int32(0)
+	if p.OriginationFeeBps != nil {
+		originationFeeBps = *p.OriginationFeeBps
+	}
 	cfg := &ussd.LoanProductConfig{
 		ProductID:         p.ID,
 		MinAmountCents:    p.MinAmount,
@@ -109,6 +113,7 @@ func NewLoanServiceAdapter(
 		DurationDays:      p.MinDurationDays,
 		RepaymentSchedule: schedule,
 		InterestRateBps:   p.InterestRateBps,
+		OriginationFeeBps: originationFeeBps,
 	}
 
 	logger.Info("loan product loaded",
@@ -222,6 +227,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		PrincipalAmount:   req.PrincipalAmount,
 		PrincipalAsset:    req.PrincipalAsset,
 		InterestRateBps:   interestRateBps,
+		OriginationFeeBps: a.productConfig.OriginationFeeBps,
 		DurationDays:      req.DurationDays,
 		RepaymentSchedule: req.RepaymentSched,
 	})
@@ -640,10 +646,16 @@ func (a *LoanServiceAdapter) repayVaultAfterInitiate(
 			"amount_stroops", amountStroops,
 			"error", repayErr,
 		)
+		failedStatus := "failed"
+		_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{VaultRepayStatus: &failedStatus})
 		return
 	}
 
-	_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{VaultRepayTxHash: &repayResp.TxHash})
+	successStatus := "success"
+	_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
+		VaultRepayTxHash: &repayResp.TxHash,
+		VaultRepayStatus: &successStatus,
+	})
 
 	if a.txnSvc != nil {
 		desc := fmt.Sprintf("Vault repay (trigger: %s)", trigger)

@@ -66,6 +66,14 @@ func (s *service) Create(ctx context.Context, req CreateLoanRequest) (*LoanRespo
 	// Calculate due date
 	dueDate := time.Now().AddDate(0, 0, req.DurationDays)
 
+	// Compute interest, origination fee, and total owed at origination using
+	// the top-up model: borrower repays principal + interest + fee. Interest
+	// is simple, pro-rated against a 365-day year; the vault's borrow_index
+	// drives the real accrual, so this is a quote, not the source of truth.
+	interestAmount := req.PrincipalAmount * int64(req.InterestRateBps) * int64(req.DurationDays) / (10000 * 365)
+	originationFee := req.PrincipalAmount * int64(req.OriginationFeeBps) / 10000
+	totalAmount := req.PrincipalAmount + interestAmount + originationFee
+
 	// Create loan model
 	loan := &models.Loan{
 		UserID:            req.UserID,
@@ -74,10 +82,17 @@ func (s *service) Create(ctx context.Context, req CreateLoanRequest) (*LoanRespo
 		PrincipalAmount:   req.PrincipalAmount,
 		PrincipalAsset:    req.PrincipalAsset,
 		InterestRateBps:   req.InterestRateBps,
+		InterestAmount:    &interestAmount,
 		DurationDays:      req.DurationDays,
 		RepaymentSchedule: req.RepaymentSchedule,
 		DueDate:           &dueDate,
 		Status:            models.LoanStatusPending,
+		TotalAmount:       &totalAmount,
+	}
+	if req.OriginationFeeBps > 0 {
+		feeBps := req.OriginationFeeBps
+		loan.OriginationFee = &originationFee
+		loan.OriginationFeeBps = &feeBps
 	}
 
 	// Create loan in database
@@ -189,6 +204,9 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanRequest) 
 	if req.VaultRepayTxHash != nil {
 		loan.VaultRepayTxHash = req.VaultRepayTxHash
 	}
+	if req.VaultRepayStatus != nil {
+		loan.VaultRepayStatus = req.VaultRepayStatus
+	}
 	if req.RampProvider != nil {
 		loan.RampProvider = req.RampProvider
 	}
@@ -231,8 +249,8 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanRequest) 
 	if req.DisbursementRateBps != nil {
 		loan.DisbursementRateBps = req.DisbursementRateBps
 	}
-	if req.DisbursementAmtKES != nil {
-		loan.DisbursementAmtKES = req.DisbursementAmtKES
+	if req.DeliveredAmtKES != nil {
+		loan.DeliveredAmtKES = req.DeliveredAmtKES
 	}
 	if req.RepaymentAmtKES != nil {
 		loan.RepaymentAmtKES = req.RepaymentAmtKES
@@ -571,6 +589,7 @@ func toLoanResponse(loan *models.Loan) *LoanResponse {
 		VaultTxHash:         loan.VaultTxHash,
 		VaultTxStatus:       loan.VaultTxStatus,
 		VaultRepayTxHash:    loan.VaultRepayTxHash,
+		VaultRepayStatus:    loan.VaultRepayStatus,
 		RampProvider:        loan.RampProvider,
 		RampRequestID:       loan.RampRequestID,
 		RampFiatAmount:      loan.RampFiatAmount,
@@ -582,7 +601,7 @@ func toLoanResponse(loan *models.Loan) *LoanResponse {
 		DisbursementStatus:  loan.DisbursementStatus,
 		RampSequenceID:      loan.RampSequenceID,
 		DisbursementRateBps: loan.DisbursementRateBps,
-		DisbursementAmtKES:  loan.DisbursementAmtKES,
+		DeliveredAmtKES:     loan.DeliveredAmtKES,
 		RepaymentAmtKES:     loan.RepaymentAmtKES,
 		ConversionSpreadBps: loan.ConversionSpreadBps,
 		BorrowIndex:         loan.BorrowIndex,

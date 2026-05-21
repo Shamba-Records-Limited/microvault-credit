@@ -10,6 +10,7 @@ type CreateLoanRequest struct {
 	PrincipalAmount   int64   `json:"principal_amount" validate:"required,gt=0"`
 	PrincipalAsset    string  `json:"principal_asset" validate:"required"`
 	InterestRateBps   int32   `json:"interest_rate_bps" validate:"required,gt=0"`
+	OriginationFeeBps int32   `json:"origination_fee_bps,omitempty"` // Zero ⇒ no fee.
 	DurationDays      int     `json:"duration_days" validate:"required,gt=0"`
 	RepaymentSchedule string  `json:"repayment_schedule" validate:"required"`
 }
@@ -19,6 +20,7 @@ type UpdateLoanRequest struct {
 	VaultTxHash         *string `json:"vault_tx_hash,omitempty"`
 	VaultTxStatus       *string `json:"vault_tx_status,omitempty"`
 	VaultRepayTxHash    *string `json:"vault_repay_tx_hash,omitempty"`
+	VaultRepayStatus    *string `json:"vault_repay_status,omitempty"`
 	RampProvider        *string `json:"ramp_provider,omitempty"`
 	RampRequestID       *string `json:"ramp_request_id,omitempty"`
 	RampFiatAmount      *int64  `json:"ramp_fiat_amount,omitempty"`
@@ -33,7 +35,7 @@ type UpdateLoanRequest struct {
 	DisbursementStatus  *string `json:"disbursement_status,omitempty"`
 	RampSequenceID      *string `json:"ramp_sequence_id,omitempty"`
 	DisbursementRateBps *int64  `json:"disbursement_rate_bps,omitempty"`
-	DisbursementAmtKES  *int64  `json:"disbursement_amount_kes,omitempty"`
+	DeliveredAmtKES     *int64  `json:"delivered_amount_kes,omitempty"`
 	RepaymentAmtKES     *int64  `json:"repayment_amount_kes,omitempty"`
 	ConversionSpreadBps *int32  `json:"conversion_spread_bps,omitempty"`
 	BorrowIndex         *int64  `json:"borrow_index,omitempty"`
@@ -99,6 +101,7 @@ type LoanResponse struct {
 	VaultTxHash         *string    `json:"vault_tx_hash,omitempty"`
 	VaultTxStatus       *string    `json:"vault_tx_status,omitempty"`
 	VaultRepayTxHash    *string    `json:"vault_repay_tx_hash,omitempty"`
+	VaultRepayStatus    *string    `json:"vault_repay_status,omitempty"`
 	RampProvider        *string    `json:"ramp_provider,omitempty"`
 	RampRequestID       *string    `json:"ramp_request_id,omitempty"`
 	RampFiatAmount      *int64     `json:"ramp_fiat_amount,omitempty"`
@@ -110,7 +113,7 @@ type LoanResponse struct {
 	DisbursementStatus  *string    `json:"disbursement_status,omitempty"`
 	RampSequenceID      *string    `json:"ramp_sequence_id,omitempty"`
 	DisbursementRateBps *int64     `json:"disbursement_rate_bps,omitempty"`
-	DisbursementAmtKES  *int64     `json:"disbursement_amount_kes,omitempty"`
+	DeliveredAmtKES     *int64     `json:"delivered_amount_kes,omitempty"`
 	RepaymentAmtKES     *int64     `json:"repayment_amount_kes,omitempty"`
 	ConversionSpreadBps *int32     `json:"conversion_spread_bps,omitempty"`
 	BorrowIndex         *int64     `json:"borrow_index,omitempty"`

@@ -38,6 +38,7 @@ type Loan struct {
 	VaultTxHash         *string    `json:"vault_tx_hash,omitempty" gorm:"type:varchar(64);index"`
 	VaultTxStatus       *string    `json:"vault_tx_status,omitempty" gorm:"type:varchar(20)"`
 	VaultRepayTxHash    *string    `json:"vault_repay_tx_hash,omitempty" gorm:"type:varchar(64);index"`
+	VaultRepayStatus    *string    `json:"vault_repay_status,omitempty" gorm:"type:varchar(20);index"`
 	RampProvider        *string    `json:"ramp_provider,omitempty" gorm:"type:varchar(50)"`
 	RampRequestID       *string    `json:"ramp_request_id,omitempty" gorm:"type:varchar(100);index"`
 	RampFiatAmount      *int64     `json:"ramp_fiat_amount,omitempty" gorm:"type:bigint"`
@@ -49,7 +50,7 @@ type Loan struct {
 	DisbursementStatus  *string    `json:"disbursement_status,omitempty" gorm:"type:varchar(30);index"`
 	RampSequenceID      *string    `json:"ramp_sequence_id,omitempty" gorm:"type:varchar(200);index"`
 	DisbursementRateBps *int64     `json:"disbursement_rate_bps,omitempty" gorm:"type:bigint"`
-	DisbursementAmtKES  *int64     `json:"disbursement_amount_kes,omitempty" gorm:"column:disbursement_amount_kes;type:bigint"`
+	DeliveredAmtKES     *int64     `json:"delivered_amount_kes,omitempty" gorm:"column:delivered_amount_kes;type:bigint"`
 	RepaymentAmtKES     *int64     `json:"repayment_amount_kes,omitempty" gorm:"column:repayment_amount_kes;type:bigint"`
 	ConversionSpreadBps *int32     `json:"conversion_spread_bps,omitempty" gorm:"type:int"`
 	BorrowIndex         *int64     `json:"borrow_index,omitempty" gorm:"type:bigint"`
@@ -105,7 +106,7 @@ func (loan *Loan) BeforeCreate(tx *gorm.DB) error {
 
 	// Generate a human-readable loan reference from the UUIDv7 timestamp +
 	// random suffix.
-	// Format: LR-<unix_ms_hex>-<4_random_hex> e.g. "LR-018F3A2B1C-A7F2"
+	// Format: LR-unix_ms_hex-4_random_hex e.g. "LR-018F3A2B1C-A7F2"
 	if loan.LoanReference == nil {
 		ts := time.Now().UnixMilli()
 		short := id.String()[24:28] // 4 hex chars from the random portion
@@ -270,4 +271,10 @@ const (
 	DisbursementStatusProcessing = "processing"
 	DisbursementStatusCompleted  = "completed"
 	DisbursementStatusFailed     = "failed"
+
+	// Vault Repay Status — tracks treasury→vault USDC return. NULL when no
+	// repay has been attempted (e.g. direct settlement still in flight, or
+	// completed direct where USDC went to YC and no repay is owed).
+	VaultRepayStatusSuccess = "success"
+	VaultRepayStatusFailed  = "failed"
 )

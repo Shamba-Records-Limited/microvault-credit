@@ -83,10 +83,14 @@ func (a *MoneyGramPollerAdapter) RecordTransactionUpdate(ctx context.Context, lo
 	req := loan.UpdateLoanRequest{}
 	any := false
 
+	var grossCents int64
+	var grossKnown bool
 	if v := strings.TrimSpace(tx.AmountOut); v != "" {
 		cents, ok := decimalToCents(v)
 		if ok {
 			req.RampFiatAmount = &cents
+			grossCents = cents
+			grossKnown = true
 			any = true
 		}
 	}
@@ -94,12 +98,23 @@ func (a *MoneyGramPollerAdapter) RecordTransactionUpdate(ctx context.Context, lo
 		req.RampFiatCurr = &v
 		any = true
 	}
+	var feeCents int64
 	if v := strings.TrimSpace(tx.AmountFee); v != "" {
 		cents, ok := decimalToCents(v)
 		if ok {
 			req.RampFeeLocal = &cents
+			feeCents = cents
 			any = true
 		}
+	}
+	// MG's SEP-24 amount_out is the value the user receives, already net of
+	// amount_fee — so it equals delivered_amount_kes. (Unlike YC's
+	// converted_amount, which is gross and requires subtracting ramp_fee_local
+	// — handled in DisbursementStatusAdapter.recordDeliveredAmount.)
+	_ = feeCents
+	if grossKnown {
+		delivered := grossCents
+		req.DeliveredAmtKES = &delivered
 	}
 	if v := strings.TrimSpace(tx.ExternalTransactionID); v != "" {
 		req.RampExternalRef = &v
