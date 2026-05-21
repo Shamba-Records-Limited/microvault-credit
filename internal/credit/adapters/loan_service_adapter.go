@@ -253,13 +253,13 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 
 	// Notify user of approval (best-effort) — use KES amount when available.
 	if a.loanNotifier != nil && req.PhoneNumber != "" {
-		loanNumber := ""
-		if createResp.LoanNumber != nil {
-			loanNumber = *createResp.LoanNumber
+		loanRef := ""
+		if createResp.LoanReference != nil {
+			loanRef = *createResp.LoanReference
 		}
 		notification := contracts.LoanNotification{
 			LoanID:          loanID,
-			LoanNumber:      loanNumber,
+			LoanReference:   loanRef,
 			PhoneNumber:     req.PhoneNumber,
 			DisplayAmount:   notifyAmount,
 			DisplayCurrency: notifyCurrency,
@@ -324,7 +324,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		if txnErr != nil {
 			a.logger.Warn("failed to record vault borrow transaction", "loan_id", loanID, "error", txnErr)
 		} else if txnResp != nil {
-			// Transition: pending -> submitted -> success (vault TX is already confirmed).
+			// Transition: pending to submitted to success (vault TX is already confirmed).
 			submittedStatus := models.TxStatusSubmitted
 			_, _ = a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{
 				Status: &submittedStatus,
@@ -337,12 +337,17 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	}
 
 	// Step 5: Mark loan as disbursed.
-	settlementMethod := "direct"
-	disbursementStatus := "crypto_sent"
+	// Settlement method and disbursement status are written by
+	// recordSuccessfulInitiate once Initiate returns with the real values.
+	// Pre-stamping "direct" here used to race with the YC webhook: when the
+	// adapter pivots direct to fiat inside Initiate and YC fires
+	// DisbursementComplete before recordSuccessfulInitiate updates the row,
+	// the webhook handler saw settlement_method="direct" and skipped the
+	// vault repay.
+	vaultTxStatus := "success"
 	_, err = a.loanSvc.Disburse(ctx, loanID, loan.DisburseLoanRequest{
-		VaultTxHash:        &borrowResp.TxHash,
-		SettlementMethod:   &settlementMethod,
-		DisbursementStatus: &disbursementStatus,
+		VaultTxHash:   &borrowResp.TxHash,
+		VaultTxStatus: &vaultTxStatus,
 	})
 	if err != nil {
 		// Non-fatal: vault borrow already succeeded.
@@ -398,50 +403,19 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		}
 
 		// USDC never left treasury — repay vault immediately.
-		repayResp, repayErr := a.stellarSvc.RepayToVault(ctx, stellar.RepayRequest{Amount: borrowResp.AmountBorrowed})
-		if repayErr != nil {
-			a.logger.Error("CRITICAL: vault repay failed after off-ramp init failure",
-				"loan_id", loanID,
-				"amount_stroops", borrowResp.AmountBorrowed,
-				"error", repayErr,
-			)
-		} else {
-			_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{VaultRepayTxHash: &repayResp.TxHash})
-
-			if a.txnSvc != nil {
-				repayDesc := "Vault repay after off-ramp init failure"
-				txnResp, txnErr := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
-					UserID:        &req.UserID,
-					LoanID:        &loanID,
-					TxType:        models.TxTypeVaultRepay,
-					TxCategory:    models.TxCategoryOnChain,
-					Amount:        repayResp.AmountRepaid,
-					Asset:         "USDC",
-					StellarTxHash: &repayResp.TxHash,
-					Description:   &repayDesc,
-				})
-				if txnErr == nil && txnResp != nil {
-					s := models.TxStatusSuccess
-					_, _ = a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{Status: &s})
-				}
-			}
-			a.logger.Info("vault repaid after off-ramp init failure",
-				"loan_id", loanID,
-				"repay_tx_hash", repayResp.TxHash,
-			)
-		}
+		a.repayVaultAfterInitiate(ctx, loanID, req.UserID, borrowResp.AmountBorrowed, "offramp_init_failed")
 
 		// Notify user of failure (best-effort).
 		if a.loanNotifier != nil && req.PhoneNumber != "" {
-			loanNumber := ""
-			if createResp.LoanNumber != nil {
-				loanNumber = *createResp.LoanNumber
+			loanRef := ""
+			if createResp.LoanReference != nil {
+				loanRef = *createResp.LoanReference
 			}
 			// Off-ramp failure SMS — distinct from the credit-default copy;
 			// the borrower's USDC never left the treasury (or has been repaid).
 			_ = a.loanNotifier.NotifyLoanOffRampFailed(ctx, contracts.LoanNotification{
 				LoanID:          loanID,
-				LoanNumber:      loanNumber,
+				LoanReference:   loanRef,
 				PhoneNumber:     req.PhoneNumber,
 				DisplayAmount:   notifyAmount,
 				DisplayCurrency: notifyCurrency,
@@ -457,6 +431,19 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			"currency", offRampResult.LocalCurrency,
 		)
 		a.recordSuccessfulInitiate(ctx, loanID, payoutMethod, provider.ID(), offRampResult, req, createResp)
+
+		// Mobile-money requests default to direct settlement (USDC pushed to
+		// YC's wallet). If the result comes back as fiat, the YC adapter
+		// pivoted direct to fiat internally — USDC is still in treasury and
+		// YC will front the fiat from their pool. Repay the vault now rather
+		// than waiting for the DisbursementComplete webhook: it's racy and
+		// leaves the USDC idle in the interim. repayVaultAfterInitiate is
+		// idempotent via VaultRepayTxHash, so the eventual fiat-complete
+		// repay branch in the webhook handler will no-op.
+		if payoutMethod == offramp.PayoutMethodMobileMoney &&
+			offRampResult.SettlementMethod == string(yellowcard.SettlementMethodFiat) {
+			a.repayVaultAfterInitiate(ctx, loanID, req.UserID, borrowResp.AmountBorrowed, "direct_to_fiat_pivot")
+		}
 	}
 
 	duration := time.Since(start)
@@ -495,10 +482,10 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		status = "awaiting_user"
 	}
 	return map[string]interface{}{
-		"id":           loanID,
-		"loan_number":  createResp.LoanNumber,
-		"status":       status,
-		"total_amount": totalAmount,
+		"id":             loanID,
+		"loan_reference": createResp.LoanReference,
+		"status":         status,
+		"total_amount":   totalAmount,
 	}, nil
 }
 
@@ -629,6 +616,61 @@ func (a *LoanServiceAdapter) persistEntryRate(
 	}
 }
 
+// repayVaultAfterInitiate repays the borrowed USDC to the vault and records
+// the on-chain hash + audit transaction. Used in two cases where the
+// borrowed USDC is still in (or returned to) the treasury at Initiate time:
+//   - off-ramp init failed entirely (USDC never moved)
+//   - mobile-money direct→fiat pivot inside the YC adapter (direct push to
+//     YC's wallet failed, so USDC is still in treasury; YC will front fiat)
+//
+// Idempotent via the existing VaultRepayTxHash column — a later webhook-
+// triggered repay (DisbursementComplete + settlement_method=fiat) will see
+// the hash and no-op.
+func (a *LoanServiceAdapter) repayVaultAfterInitiate(
+	ctx context.Context,
+	loanID, userID string,
+	amountStroops int64,
+	trigger string,
+) {
+	repayResp, repayErr := a.stellarSvc.RepayToVault(ctx, stellar.RepayRequest{Amount: amountStroops})
+	if repayErr != nil {
+		a.logger.Error("CRITICAL: vault repay failed",
+			"loan_id", loanID,
+			"trigger", trigger,
+			"amount_stroops", amountStroops,
+			"error", repayErr,
+		)
+		return
+	}
+
+	_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{VaultRepayTxHash: &repayResp.TxHash})
+
+	if a.txnSvc != nil {
+		desc := fmt.Sprintf("Vault repay (trigger: %s)", trigger)
+		txnResp, txnErr := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
+			UserID:        &userID,
+			LoanID:        &loanID,
+			TxType:        models.TxTypeVaultRepay,
+			TxCategory:    models.TxCategoryOnChain,
+			Amount:        repayResp.AmountRepaid,
+			Asset:         "USDC",
+			StellarTxHash: &repayResp.TxHash,
+			Description:   &desc,
+		})
+		if txnErr == nil && txnResp != nil {
+			s := models.TxStatusSuccess
+			_, _ = a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{Status: &s})
+		}
+	}
+
+	a.logger.Info("vault repaid",
+		"loan_id", loanID,
+		"trigger", trigger,
+		"repay_tx_hash", repayResp.TxHash,
+		"amount_repaid", repayResp.AmountRepaid,
+	)
+}
+
 // recordSuccessfulInitiate persists the off-ramp results onto the loan,
 // branching on payout method. YellowCard returns a locked AmountLocal +
 // fees that are persisted immediately; MoneyGram returns an interactive
@@ -680,8 +722,8 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 					DisplayCurrency: "USD",
 					InteractiveURL:  mg.InteractiveURL,
 				}
-				if createResp.LoanNumber != nil {
-					notification.LoanNumber = *createResp.LoanNumber
+				if createResp.LoanReference != nil {
+					notification.LoanReference = *createResp.LoanReference
 				}
 				if smsErr := a.loanNotifier.NotifyLoanCashPickupInitiated(ctx, notification); smsErr != nil {
 					a.logger.Warn("cash-pickup SMS failed",
@@ -773,7 +815,7 @@ func (a *LoanServiceAdapter) GetUserLoans(ctx context.Context, userID string) ([
 	for i, l := range resp.Data {
 		results[i] = map[string]interface{}{
 			"id":                      l.ID,
-			"loan_number":             l.LoanNumber,
+			"loan_reference":          l.LoanReference,
 			"status":                  l.Status,
 			"total_amount":            l.TotalAmount,
 			"due_date":                l.DueDate,

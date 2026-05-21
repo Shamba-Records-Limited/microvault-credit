@@ -8,7 +8,7 @@ var (
 	ErrLoanNotFound = errors.New("loan not found")
 
 	// Conflict errors
-	ErrLoanNumberAlreadyExists = errors.New("loan number already exists")
+	ErrLoanReferenceAlreadyExists = errors.New("loan reference already exists")
 
 	// Business logic errors
 	ErrInvalidStatusTransition   = errors.New("invalid loan status transition")

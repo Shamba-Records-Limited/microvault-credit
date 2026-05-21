@@ -201,6 +201,28 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 	)
 }
 
+// SetSettlementMethod updates the loan's settlement_method field. Used by
+// the RefundPoller when a direct-mode disbursement is failed over to fiat:
+// without this flip, the eventual DisbursementComplete event would see
+// settlement_method="direct" and skip the vault repay branch.
+func (a *DisbursementStatusAdapter) SetSettlementMethod(sequenceID string, method string) error {
+	ctx := context.Background()
+	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
+	if err != nil {
+		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
+	}
+	loan.SettlementMethod = &method
+	if err := a.repo.Update(ctx, loan); err != nil {
+		return fmt.Errorf("update settlement_method for loan %s: %w", loan.ID, err)
+	}
+	a.logger.Info("settlement_method updated",
+		"loan_id", loan.ID,
+		"sequence_id", sequenceID,
+		"method", method,
+	)
+	return nil
+}
+
 // RepayVault returns borrowed USDC from treasury to the vault pool for the
 // loan identified by sequenceID. No-op if already repaid.
 func (a *DisbursementStatusAdapter) RepayVault(sequenceID string) error {
@@ -233,9 +255,9 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(sequenceID string
 		return nil
 	}
 
-	loanNumber := loan.ID
-	if loan.LoanNumber != nil {
-		loanNumber = *loan.LoanNumber
+	loanRef := loan.ID
+	if loan.LoanReference != nil {
+		loanRef = *loan.LoanReference
 	}
 
 	displayAmount := float64(0)
@@ -254,7 +276,7 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(sequenceID string
 
 	if err := a.loanNotifier.NotifyLoanDisbursed(ctx, contracts.LoanNotification{
 		LoanID:          loan.ID,
-		LoanNumber:      loanNumber,
+		LoanReference:   loanRef,
 		PhoneNumber:     phone,
 		DisplayAmount:   displayAmount,
 		DisplayCurrency: displayCurrency,
@@ -290,9 +312,9 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementFailed(sequenceID string) 
 		return nil
 	}
 
-	loanNumber := loan.ID
-	if loan.LoanNumber != nil {
-		loanNumber = *loan.LoanNumber
+	loanRef := loan.ID
+	if loan.LoanReference != nil {
+		loanRef = *loan.LoanReference
 	}
 
 	phone := ""
@@ -301,9 +323,9 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementFailed(sequenceID string) 
 	}
 
 	if err := a.loanNotifier.NotifyLoanFailed(ctx, contracts.LoanNotification{
-		LoanID:      loan.ID,
-		LoanNumber:  loanNumber,
-		PhoneNumber: phone,
+		LoanID:        loan.ID,
+		LoanReference: loanRef,
+		PhoneNumber:   phone,
 	}); err != nil {
 		a.logger.Warn("failed to send failure SMS",
 			"loan_id", loan.ID,

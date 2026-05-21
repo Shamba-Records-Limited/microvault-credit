@@ -366,6 +366,9 @@ func (s *service) Disburse(ctx context.Context, id string, req DisburseLoanReque
 	if req.VaultTxHash != nil {
 		loan.VaultTxHash = req.VaultTxHash
 	}
+	if req.VaultTxStatus != nil {
+		loan.VaultTxStatus = req.VaultTxStatus
+	}
 	if req.RampProvider != nil {
 		loan.RampProvider = req.RampProvider
 	}
@@ -545,7 +548,7 @@ func (s *service) validateCreateRequest(req CreateLoanRequest) error {
 func toLoanResponse(loan *models.Loan) *LoanResponse {
 	return &LoanResponse{
 		ID:                  loan.ID,
-		LoanNumber:          loan.LoanNumber,
+		LoanReference:       loan.LoanReference,
 		UserID:              loan.UserID,
 		AccountID:           loan.AccountID,
 		ProductID:           loan.ProductID,

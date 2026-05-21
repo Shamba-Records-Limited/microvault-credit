@@ -61,6 +61,7 @@ type ApproveLoanRequest struct {
 // DisburseLoanRequest represents the request to disburse a loan
 type DisburseLoanRequest struct {
 	VaultTxHash        *string `json:"vault_tx_hash,omitempty"`
+	VaultTxStatus      *string `json:"vault_tx_status,omitempty"`
 	RampProvider       *string `json:"ramp_provider,omitempty"`
 	RampRequestID      *string `json:"ramp_request_id,omitempty"`
 	RampFiatAmount     *int64  `json:"ramp_fiat_amount,omitempty"`
@@ -75,7 +76,7 @@ type DisburseLoanRequest struct {
 // LoanResponse represents the response containing loan information
 type LoanResponse struct {
 	ID                  string     `json:"id"`
-	LoanNumber          *string    `json:"loan_number,omitempty"`
+	LoanReference       *string    `json:"loan_reference,omitempty"`
 	UserID              string     `json:"user_id"`
 	AccountID           string     `json:"account_id"`
 	ProductID           *string    `json:"product_id,omitempty"`

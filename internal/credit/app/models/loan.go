@@ -15,7 +15,7 @@ import (
 // Amounts stored in smallest unit, rates in basis points
 type Loan struct {
 	ID                  string     `json:"id" gorm:"type:uuid;primaryKey"`
-	LoanNumber          *string    `json:"loan_number,omitempty" gorm:"type:varchar(50);uniqueIndex"`
+	LoanReference       *string    `json:"loan_reference,omitempty" gorm:"column:loan_reference;type:varchar(50);uniqueIndex"`
 	UserID              string     `json:"user_id" gorm:"type:uuid;not null;index"`
 	AccountID           string     `json:"account_id" gorm:"type:uuid;not null;index"`
 	ProductID           *string    `json:"product_id,omitempty" gorm:"type:uuid;index"`
@@ -103,13 +103,14 @@ func (loan *Loan) BeforeCreate(tx *gorm.DB) error {
 	}
 	loan.ID = id.String()
 
-	// Generate a human-readable loan number from the UUIDv7 timestamp + random suffix.
-	// Format: LN-<unix_ms_hex>-<4_random_hex> e.g. "LN-018F3A2B1C-A7F2"
-	if loan.LoanNumber == nil {
+	// Generate a human-readable loan reference from the UUIDv7 timestamp +
+	// random suffix.
+	// Format: LR-<unix_ms_hex>-<4_random_hex> e.g. "LR-018F3A2B1C-A7F2"
+	if loan.LoanReference == nil {
 		ts := time.Now().UnixMilli()
 		short := id.String()[24:28] // 4 hex chars from the random portion
-		num := fmt.Sprintf("LN-%X-%s", ts, short)
-		loan.LoanNumber = &num
+		ref := fmt.Sprintf("LR-%X-%s", ts, short)
+		loan.LoanReference = &ref
 	}
 	return nil
 }
