@@ -51,7 +51,8 @@ type Loan struct {
 	RampSequenceID      *string    `json:"ramp_sequence_id,omitempty" gorm:"type:varchar(200);index"`
 	DisbursementRateBps *int64     `json:"disbursement_rate_bps,omitempty" gorm:"type:bigint"`
 	DeliveredAmtKES     *int64     `json:"delivered_amount_kes,omitempty" gorm:"column:delivered_amount_kes;type:bigint"`
-	RepaymentAmtKES     *int64     `json:"repayment_amount_kes,omitempty" gorm:"column:repayment_amount_kes;type:bigint"`
+	QuotedRepaymentAmtKES *int64     `json:"quoted_repayment_amount_kes,omitempty" gorm:"column:quoted_repayment_amount_kes;type:bigint"`
+	QuotedAt              *time.Time `json:"quoted_at,omitempty" gorm:"column:quoted_at;type:timestamp"`
 	ConversionSpreadBps *int32     `json:"conversion_spread_bps,omitempty" gorm:"type:int"`
 	BorrowIndex         *int64     `json:"borrow_index,omitempty" gorm:"type:bigint"`
 	RampFeeUSD          *int64     `json:"ramp_fee_usd,omitempty" gorm:"type:bigint"`
@@ -248,6 +249,7 @@ const (
 	// Loan Status
 	LoanStatusPending   = "pending"
 	LoanStatusApproved  = "approved"
+	LoanStatusDisbursing = "disbursing"
 	LoanStatusDisbursed = "disbursed"
 	LoanStatusRepaid    = "repaid"
 	LoanStatusDefaulted = "defaulted"

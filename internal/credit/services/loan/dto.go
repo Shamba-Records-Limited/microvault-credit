@@ -35,9 +35,10 @@ type UpdateLoanRequest struct {
 	DisbursementStatus  *string `json:"disbursement_status,omitempty"`
 	RampSequenceID      *string `json:"ramp_sequence_id,omitempty"`
 	DisbursementRateBps *int64  `json:"disbursement_rate_bps,omitempty"`
-	DeliveredAmtKES     *int64  `json:"delivered_amount_kes,omitempty"`
-	RepaymentAmtKES     *int64  `json:"repayment_amount_kes,omitempty"`
-	ConversionSpreadBps *int32  `json:"conversion_spread_bps,omitempty"`
+	DeliveredAmtKES       *int64     `json:"delivered_amount_kes,omitempty"`
+	QuotedRepaymentAmtKES *int64     `json:"quoted_repayment_amount_kes,omitempty"`
+	QuotedAt              *time.Time `json:"quoted_at,omitempty"`
+	ConversionSpreadBps   *int32     `json:"conversion_spread_bps,omitempty"`
 	BorrowIndex         *int64  `json:"borrow_index,omitempty"`
 	RampFeeUSD          *int64  `json:"ramp_fee_usd,omitempty"`
 	RampFeeLocal        *int64  `json:"ramp_fee_local,omitempty"`
@@ -114,7 +115,8 @@ type LoanResponse struct {
 	RampSequenceID      *string    `json:"ramp_sequence_id,omitempty"`
 	DisbursementRateBps *int64     `json:"disbursement_rate_bps,omitempty"`
 	DeliveredAmtKES     *int64     `json:"delivered_amount_kes,omitempty"`
-	RepaymentAmtKES     *int64     `json:"repayment_amount_kes,omitempty"`
+	QuotedRepaymentAmtKES *int64     `json:"quoted_repayment_amount_kes,omitempty"`
+	QuotedAt              *time.Time `json:"quoted_at,omitempty"`
 	ConversionSpreadBps *int32     `json:"conversion_spread_bps,omitempty"`
 	BorrowIndex         *int64     `json:"borrow_index,omitempty"`
 	RampFeeUSD          *int64     `json:"ramp_fee_usd,omitempty"`

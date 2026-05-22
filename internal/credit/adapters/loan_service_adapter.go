@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"time"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services"
@@ -317,15 +318,18 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	if a.txnSvc != nil {
 		vaultDesc := "USDC vault borrow for loan disbursement"
 		txnResp, txnErr := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
-			UserID:        &req.UserID,
-			AccountID:     &req.AccountID,
-			LoanID:        &loanID,
-			TxType:        models.TxTypeVaultBorrow,
-			TxCategory:    models.TxCategoryOnChain,
-			Amount:        borrowResp.AmountBorrowed,
-			Asset:         "USDC",
-			StellarTxHash: &borrowResp.TxHash,
-			Description:   &vaultDesc,
+			UserID:           &req.UserID,
+			AccountID:        &req.AccountID,
+			LoanID:           &loanID,
+			TxType:           models.TxTypeVaultBorrow,
+			TxCategory:       models.TxCategoryOnChain,
+			Amount:           borrowResp.AmountBorrowed,
+			Asset:            "USDC",
+			StellarTxHash:    &borrowResp.TxHash,
+			StellarLedger:    &borrowResp.Ledger,
+			ContractID:       &borrowResp.ContractID,
+			ContractFunction: &borrowResp.ContractFunction,
+			Description:      &vaultDesc,
 		})
 		if txnErr != nil {
 			a.logger.Warn("failed to record vault borrow transaction", "loan_id", loanID, "error", txnErr)
@@ -337,7 +341,9 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			})
 			successStatus := models.TxStatusSuccess
 			_, _ = a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{
-				Status: &successStatus,
+				Status:        &successStatus,
+				StellarStatus: &borrowResp.Status,
+				StellarLedger: &borrowResp.Ledger,
 			})
 		}
 	}
@@ -660,18 +666,29 @@ func (a *LoanServiceAdapter) repayVaultAfterInitiate(
 	if a.txnSvc != nil {
 		desc := fmt.Sprintf("Vault repay (trigger: %s)", trigger)
 		txnResp, txnErr := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
-			UserID:        &userID,
-			LoanID:        &loanID,
-			TxType:        models.TxTypeVaultRepay,
-			TxCategory:    models.TxCategoryOnChain,
-			Amount:        repayResp.AmountRepaid,
-			Asset:         "USDC",
-			StellarTxHash: &repayResp.TxHash,
-			Description:   &desc,
+			UserID:           &userID,
+			LoanID:           &loanID,
+			TxType:           models.TxTypeVaultRepay,
+			TxCategory:       models.TxCategoryOnChain,
+			Amount:           repayResp.AmountRepaid,
+			Asset:            "USDC",
+			StellarTxHash:    &repayResp.TxHash,
+			StellarLedger:    &repayResp.Ledger,
+			ContractID:       &repayResp.ContractID,
+			ContractFunction: &repayResp.ContractFunction,
+			Description:      &desc,
 		})
 		if txnErr == nil && txnResp != nil {
-			s := models.TxStatusSuccess
-			_, _ = a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{Status: &s})
+			submittedStatus := models.TxStatusSubmitted
+			_, _ = a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{
+				Status: &submittedStatus,
+			})
+			successStatus := models.TxStatusSuccess
+			_, _ = a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{
+				Status:        &successStatus,
+				StellarStatus: &repayResp.Status,
+				StellarLedger: &repayResp.Ledger,
+			})
 		}
 	}
 
@@ -775,13 +792,18 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 			updateReq.DisbursementRateBps = &disbursementRateBps
 		}
 		if req.LocalAmount > 0 {
-			updateReq.DisbursementAmtKES = &req.LocalAmount
 			totalUSDC := req.PrincipalAmount
 			if createResp.TotalAmount != nil {
 				totalUSDC = *createResp.TotalAmount
 			}
-			repaymentKES := int64(float64(totalUSDC) / 1e7 * req.ConversionRate * 100)
-			updateReq.RepaymentAmtKES = &repaymentKES
+			// Quote-only: this value is what we show the borrower on the USSD
+			// confirmation screen. The actual amount owed at repayment is
+			// recomputed via loan.Service.GetRepaymentQuote — vault APR + FX
+			// drift mean this number is wrong by the time the user repays.
+			quotedKES := int64(float64(totalUSDC) / 1e7 * req.ConversionRate * 100)
+			now := time.Now()
+			updateReq.QuotedRepaymentAmtKES = &quotedKES
+			updateReq.QuotedAt = &now
 		}
 
 		if _, err := a.loanSvc.Update(ctx, loanID, updateReq); err != nil {
@@ -831,8 +853,7 @@ func (a *LoanServiceAdapter) GetUserLoans(ctx context.Context, userID string) ([
 			"status":                  l.Status,
 			"total_amount":            l.TotalAmount,
 			"due_date":                l.DueDate,
-			"disbursement_amount_kes": l.DisbursementAmtKES,
-			"repayment_amount_kes":    l.RepaymentAmtKES,
+			"delivered_amount_kes":    l.DeliveredAmtKES,
 			"borrow_index":            l.BorrowIndex,
 			"ramp_fee_usd":            l.RampFeeUSD,
 			"ramp_fee_local":          l.RampFeeLocal,
@@ -870,6 +891,126 @@ func (a *LoanServiceAdapter) CheckLoanEligibility(ctx context.Context, userID st
 		Reason:       "approved",
 		InterestRate: interestRate * 100, // decimal to percentage (e.g. 8.0 for 8%)
 	}, nil
+}
+
+// GetRepaymentQuote implements ussd.LoanService. It recomputes the live
+// amount owed on a loan from the vault's current borrow_index and the
+// latest FX rate. Hard-fails on either dependency being unavailable — the
+// USSD screen should surface "service unavailable" rather than show a stale
+// number the borrower might act on.
+//
+// Math:
+//
+//	amount_usdc  = principal * (current_borrow_index / origination_borrow_index)
+//	amount_local = amount_usdc * fx_rate
+//
+// Rounded up to the nearest stroop/cent so the borrower never underpays.
+func (a *LoanServiceAdapter) GetRepaymentQuote(ctx context.Context, loanID string) (*ussd.RepaymentQuote, error) {
+	resp, err := a.loanSvc.GetByID(ctx, loanID)
+	if err != nil {
+		return nil, fmt.Errorf("repayment quote: load loan %s: %w", loanID, err)
+	}
+	if resp.BorrowIndex == nil || *resp.BorrowIndex <= 0 {
+		return nil, fmt.Errorf("repayment quote: loan %s has no origination borrow_index", loanID)
+	}
+	originIndex := *resp.BorrowIndex
+
+	currentIndex, err := a.stellarSvc.GetBorrowIndex(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("repayment quote: read vault borrow_index: %w", err)
+	}
+	if currentIndex < originIndex {
+		// Index only grows; this would mean we read a stale or wrong value.
+		return nil, fmt.Errorf("repayment quote: current borrow_index %d < origination %d",
+			currentIndex, originIndex)
+	}
+
+	// principal * current / origin, rounded up — favors the protocol.
+	amountUSDC := mulDivCeil(resp.PrincipalAmount, currentIndex, originIndex)
+
+	currency := "KES"
+	if resp.RampFiatCurr != nil && *resp.RampFiatCurr != "" {
+		currency = *resp.RampFiatCurr
+	}
+
+	fxRate, fxSource, fxErr := a.fetchFXForQuote(ctx, currency)
+	if fxErr != nil {
+		return nil, fmt.Errorf("repayment quote: fetch FX %s: %w", currency, fxErr)
+	}
+
+	amountLocalCents := int64(0)
+	if fxRate > 0 {
+		// stroops → USD → local → cents, ceil.
+		amountUSD := float64(amountUSDC) / 1e7
+		amountLocalCents = int64(amountUSD*fxRate*100 + 0.999)
+	}
+
+	return &ussd.RepaymentQuote{
+		LoanID:             loanID,
+		AmountUSDCStroops:  amountUSDC,
+		AmountLocalCents:   amountLocalCents,
+		LocalCurrency:      currency,
+		BorrowIndexAtQuote: currentIndex,
+		FXRate:             fxRate,
+		QuoteSource:        fxSource,
+		AsOf:               time.Now(),
+	}, nil
+}
+
+// fetchFXForQuote sources a current FX rate using the orchestrator cascade
+// (MG primary → YC fallback → stale cache). Returns rate + source label.
+func (a *LoanServiceAdapter) fetchFXForQuote(ctx context.Context, currency string) (float64, string, error) {
+	if a.fxOrch != nil {
+		res, err := a.fxOrch.Quote(ctx, moneygram.FXQuoteRequest{
+			OriginatingCountry: "USA",
+			DestinationCountry: stellaranchor.CountryISO3("KE"),
+			SendCurrency:       "USD",
+			ReceiveCurrency:    currency,
+		})
+		if err == nil && res != nil && res.Rate > 0 {
+			return res.Rate, res.Source, nil
+		}
+		return 0, "", fmt.Errorf("fx orchestrator: %w", err)
+	}
+	// No orchestrator wired — try the YC adapter's Quoter directly.
+	provider, err := a.offRamps.Resolve(offramp.Request{
+		PayoutMethod: offramp.PayoutMethodMobileMoney,
+		Options:      yellowcard.Options{SettlementMethod: yellowcard.SettlementMethodDirect},
+	})
+	if err != nil {
+		return 0, "", fmt.Errorf("resolve fx provider: %w", err)
+	}
+	quoter, ok := provider.(offramp.Quoter)
+	if !ok {
+		return 0, "", fmt.Errorf("provider %s exposes no Quoter", provider.ID())
+	}
+	q, err := quoter.Quote(ctx, offramp.QuoteRequest{Currency: currency})
+	if err != nil {
+		return 0, "", err
+	}
+	rate := q.BuyRate
+	if rate == 0 {
+		rate = q.Rate
+	}
+	if rate <= 0 {
+		return 0, "", fmt.Errorf("quoter returned non-positive rate")
+	}
+	return rate, string(provider.ID()), nil
+}
+
+// mulDivCeil computes ceil(a * b / c) without overflow on the intermediate
+// multiplication, using big.Int. Used for the (principal * current_index /
+// origination_index) calc where intermediate can exceed int64.
+func mulDivCeil(a, b, c int64) int64 {
+	ai := big.NewInt(a)
+	bi := big.NewInt(b)
+	ci := big.NewInt(c)
+	num := new(big.Int).Mul(ai, bi)
+	q, r := new(big.Int).QuoRem(num, ci, new(big.Int))
+	if r.Sign() > 0 {
+		q.Add(q, big.NewInt(1))
+	}
+	return q.Int64()
 }
 
 // strDeref safely dereferences an optional string for log output.

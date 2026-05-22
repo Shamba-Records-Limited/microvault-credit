@@ -64,6 +64,14 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 	}
 
 	loan.DisbursementStatus = &status
+
+	// Sync main loan status with final payout results
+	if status == yellowcard.DisbursementComplete {
+		loan.Status = models.LoanStatusDisbursed
+	} else if status == yellowcard.DisbursementFailed {
+		loan.Status = models.LoanStatusOffRampFailed
+	}
+
 	if err := a.repo.Update(ctx, loan); err != nil {
 		a.logger.Error("failed to update disbursement status",
 			"loan_id", loan.ID,
@@ -188,14 +196,17 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 	if a.txnSvc != nil {
 		desc := fmt.Sprintf("Vault repay (trigger: %s)", trigger)
 		txnResp, txnErr := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
-			UserID:        &loan.UserID,
-			LoanID:        &loan.ID,
-			TxType:        txmodels.TxTypeVaultRepay,
-			TxCategory:    txmodels.TxCategoryOnChain,
-			Amount:        repayResp.AmountRepaid,
-			Asset:         "USDC",
-			StellarTxHash: &repayResp.TxHash,
-			Description:   &desc,
+			UserID:           &loan.UserID,
+			LoanID:           &loan.ID,
+			TxType:           txmodels.TxTypeVaultRepay,
+			TxCategory:       txmodels.TxCategoryOnChain,
+			Amount:           repayResp.AmountRepaid,
+			Asset:            "USDC",
+			StellarTxHash:    &repayResp.TxHash,
+			StellarLedger:    &repayResp.Ledger,
+			ContractID:       &repayResp.ContractID,
+			ContractFunction: &repayResp.ContractFunction,
+			Description:      &desc,
 		})
 		if txnErr != nil {
 			a.logger.Warn("failed to record vault repay transaction",
@@ -203,8 +214,16 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 				"error", txnErr,
 			)
 		} else if txnResp != nil {
-			s := txmodels.TxStatusSuccess
-			_, _ = a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{Status: &s})
+			submittedStatus := txmodels.TxStatusSubmitted
+			_, _ = a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{
+				Status: &submittedStatus,
+			})
+			successStatus := txmodels.TxStatusSuccess
+			_, _ = a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{
+				Status:        &successStatus,
+				StellarStatus: &repayResp.Status,
+				StellarLedger: &repayResp.Ledger,
+			})
 		}
 	}
 
@@ -256,6 +275,24 @@ func (a *DisbursementStatusAdapter) recordDeliveredAmount(ctx context.Context, l
 		"gross_kes_cents", gross,
 		"fee_kes_cents", fee,
 	)
+}
+
+// IsDirectSettlement reports whether the loan identified by sequenceID is
+// in direct-settlement mode. Used by the YC webhook handler to decide
+// whether a FAILED event should mark the loan refund_pending (direct, USDC
+// awaits crypto refund) or terminal_failed (fiat). A NULL settlement_method
+// is treated as not-direct — safer to mark terminal_failed than wait for a
+// refund that will never come.
+func (a *DisbursementStatusAdapter) IsDirectSettlement(sequenceID string) (bool, error) {
+	ctx := context.Background()
+	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
+	if err != nil {
+		return false, fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
+	}
+	if loan.SettlementMethod == nil {
+		return false, nil
+	}
+	return *loan.SettlementMethod == "direct", nil
 }
 
 // SetSettlementMethod updates the loan's settlement_method field. Used by

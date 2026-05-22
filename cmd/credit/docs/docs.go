@@ -406,54 +406,31 @@ const docTemplate = `{
         "yellowcard.WebhookEvent": {
             "type": "object",
             "properties": {
-                "data": {
-                    "$ref": "#/definitions/yellowcard.WebhookPayload"
+                "apiKey": {
+                    "type": "string"
+                },
+                "errorCode": {
+                    "type": "string"
                 },
                 "event": {
                     "type": "string"
                 },
-                "timestamp": {
-                    "type": "string"
-                }
-            }
-        },
-        "yellowcard.WebhookPayload": {
-            "type": "object",
-            "properties": {
-                "amount": {
-                    "type": "number"
-                },
-                "convertedAmount": {
-                    "type": "number"
-                },
-                "country": {
-                    "type": "string"
-                },
-                "createdAt": {
-                    "type": "string"
-                },
-                "currency": {
-                    "type": "string"
-                },
-                "directSettlement": {
-                    "type": "boolean"
+                "executedAt": {
+                    "type": "integer"
                 },
                 "id": {
                     "type": "string"
                 },
-                "rate": {
-                    "type": "number"
-                },
                 "sequenceId": {
+                    "type": "string"
+                },
+                "sessionId": {
                     "type": "string"
                 },
                 "settlementInfo": {
                     "$ref": "#/definitions/yellowcard.SettlementInfo"
                 },
                 "status": {
-                    "type": "string"
-                },
-                "updatedAt": {
                     "type": "string"
                 }
             }

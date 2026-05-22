@@ -150,12 +150,25 @@ func main() {
 	// cascades MG to YC for rate quoting inside the loan adapter.
 
 	// 10a. YellowCard off-ramp adapter
+	//
+	// YELLOWCARD_TEST_DESTINATION_PHONE_OVERRIDE: test-only knob. When set,
+	// every YC payment uses this number instead of the real recipient — used
+	// for hitting YC sandbox simulation phones (e.g. +2341111111111 for a
+	// guaranteed-success momo transaction). Hard-disabled in production:
+	// even if the env var is set, the override is dropped when
+	// SERVER_ENVIRONMENT=production.
+	ycTestPhoneOverride := os.Getenv("YELLOWCARD_TEST_DESTINATION_PHONE_OVERRIDE")
+	if ycTestPhoneOverride != "" && os.Getenv("SERVER_ENVIRONMENT") == "production" {
+		logger.Error("YELLOWCARD_TEST_DESTINATION_PHONE_OVERRIDE is set but SERVER_ENVIRONMENT=production — override ignored")
+		ycTestPhoneOverride = ""
+	}
 	ycOffRamp := ussdadapters.NewYellowCardOffRampAdapter(ussdadapters.YellowCardOffRampConfig{
-		Adapter:      ycAdapter,
-		Treasury:     treasuryTransfer,
-		BusinessID:   cfg.Payments.YellowCard.BusinessID,
-		BusinessName: cfg.Payments.YellowCard.BusinessName,
-		Logger:       logger,
+		Adapter:                      ycAdapter,
+		Treasury:                     treasuryTransfer,
+		BusinessID:                   cfg.Payments.YellowCard.BusinessID,
+		BusinessName:                 cfg.Payments.YellowCard.BusinessName,
+		Logger:                       logger,
+		TestDestinationPhoneOverride: ycTestPhoneOverride,
 	})
 
 	// 10b. MoneyGram client — fetch TOML, pin signing key + USDC issuer,

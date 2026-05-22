@@ -252,8 +252,11 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanRequest) 
 	if req.DeliveredAmtKES != nil {
 		loan.DeliveredAmtKES = req.DeliveredAmtKES
 	}
-	if req.RepaymentAmtKES != nil {
-		loan.RepaymentAmtKES = req.RepaymentAmtKES
+	if req.QuotedRepaymentAmtKES != nil {
+		loan.QuotedRepaymentAmtKES = req.QuotedRepaymentAmtKES
+	}
+	if req.QuotedAt != nil {
+		loan.QuotedAt = req.QuotedAt
 	}
 	if req.ConversionSpreadBps != nil {
 		loan.ConversionSpreadBps = req.ConversionSpreadBps
@@ -377,7 +380,7 @@ func (s *service) Disburse(ctx context.Context, id string, req DisburseLoanReque
 	}
 
 	now := time.Now()
-	loan.Status = models.LoanStatusDisbursed
+	loan.Status = models.LoanStatusDisbursing
 	loan.DisbursedAt = &now
 
 	// Update disbursement details
@@ -602,7 +605,8 @@ func toLoanResponse(loan *models.Loan) *LoanResponse {
 		RampSequenceID:      loan.RampSequenceID,
 		DisbursementRateBps: loan.DisbursementRateBps,
 		DeliveredAmtKES:     loan.DeliveredAmtKES,
-		RepaymentAmtKES:     loan.RepaymentAmtKES,
+		QuotedRepaymentAmtKES: loan.QuotedRepaymentAmtKES,
+		QuotedAt:              loan.QuotedAt,
 		ConversionSpreadBps: loan.ConversionSpreadBps,
 		BorrowIndex:         loan.BorrowIndex,
 		RampFeeUSD:          loan.RampFeeUSD,

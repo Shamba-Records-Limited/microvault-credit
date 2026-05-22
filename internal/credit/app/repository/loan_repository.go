@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Common errors for LoanRepository
@@ -130,7 +132,7 @@ func (r *loanRepository) GetActiveLoans(ctx context.Context, limit, offset int) 
 	var loans []*models.Loan
 	result := r.db.WithContext(ctx).
 		Where("status IN ? AND deleted_at IS NULL",
-			[]string{models.LoanStatusApproved, models.LoanStatusDisbursed}).
+			[]string{models.LoanStatusApproved, models.LoanStatusDisbursing, models.LoanStatusDisbursed}).
 		Order("created_at DESC").
 		Limit(limit).
 		Offset(offset).
@@ -189,20 +191,43 @@ func (r *loanRepository) GetActiveByUserAndProvider(ctx context.Context, userID,
 }
 
 // GetBySequenceID retrieves a loan by its YellowCard ramp sequence ID.
+// Closes caveat A: handles suffix variants if exact match is not found (e.g. direct-to-fiat _fiat pivot).
 func (r *loanRepository) GetBySequenceID(ctx context.Context, sequenceID string) (*models.Loan, error) {
 	var loan models.Loan
+	// 1. Try exact match first
 	result := r.db.WithContext(ctx).
 		Preload("User").
 		Where("ramp_sequence_id = ? AND deleted_at IS NULL", sequenceID).
 		First(&loan)
-	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-		return nil, ErrLoanNotFound
+	if result.Error == nil {
+		return &loan, nil
 	}
-	if result.Error != nil {
-		log.Printf("GetBySequenceID: database error: %v", result.Error)
+
+	// 2. Fallback to matching suffix variants if record not found
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		var alternativeID string
+		if strings.HasSuffix(sequenceID, "_fiat") {
+			alternativeID = strings.TrimSuffix(sequenceID, "_fiat")
+		} else {
+			alternativeID = sequenceID + "_fiat"
+		}
+
+		resultAlt := r.db.WithContext(ctx).
+			Preload("User").
+			Where("ramp_sequence_id = ? AND deleted_at IS NULL", alternativeID).
+			First(&loan)
+		if resultAlt.Error == nil {
+			return &loan, nil
+		}
+		if errors.Is(resultAlt.Error, gorm.ErrRecordNotFound) {
+			return nil, ErrLoanNotFound
+		}
+		log.Printf("GetBySequenceID (alt): database error: %v", resultAlt.Error)
 		return nil, ErrFailedToGetLoanBySequenceID
 	}
-	return &loan, nil
+
+	log.Printf("GetBySequenceID: database error: %v", result.Error)
+	return nil, ErrFailedToGetLoanBySequenceID
 }
 
 // GetByDisbursementStatus retrieves loans by their disbursement status.
@@ -289,38 +314,40 @@ func (r *loanRepository) GetActiveMoneyGramLoans(ctx context.Context, limit int)
 func (r *loanRepository) Update(ctx context.Context, loan *models.Loan) error {
 	result := r.db.WithContext(ctx).
 		Model(loan).
+		Omit(clause.Associations).
 		Where("id = ? AND deleted_at IS NULL", loan.ID).
 		Updates(map[string]interface{}{
-			"status":                  loan.Status,
-			"approved_at":             loan.ApprovedAt,
-			"approved_by":             loan.ApprovedBy,
-			"disbursed_at":            loan.DisbursedAt,
-			"repaid_at":               loan.RepaidAt,
-			"defaulted_at":            loan.DefaultedAt,
-			"vault_tx_hash":           loan.VaultTxHash,
-			"vault_tx_status":         loan.VaultTxStatus,
-			"vault_repay_tx_hash":     loan.VaultRepayTxHash,
-			"vault_repay_status":      loan.VaultRepayStatus,
-			"ramp_provider":           loan.RampProvider,
-			"ramp_request_id":         loan.RampRequestID,
-			"ramp_fiat_amount":        loan.RampFiatAmount,
-			"ramp_fiat_currency":      loan.RampFiatCurr,
-			"momo_provider":           loan.MomoProvider,
-			"momo_transaction_id":     loan.MomoTxID,
-			"momo_status":             loan.MomoStatus,
-			"settlement_method":       loan.SettlementMethod,
-			"disbursement_status":     loan.DisbursementStatus,
-			"ramp_sequence_id":        loan.RampSequenceID,
-			"origination_fee":         loan.OriginationFee,
-			"origination_fee_bps":     loan.OriginationFeeBps,
-			"total_amount":            loan.TotalAmount,
-			"disbursement_rate_bps":   loan.DisbursementRateBps,
-			"delivered_amount_kes":    loan.DeliveredAmtKES,
-			"repayment_amount_kes":    loan.RepaymentAmtKES,
-			"conversion_spread_bps":   loan.ConversionSpreadBps,
-			"borrow_index":            loan.BorrowIndex,
-			"ramp_fee_usd":            loan.RampFeeUSD,
-			"ramp_fee_local":          loan.RampFeeLocal,
+			"status":                      loan.Status,
+			"approved_at":                 loan.ApprovedAt,
+			"approved_by":                 loan.ApprovedBy,
+			"disbursed_at":                loan.DisbursedAt,
+			"repaid_at":                   loan.RepaidAt,
+			"defaulted_at":                loan.DefaultedAt,
+			"vault_tx_hash":               loan.VaultTxHash,
+			"vault_tx_status":             loan.VaultTxStatus,
+			"vault_repay_tx_hash":         loan.VaultRepayTxHash,
+			"vault_repay_status":          loan.VaultRepayStatus,
+			"ramp_provider":               loan.RampProvider,
+			"ramp_request_id":             loan.RampRequestID,
+			"ramp_fiat_amount":            loan.RampFiatAmount,
+			"ramp_fiat_currency":          loan.RampFiatCurr,
+			"momo_provider":               loan.MomoProvider,
+			"momo_transaction_id":         loan.MomoTxID,
+			"momo_status":                 loan.MomoStatus,
+			"settlement_method":           loan.SettlementMethod,
+			"disbursement_status":         loan.DisbursementStatus,
+			"ramp_sequence_id":            loan.RampSequenceID,
+			"origination_fee":             loan.OriginationFee,
+			"origination_fee_bps":         loan.OriginationFeeBps,
+			"total_amount":                loan.TotalAmount,
+			"disbursement_rate_bps":       loan.DisbursementRateBps,
+			"delivered_amount_kes":        loan.DeliveredAmtKES,
+			"quoted_repayment_amount_kes": loan.QuotedRepaymentAmtKES,
+			"quoted_at":                   loan.QuotedAt,
+			"conversion_spread_bps":       loan.ConversionSpreadBps,
+			"borrow_index":                loan.BorrowIndex,
+			"ramp_fee_usd":                loan.RampFeeUSD,
+			"ramp_fee_local":              loan.RampFeeLocal,
 
 			"ramp_interactive_url":     loan.RampInteractiveURL,
 			"ramp_external_ref":        loan.RampExternalRef,
