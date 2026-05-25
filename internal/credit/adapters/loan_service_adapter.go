@@ -848,15 +848,15 @@ func (a *LoanServiceAdapter) GetUserLoans(ctx context.Context, userID string) ([
 	results := make([]interface{}, len(resp.Data))
 	for i, l := range resp.Data {
 		results[i] = map[string]interface{}{
-			"id":                      l.ID,
-			"loan_reference":          l.LoanReference,
-			"status":                  l.Status,
-			"total_amount":            l.TotalAmount,
-			"due_date":                l.DueDate,
-			"delivered_amount_kes":    l.DeliveredAmtKES,
-			"borrow_index":            l.BorrowIndex,
-			"ramp_fee_usd":            l.RampFeeUSD,
-			"ramp_fee_local":          l.RampFeeLocal,
+			"id":                   l.ID,
+			"loan_reference":       l.LoanReference,
+			"status":               l.Status,
+			"total_amount":         l.TotalAmount,
+			"due_date":             l.DueDate,
+			"delivered_amount_kes": l.DeliveredAmtKES,
+			"borrow_index":         l.BorrowIndex,
+			"ramp_fee_usd":         l.RampFeeUSD,
+			"ramp_fee_local":       l.RampFeeLocal,
 		}
 	}
 	a.logger.Info("fetched user loans", "user_id", userID, "count", len(results))

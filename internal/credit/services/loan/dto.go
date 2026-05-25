@@ -17,31 +17,31 @@ type CreateLoanRequest struct {
 
 // UpdateLoanRequest represents the request to update loan information
 type UpdateLoanRequest struct {
-	VaultTxHash         *string `json:"vault_tx_hash,omitempty"`
-	VaultTxStatus       *string `json:"vault_tx_status,omitempty"`
-	VaultRepayTxHash    *string `json:"vault_repay_tx_hash,omitempty"`
-	VaultRepayStatus    *string `json:"vault_repay_status,omitempty"`
-	RampProvider        *string `json:"ramp_provider,omitempty"`
-	RampRequestID       *string `json:"ramp_request_id,omitempty"`
-	RampFiatAmount      *int64  `json:"ramp_fiat_amount,omitempty"`
-	RampFiatCurr        *string `json:"ramp_fiat_currency,omitempty"`
-	MomoProvider        *string `json:"momo_provider,omitempty"`
-	MomoTxID            *string `json:"momo_transaction_id,omitempty"`
-	MomoStatus          *string `json:"momo_status,omitempty"`
-	OriginationFee      *int64  `json:"origination_fee,omitempty"`
-	OriginationFeeBps   *int32  `json:"origination_fee_bps,omitempty"`
-	TotalAmount         *int64  `json:"total_amount,omitempty"`
-	SettlementMethod    *string `json:"settlement_method,omitempty"`
-	DisbursementStatus  *string `json:"disbursement_status,omitempty"`
-	RampSequenceID      *string `json:"ramp_sequence_id,omitempty"`
-	DisbursementRateBps *int64  `json:"disbursement_rate_bps,omitempty"`
+	VaultTxHash           *string    `json:"vault_tx_hash,omitempty"`
+	VaultTxStatus         *string    `json:"vault_tx_status,omitempty"`
+	VaultRepayTxHash      *string    `json:"vault_repay_tx_hash,omitempty"`
+	VaultRepayStatus      *string    `json:"vault_repay_status,omitempty"`
+	RampProvider          *string    `json:"ramp_provider,omitempty"`
+	RampRequestID         *string    `json:"ramp_request_id,omitempty"`
+	RampFiatAmount        *int64     `json:"ramp_fiat_amount,omitempty"`
+	RampFiatCurr          *string    `json:"ramp_fiat_currency,omitempty"`
+	MomoProvider          *string    `json:"momo_provider,omitempty"`
+	MomoTxID              *string    `json:"momo_transaction_id,omitempty"`
+	MomoStatus            *string    `json:"momo_status,omitempty"`
+	OriginationFee        *int64     `json:"origination_fee,omitempty"`
+	OriginationFeeBps     *int32     `json:"origination_fee_bps,omitempty"`
+	TotalAmount           *int64     `json:"total_amount,omitempty"`
+	SettlementMethod      *string    `json:"settlement_method,omitempty"`
+	DisbursementStatus    *string    `json:"disbursement_status,omitempty"`
+	RampSequenceID        *string    `json:"ramp_sequence_id,omitempty"`
+	DisbursementRateBps   *int64     `json:"disbursement_rate_bps,omitempty"`
 	DeliveredAmtKES       *int64     `json:"delivered_amount_kes,omitempty"`
 	QuotedRepaymentAmtKES *int64     `json:"quoted_repayment_amount_kes,omitempty"`
 	QuotedAt              *time.Time `json:"quoted_at,omitempty"`
 	ConversionSpreadBps   *int32     `json:"conversion_spread_bps,omitempty"`
-	BorrowIndex         *int64  `json:"borrow_index,omitempty"`
-	RampFeeUSD          *int64  `json:"ramp_fee_usd,omitempty"`
-	RampFeeLocal        *int64  `json:"ramp_fee_local,omitempty"`
+	BorrowIndex           *int64     `json:"borrow_index,omitempty"`
+	RampFeeUSD            *int64     `json:"ramp_fee_usd,omitempty"`
+	RampFeeLocal          *int64     `json:"ramp_fee_local,omitempty"`
 
 	// MoneyGram cash-pickup fields.
 	RampInteractiveURL    *string  `json:"ramp_interactive_url,omitempty"`
@@ -78,49 +78,49 @@ type DisburseLoanRequest struct {
 
 // LoanResponse represents the response containing loan information
 type LoanResponse struct {
-	ID                  string     `json:"id"`
-	LoanReference       *string    `json:"loan_reference,omitempty"`
-	UserID              string     `json:"user_id"`
-	AccountID           string     `json:"account_id"`
-	ProductID           *string    `json:"product_id,omitempty"`
-	PrincipalAmount     int64      `json:"principal_amount"`
-	PrincipalAsset      string     `json:"principal_asset"`
-	InterestRateBps     int32      `json:"interest_rate_bps"`
-	InterestAmount      *int64     `json:"interest_amount,omitempty"`
-	OriginationFee      *int64     `json:"origination_fee,omitempty"`
-	OriginationFeeBps   *int32     `json:"origination_fee_bps,omitempty"`
-	TotalAmount         *int64     `json:"total_amount,omitempty"`
-	DurationDays        int        `json:"duration_days"`
-	RepaymentSched      string     `json:"repayment_schedule"`
-	DueDate             *time.Time `json:"due_date,omitempty"`
-	Status              string     `json:"status"`
-	ApprovedAt          *time.Time `json:"approved_at,omitempty"`
-	ApprovedBy          *string    `json:"approved_by,omitempty"`
-	DisbursedAt         *time.Time `json:"disbursed_at,omitempty"`
-	RepaidAt            *time.Time `json:"repaid_at,omitempty"`
-	DefaultedAt         *time.Time `json:"defaulted_at,omitempty"`
-	VaultTxHash         *string    `json:"vault_tx_hash,omitempty"`
-	VaultTxStatus       *string    `json:"vault_tx_status,omitempty"`
-	VaultRepayTxHash    *string    `json:"vault_repay_tx_hash,omitempty"`
-	VaultRepayStatus    *string    `json:"vault_repay_status,omitempty"`
-	RampProvider        *string    `json:"ramp_provider,omitempty"`
-	RampRequestID       *string    `json:"ramp_request_id,omitempty"`
-	RampFiatAmount      *int64     `json:"ramp_fiat_amount,omitempty"`
-	RampFiatCurr        *string    `json:"ramp_fiat_currency,omitempty"`
-	MomoProvider        *string    `json:"momo_provider,omitempty"`
-	MomoTxID            *string    `json:"momo_transaction_id,omitempty"`
-	MomoStatus          *string    `json:"momo_status,omitempty"`
-	SettlementMethod    *string    `json:"settlement_method,omitempty"`
-	DisbursementStatus  *string    `json:"disbursement_status,omitempty"`
-	RampSequenceID      *string    `json:"ramp_sequence_id,omitempty"`
-	DisbursementRateBps *int64     `json:"disbursement_rate_bps,omitempty"`
-	DeliveredAmtKES     *int64     `json:"delivered_amount_kes,omitempty"`
+	ID                    string     `json:"id"`
+	LoanReference         *string    `json:"loan_reference,omitempty"`
+	UserID                string     `json:"user_id"`
+	AccountID             string     `json:"account_id"`
+	ProductID             *string    `json:"product_id,omitempty"`
+	PrincipalAmount       int64      `json:"principal_amount"`
+	PrincipalAsset        string     `json:"principal_asset"`
+	InterestRateBps       int32      `json:"interest_rate_bps"`
+	InterestAmount        *int64     `json:"interest_amount,omitempty"`
+	OriginationFee        *int64     `json:"origination_fee,omitempty"`
+	OriginationFeeBps     *int32     `json:"origination_fee_bps,omitempty"`
+	TotalAmount           *int64     `json:"total_amount,omitempty"`
+	DurationDays          int        `json:"duration_days"`
+	RepaymentSched        string     `json:"repayment_schedule"`
+	DueDate               *time.Time `json:"due_date,omitempty"`
+	Status                string     `json:"status"`
+	ApprovedAt            *time.Time `json:"approved_at,omitempty"`
+	ApprovedBy            *string    `json:"approved_by,omitempty"`
+	DisbursedAt           *time.Time `json:"disbursed_at,omitempty"`
+	RepaidAt              *time.Time `json:"repaid_at,omitempty"`
+	DefaultedAt           *time.Time `json:"defaulted_at,omitempty"`
+	VaultTxHash           *string    `json:"vault_tx_hash,omitempty"`
+	VaultTxStatus         *string    `json:"vault_tx_status,omitempty"`
+	VaultRepayTxHash      *string    `json:"vault_repay_tx_hash,omitempty"`
+	VaultRepayStatus      *string    `json:"vault_repay_status,omitempty"`
+	RampProvider          *string    `json:"ramp_provider,omitempty"`
+	RampRequestID         *string    `json:"ramp_request_id,omitempty"`
+	RampFiatAmount        *int64     `json:"ramp_fiat_amount,omitempty"`
+	RampFiatCurr          *string    `json:"ramp_fiat_currency,omitempty"`
+	MomoProvider          *string    `json:"momo_provider,omitempty"`
+	MomoTxID              *string    `json:"momo_transaction_id,omitempty"`
+	MomoStatus            *string    `json:"momo_status,omitempty"`
+	SettlementMethod      *string    `json:"settlement_method,omitempty"`
+	DisbursementStatus    *string    `json:"disbursement_status,omitempty"`
+	RampSequenceID        *string    `json:"ramp_sequence_id,omitempty"`
+	DisbursementRateBps   *int64     `json:"disbursement_rate_bps,omitempty"`
+	DeliveredAmtKES       *int64     `json:"delivered_amount_kes,omitempty"`
 	QuotedRepaymentAmtKES *int64     `json:"quoted_repayment_amount_kes,omitempty"`
 	QuotedAt              *time.Time `json:"quoted_at,omitempty"`
-	ConversionSpreadBps *int32     `json:"conversion_spread_bps,omitempty"`
-	BorrowIndex         *int64     `json:"borrow_index,omitempty"`
-	RampFeeUSD          *int64     `json:"ramp_fee_usd,omitempty"`
-	RampFeeLocal        *int64     `json:"ramp_fee_local,omitempty"`
+	ConversionSpreadBps   *int32     `json:"conversion_spread_bps,omitempty"`
+	BorrowIndex           *int64     `json:"borrow_index,omitempty"`
+	RampFeeUSD            *int64     `json:"ramp_fee_usd,omitempty"`
+	RampFeeLocal          *int64     `json:"ramp_fee_local,omitempty"`
 
 	RampInteractiveURL    *string  `json:"ramp_interactive_url,omitempty"`
 	RampExternalRef       *string  `json:"ramp_external_ref,omitempty"`

@@ -14,49 +14,49 @@ import (
 // Loan represents a loan record
 // Amounts stored in smallest unit, rates in basis points
 type Loan struct {
-	ID                  string     `json:"id" gorm:"type:uuid;primaryKey"`
-	LoanReference       *string    `json:"loan_reference,omitempty" gorm:"column:loan_reference;type:varchar(50);uniqueIndex"`
-	UserID              string     `json:"user_id" gorm:"type:uuid;not null;index"`
-	AccountID           string     `json:"account_id" gorm:"type:uuid;not null;index"`
-	ProductID           *string    `json:"product_id,omitempty" gorm:"type:uuid;index"`
-	PrincipalAmount     int64      `json:"principal_amount" gorm:"type:bigint;not null"`
-	PrincipalAsset      string     `json:"principal_asset" gorm:"type:varchar(20);not null;index"`
-	InterestRateBps     int32      `json:"interest_rate_bps" gorm:"type:int;not null"`
-	InterestAmount      *int64     `json:"interest_amount,omitempty" gorm:"type:bigint"`
-	OriginationFee      *int64     `json:"origination_fee,omitempty" gorm:"type:bigint"`
-	OriginationFeeBps   *int32     `json:"origination_fee_bps,omitempty" gorm:"type:int"`
-	TotalAmount         *int64     `json:"total_amount,omitempty" gorm:"type:bigint"`
-	DurationDays        int        `json:"duration_days" gorm:"type:int;not null"`
-	RepaymentSchedule   string     `json:"repayment_schedule" gorm:"type:varchar(20);not null"`
-	DueDate             *time.Time `json:"due_date,omitempty" gorm:"type:timestamp;index"`
-	Status              string     `json:"status" gorm:"type:varchar(20);not null;default:'pending';index"`
-	ApprovedAt          *time.Time `json:"approved_at,omitempty" gorm:"type:timestamp"`
-	ApprovedBy          *string    `json:"approved_by,omitempty" gorm:"type:uuid"`
-	DisbursedAt         *time.Time `json:"disbursed_at,omitempty" gorm:"type:timestamp;index"`
-	RepaidAt            *time.Time `json:"repaid_at,omitempty" gorm:"type:timestamp"`
-	DefaultedAt         *time.Time `json:"defaulted_at,omitempty" gorm:"type:timestamp"`
-	VaultTxHash         *string    `json:"vault_tx_hash,omitempty" gorm:"type:varchar(64);index"`
-	VaultTxStatus       *string    `json:"vault_tx_status,omitempty" gorm:"type:varchar(20)"`
-	VaultRepayTxHash    *string    `json:"vault_repay_tx_hash,omitempty" gorm:"type:varchar(64);index"`
-	VaultRepayStatus    *string    `json:"vault_repay_status,omitempty" gorm:"type:varchar(20);index"`
-	RampProvider        *string    `json:"ramp_provider,omitempty" gorm:"type:varchar(50)"`
-	RampRequestID       *string    `json:"ramp_request_id,omitempty" gorm:"type:varchar(100);index"`
-	RampFiatAmount      *int64     `json:"ramp_fiat_amount,omitempty" gorm:"type:bigint"`
-	RampFiatCurr        *string    `json:"ramp_fiat_currency,omitempty" gorm:"column:ramp_fiat_currency;type:varchar(10)"`
-	MomoProvider        *string    `json:"momo_provider,omitempty" gorm:"type:varchar(50)"`
-	MomoTxID            *string    `json:"momo_transaction_id,omitempty" gorm:"column:momo_transaction_id;type:varchar(100);index"`
-	MomoStatus          *string    `json:"momo_status,omitempty" gorm:"type:varchar(20)"`
-	SettlementMethod    *string    `json:"settlement_method,omitempty" gorm:"type:varchar(20)"`
-	DisbursementStatus  *string    `json:"disbursement_status,omitempty" gorm:"type:varchar(30);index"`
-	RampSequenceID      *string    `json:"ramp_sequence_id,omitempty" gorm:"type:varchar(200);index"`
-	DisbursementRateBps *int64     `json:"disbursement_rate_bps,omitempty" gorm:"type:bigint"`
-	DeliveredAmtKES     *int64     `json:"delivered_amount_kes,omitempty" gorm:"column:delivered_amount_kes;type:bigint"`
+	ID                    string     `json:"id" gorm:"type:uuid;primaryKey"`
+	LoanReference         *string    `json:"loan_reference,omitempty" gorm:"column:loan_reference;type:varchar(50);uniqueIndex"`
+	UserID                string     `json:"user_id" gorm:"type:uuid;not null;index"`
+	AccountID             string     `json:"account_id" gorm:"type:uuid;not null;index"`
+	ProductID             *string    `json:"product_id,omitempty" gorm:"type:uuid;index"`
+	PrincipalAmount       int64      `json:"principal_amount" gorm:"type:bigint;not null"`
+	PrincipalAsset        string     `json:"principal_asset" gorm:"type:varchar(20);not null;index"`
+	InterestRateBps       int32      `json:"interest_rate_bps" gorm:"type:int;not null"`
+	InterestAmount        *int64     `json:"interest_amount,omitempty" gorm:"type:bigint"`
+	OriginationFee        *int64     `json:"origination_fee,omitempty" gorm:"type:bigint"`
+	OriginationFeeBps     *int32     `json:"origination_fee_bps,omitempty" gorm:"type:int"`
+	TotalAmount           *int64     `json:"total_amount,omitempty" gorm:"type:bigint"`
+	DurationDays          int        `json:"duration_days" gorm:"type:int;not null"`
+	RepaymentSchedule     string     `json:"repayment_schedule" gorm:"type:varchar(20);not null"`
+	DueDate               *time.Time `json:"due_date,omitempty" gorm:"type:timestamp;index"`
+	Status                string     `json:"status" gorm:"type:varchar(20);not null;default:'pending';index"`
+	ApprovedAt            *time.Time `json:"approved_at,omitempty" gorm:"type:timestamp"`
+	ApprovedBy            *string    `json:"approved_by,omitempty" gorm:"type:uuid"`
+	DisbursedAt           *time.Time `json:"disbursed_at,omitempty" gorm:"type:timestamp;index"`
+	RepaidAt              *time.Time `json:"repaid_at,omitempty" gorm:"type:timestamp"`
+	DefaultedAt           *time.Time `json:"defaulted_at,omitempty" gorm:"type:timestamp"`
+	VaultTxHash           *string    `json:"vault_tx_hash,omitempty" gorm:"type:varchar(64);index"`
+	VaultTxStatus         *string    `json:"vault_tx_status,omitempty" gorm:"type:varchar(20)"`
+	VaultRepayTxHash      *string    `json:"vault_repay_tx_hash,omitempty" gorm:"type:varchar(64);index"`
+	VaultRepayStatus      *string    `json:"vault_repay_status,omitempty" gorm:"type:varchar(20);index"`
+	RampProvider          *string    `json:"ramp_provider,omitempty" gorm:"type:varchar(50)"`
+	RampRequestID         *string    `json:"ramp_request_id,omitempty" gorm:"type:varchar(100);index"`
+	RampFiatAmount        *int64     `json:"ramp_fiat_amount,omitempty" gorm:"type:bigint"`
+	RampFiatCurr          *string    `json:"ramp_fiat_currency,omitempty" gorm:"column:ramp_fiat_currency;type:varchar(10)"`
+	MomoProvider          *string    `json:"momo_provider,omitempty" gorm:"type:varchar(50)"`
+	MomoTxID              *string    `json:"momo_transaction_id,omitempty" gorm:"column:momo_transaction_id;type:varchar(100);index"`
+	MomoStatus            *string    `json:"momo_status,omitempty" gorm:"type:varchar(20)"`
+	SettlementMethod      *string    `json:"settlement_method,omitempty" gorm:"type:varchar(20)"`
+	DisbursementStatus    *string    `json:"disbursement_status,omitempty" gorm:"type:varchar(30);index"`
+	RampSequenceID        *string    `json:"ramp_sequence_id,omitempty" gorm:"type:varchar(200);index"`
+	DisbursementRateBps   *int64     `json:"disbursement_rate_bps,omitempty" gorm:"type:bigint"`
+	DeliveredAmtKES       *int64     `json:"delivered_amount_kes,omitempty" gorm:"column:delivered_amount_kes;type:bigint"`
 	QuotedRepaymentAmtKES *int64     `json:"quoted_repayment_amount_kes,omitempty" gorm:"column:quoted_repayment_amount_kes;type:bigint"`
 	QuotedAt              *time.Time `json:"quoted_at,omitempty" gorm:"column:quoted_at;type:timestamp"`
-	ConversionSpreadBps *int32     `json:"conversion_spread_bps,omitempty" gorm:"type:int"`
-	BorrowIndex         *int64     `json:"borrow_index,omitempty" gorm:"type:bigint"`
-	RampFeeUSD          *int64     `json:"ramp_fee_usd,omitempty" gorm:"type:bigint"`
-	RampFeeLocal        *int64     `json:"ramp_fee_local,omitempty" gorm:"type:bigint"`
+	ConversionSpreadBps   *int32     `json:"conversion_spread_bps,omitempty" gorm:"type:int"`
+	BorrowIndex           *int64     `json:"borrow_index,omitempty" gorm:"type:bigint"`
+	RampFeeUSD            *int64     `json:"ramp_fee_usd,omitempty" gorm:"type:bigint"`
+	RampFeeLocal          *int64     `json:"ramp_fee_local,omitempty" gorm:"type:bigint"`
 
 	// MoneyGram cash-pickup fields (see migration 000008).
 	// RampInteractiveURL is the SEP-24 webview URL sent to the user via SMS.
@@ -247,13 +247,13 @@ const (
 	InterestTypeCompound = "compound"
 
 	// Loan Status
-	LoanStatusPending   = "pending"
-	LoanStatusApproved  = "approved"
+	LoanStatusPending    = "pending"
+	LoanStatusApproved   = "approved"
 	LoanStatusDisbursing = "disbursing"
-	LoanStatusDisbursed = "disbursed"
-	LoanStatusRepaid    = "repaid"
-	LoanStatusDefaulted = "defaulted"
-	LoanStatusCancelled = "cancelled"
+	LoanStatusDisbursed  = "disbursed"
+	LoanStatusRepaid     = "repaid"
+	LoanStatusDefaulted  = "defaulted"
+	LoanStatusCancelled  = "cancelled"
 	// LoanStatusOffRampFailed marks a loan whose vault borrow succeeded but
 	// whose fiat disbursement could not be completed. The borrowed USDC has
 	// been (or will be) repaid to the vault; the borrower owes nothing and

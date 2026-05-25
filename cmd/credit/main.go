@@ -170,6 +170,80 @@ func main() {
 		Logger:                       logger,
 		TestDestinationPhoneOverride: ycTestPhoneOverride,
 	})
+	offRampRegistry := offramp.NewRegistry()
+	if err := offRampRegistry.Register(offRampSvc); err != nil {
+		log.Fatalf("Failed to register YellowCard off-ramp: %v", err)
+	}
+	if err := offRampRegistry.Alias(offramp.PayoutMethodMobileMoney, offramp.ProviderYellowCard); err != nil {
+		log.Fatalf("Failed to alias mobile_money → yellowcard: %v", err)
+	}
+
+	// ---- 10a. MoneyGram cash-pickup adapter ----
+	// MG is the platform's default cash-pickup anchor: we always fetch the
+	// anchor's TOML, validate it against the pinned signing key + network
+	// passphrase, construct the SDK client, register the adapter, and alias
+	// cash_pickup → moneygram. Boot fails loudly if any of that breaks.
+	if err := cfg.Payments.MoneyGram.Validate(); err != nil {
+		log.Fatalf("MoneyGram config invalid: %v", err)
+	}
+	tomlCtx, tomlCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	mgTOML, err := stellaranchor.FetchTOML(tomlCtx, nil, cfg.Payments.MoneyGram.HomeDomain)
+	tomlCancel()
+	if err != nil {
+		log.Fatalf("MoneyGram TOML fetch failed for %s: %v", cfg.Payments.MoneyGram.HomeDomain, err)
+	}
+	if err := mgTOML.Validate(stellaranchor.ValidateOptions{
+		ExpectedNetworkPassphrase: cfg.Payments.MoneyGram.NetworkPassphrase,
+		ExpectedSigningKey:        cfg.Payments.MoneyGram.ServerSigningKey,
+		ExpectedUSDCIssuer:        cfg.Payments.MoneyGram.USDCIssuer,
+	}); err != nil {
+		log.Fatalf("MoneyGram TOML validation failed: %v", err)
+	}
+
+	// TransferServerURL override from env wins over the TOML; otherwise
+	// fall back to whatever the anchor publishes.
+	transferServerURL := cfg.Payments.MoneyGram.TransferServerURL
+	if transferServerURL == "" {
+		transferServerURL = mgTOML.TransferServerSEP24
+	}
+
+	mgCfg := moneygram.Config{
+		HomeDomain:        cfg.Payments.MoneyGram.HomeDomain,
+		WebAuthEndpoint:   mgTOML.WebAuthEndpoint,
+		TransferServerURL: transferServerURL,
+		ServerSigningKey:  cfg.Payments.MoneyGram.ServerSigningKey,
+		NetworkPassphrase: cfg.Payments.MoneyGram.NetworkPassphrase,
+		USDCIssuer:        cfg.Payments.MoneyGram.USDCIssuer,
+		TreasurySecret:    cfg.Stellar.TreasurySecretKey,
+		Logger:            logger,
+	}
+	if cfg.Payments.MoneyGram.HasRESTCredentials() {
+		mgCfg.REST = moneygram.RESTConfig{
+			BaseURL:       cfg.Payments.MoneyGram.FXRateURL,
+			OAuthTokenURL: cfg.Payments.MoneyGram.OAuthURL,
+			ClientID:      cfg.Payments.MoneyGram.ClientID,
+			ClientSecret:  cfg.Payments.MoneyGram.ClientSecret,
+		}
+	}
+	mgClient, err := moneygram.New(mgCfg)
+	if err != nil {
+		log.Fatalf("MoneyGram client construction failed: %v", err)
+	}
+	mgAdapter, err := ussdadapters.NewMoneyGramOffRampAdapter(ussdadapters.MoneyGramOffRampConfig{
+		Client: mgClient,
+		Logger: logger,
+	})
+	if err != nil {
+		log.Fatalf("MoneyGram off-ramp adapter construction failed: %v", err)
+	}
+	if err := offRampRegistry.Register(mgAdapter); err != nil {
+		log.Fatalf("Failed to register MoneyGram off-ramp: %v", err)
+	}
+	if err := offRampRegistry.Alias(offramp.PayoutMethodCashPickup, offramp.ProviderMoneyGram); err != nil {
+		log.Fatalf("Failed to alias cash_pickup → moneygram: %v", err)
+	}
+	log.Printf("MoneyGram cash-pickup registered (home: %s, REST: %t)",
+		cfg.Payments.MoneyGram.HomeDomain, cfg.Payments.MoneyGram.HasRESTCredentials())
 
 	// 10b. MoneyGram client — fetch TOML, pin signing key + USDC issuer,
 	// construct the SDK. Boot fails loudly if any step breaks.
@@ -266,7 +340,6 @@ func main() {
 	if err := offRampRegistry.Alias(offramp.PayoutMethodCashPickup, offramp.ProviderMoneyGram); err != nil {
 		log.Fatalf("Failed to alias cash_pickup to moneygram: %v", err)
 	}
-
 
 	// ---- 10b. User + Account + Transaction services ----
 	userSvc := user.NewService(coreRepos.User)
