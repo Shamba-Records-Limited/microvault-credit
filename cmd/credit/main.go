@@ -171,7 +171,7 @@ func main() {
 		TestDestinationPhoneOverride: ycTestPhoneOverride,
 	})
 	offRampRegistry := offramp.NewRegistry()
-	if err := offRampRegistry.Register(offRampSvc); err != nil {
+	if err := offRampRegistry.Register(ycOffRamp); err != nil {
 		log.Fatalf("Failed to register YellowCard off-ramp: %v", err)
 	}
 	if err := offRampRegistry.Alias(offramp.PayoutMethodMobileMoney, offramp.ProviderYellowCard); err != nil {
@@ -223,6 +223,7 @@ func main() {
 			OAuthTokenURL: cfg.Payments.MoneyGram.OAuthURL,
 			ClientID:      cfg.Payments.MoneyGram.ClientID,
 			ClientSecret:  cfg.Payments.MoneyGram.ClientSecret,
+			Scope:         "fx_rate",
 		}
 	}
 	mgClient, err := moneygram.New(mgCfg)
@@ -245,67 +246,6 @@ func main() {
 	log.Printf("MoneyGram cash-pickup registered (home: %s, REST: %t)",
 		cfg.Payments.MoneyGram.HomeDomain, cfg.Payments.MoneyGram.HasRESTCredentials())
 
-	// 10b. MoneyGram client — fetch TOML, pin signing key + USDC issuer,
-	// construct the SDK. Boot fails loudly if any step breaks.
-	if err := cfg.Payments.MoneyGram.Validate(); err != nil {
-		log.Fatalf("MoneyGram config invalid: %v", err)
-	}
-	mgInitCtx, mgInitCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer mgInitCancel()
-
-	tomlDoc, err := stellaranchor.FetchTOML(mgInitCtx, nil, cfg.Payments.MoneyGram.HomeDomain)
-	if err != nil {
-		log.Fatalf("MoneyGram TOML fetch failed: %v", err)
-	}
-	if err := tomlDoc.Validate(stellaranchor.ValidateOptions{
-		ExpectedNetworkPassphrase: cfg.Payments.MoneyGram.NetworkPassphrase,
-		ExpectedSigningKey:        cfg.Payments.MoneyGram.ServerSigningKey,
-		ExpectedUSDCIssuer:        cfg.Payments.MoneyGram.USDCIssuer,
-	}); err != nil {
-		log.Fatalf("MoneyGram TOML validation failed: %v", err)
-	}
-
-	// MONEYGRAM_TRANSFER_SERVER_URL override wins over TOML; otherwise
-	// trust the anchor's published TRANSFER_SERVER_SEP0024.
-	transferServerURL := cfg.Payments.MoneyGram.TransferServerURL
-	if transferServerURL == "" {
-		transferServerURL = tomlDoc.TransferServerSEP24
-	}
-
-	mgClient, err := moneygram.New(moneygram.Config{
-		HomeDomain:        cfg.Payments.MoneyGram.HomeDomain,
-		WebAuthEndpoint:   tomlDoc.WebAuthEndpoint,
-		TransferServerURL: transferServerURL,
-		ServerSigningKey:  cfg.Payments.MoneyGram.ServerSigningKey,
-		NetworkPassphrase: cfg.Payments.MoneyGram.NetworkPassphrase,
-		USDCIssuer:        cfg.Payments.MoneyGram.USDCIssuer,
-		TreasurySecret:    cfg.Stellar.TreasurySecretKey,
-		REST: moneygram.RESTConfig{
-			BaseURL:       cfg.Payments.MoneyGram.FXRateURL,
-			OAuthTokenURL: cfg.Payments.MoneyGram.OAuthURL,
-			ClientID:      cfg.Payments.MoneyGram.ClientID,
-			ClientSecret:  cfg.Payments.MoneyGram.ClientSecret,
-			Scope:         "fx_rate",
-		},
-		Logger: logger,
-	})
-	if err != nil {
-		log.Fatalf("MoneyGram client init failed: %v", err)
-	}
-
-	// 10c. MoneyGram off-ramp adapter
-	mgOffRamp, err := ussdadapters.NewMoneyGramOffRampAdapter(ussdadapters.MoneyGramOffRampConfig{
-		Client: mgClient,
-		Logger: logger,
-	})
-	if err != nil {
-		log.Fatalf("MoneyGram adapter init failed: %v", err)
-	}
-	logger.Info("moneygram off-ramp wired",
-		"home_domain", cfg.Payments.MoneyGram.HomeDomain,
-		"has_rest_credentials", cfg.Payments.MoneyGram.HasRESTCredentials(),
-	)
-
 	// 10d. FX orchestrator: MG primary, YC fallback, stale cache last resort.
 	ycFallback := moneygram.FallbackRateFunc(func(ctx context.Context, currency string) (float64, error) {
 		rates, err := ycAdapter.GetRates(ctx, currency)
@@ -325,21 +265,6 @@ func main() {
 		"primary_active", mgClient.HasFXRate(),
 		"fallback_active", true,
 	)
-
-	// 10e. Registry — drives per-request provider dispatch in LoanServiceAdapter.
-	offRampRegistry := offramp.NewRegistry()
-	if err := offRampRegistry.Register(ycOffRamp); err != nil {
-		log.Fatalf("Failed to register YellowCard off-ramp: %v", err)
-	}
-	if err := offRampRegistry.Register(mgOffRamp); err != nil {
-		log.Fatalf("Failed to register MoneyGram off-ramp: %v", err)
-	}
-	if err := offRampRegistry.Alias(offramp.PayoutMethodMobileMoney, offramp.ProviderYellowCard); err != nil {
-		log.Fatalf("Failed to alias mobile_money to yellowcard: %v", err)
-	}
-	if err := offRampRegistry.Alias(offramp.PayoutMethodCashPickup, offramp.ProviderMoneyGram); err != nil {
-		log.Fatalf("Failed to alias cash_pickup to moneygram: %v", err)
-	}
 
 	// ---- 10b. User + Account + Transaction services ----
 	userSvc := user.NewService(coreRepos.User)
