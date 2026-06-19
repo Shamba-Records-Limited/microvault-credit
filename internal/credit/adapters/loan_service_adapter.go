@@ -765,13 +765,9 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 		// Mobile-money: existing YC path — locked AmountLocal + fees.
 		rampFiatAmount := int64(result.AmountLocal * 100) // cents
 		rampDisbStatus := "processing"
-		feeUSD := int64(result.Fee * 100)
-		feeLocal := int64(result.FeeLocal * 100)
 		updateReq.RampFiatAmount = &rampFiatAmount
 		updateReq.RampFiatCurr = &result.LocalCurrency
 		updateReq.DisbursementStatus = &rampDisbStatus
-		updateReq.RampFeeUSD = &feeUSD
-		updateReq.RampFeeLocal = &feeLocal
 
 		// Slippage guard (log-only, no blocking).
 		if req.LocalAmount > 0 {
@@ -855,8 +851,8 @@ func (a *LoanServiceAdapter) GetUserLoans(ctx context.Context, userID string) ([
 			"due_date":             l.DueDate,
 			"delivered_amount_kes": l.DeliveredAmtKES,
 			"borrow_index":         l.BorrowIndex,
-			"ramp_fee_usd":         l.RampFeeUSD,
-			"ramp_fee_local":       l.RampFeeLocal,
+			"service_fee_usd":      l.ServiceFeeUSD,
+			"service_fee_local":    l.ServiceFeeLocal,
 		}
 	}
 	a.logger.Info("fetched user loans", "user_id", userID, "count", len(results))
@@ -927,6 +923,10 @@ func (a *LoanServiceAdapter) GetRepaymentQuote(ctx context.Context, loanID strin
 
 	// principal * current / origin, rounded up — favors the protocol.
 	amountUSDC := mulDivCeil(resp.PrincipalAmount, currentIndex, originIndex)
+
+	if resp.ServiceFeeUSD != nil && *resp.ServiceFeeUSD > 0 {
+		amountUSDC += *resp.ServiceFeeUSD * 1e5
+	}
 
 	currency := "KES"
 	if resp.RampFiatCurr != nil && *resp.RampFiatCurr != "" {

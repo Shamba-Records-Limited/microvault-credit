@@ -264,11 +264,17 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanRequest) 
 	if req.BorrowIndex != nil {
 		loan.BorrowIndex = req.BorrowIndex
 	}
-	if req.RampFeeUSD != nil {
-		loan.RampFeeUSD = req.RampFeeUSD
+	if req.ServiceFeeUSD != nil {
+		loan.ServiceFeeUSD = req.ServiceFeeUSD
 	}
-	if req.RampFeeLocal != nil {
-		loan.RampFeeLocal = req.RampFeeLocal
+	if req.ServiceFeeLocal != nil {
+		loan.ServiceFeeLocal = req.ServiceFeeLocal
+	}
+	if req.PartnerFeeUSD != nil {
+		loan.PartnerFeeUSD = req.PartnerFeeUSD
+	}
+	if req.PartnerFeeLocal != nil {
+		loan.PartnerFeeLocal = req.PartnerFeeLocal
 	}
 	if req.RampInteractiveURL != nil {
 		loan.RampInteractiveURL = req.RampInteractiveURL
@@ -609,8 +615,10 @@ func toLoanResponse(loan *models.Loan) *LoanResponse {
 		QuotedAt:              loan.QuotedAt,
 		ConversionSpreadBps:   loan.ConversionSpreadBps,
 		BorrowIndex:           loan.BorrowIndex,
-		RampFeeUSD:            loan.RampFeeUSD,
-		RampFeeLocal:          loan.RampFeeLocal,
+		ServiceFeeUSD:         loan.ServiceFeeUSD,
+		ServiceFeeLocal:       loan.ServiceFeeLocal,
+		PartnerFeeUSD:         loan.PartnerFeeUSD,
+		PartnerFeeLocal:       loan.PartnerFeeLocal,
 
 		RampInteractiveURL:    loan.RampInteractiveURL,
 		RampExternalRef:       loan.RampExternalRef,

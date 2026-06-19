@@ -55,8 +55,10 @@ type Loan struct {
 	QuotedAt              *time.Time `json:"quoted_at,omitempty" gorm:"column:quoted_at;type:timestamp"`
 	ConversionSpreadBps   *int32     `json:"conversion_spread_bps,omitempty" gorm:"type:int"`
 	BorrowIndex           *int64     `json:"borrow_index,omitempty" gorm:"type:bigint"`
-	RampFeeUSD            *int64     `json:"ramp_fee_usd,omitempty" gorm:"type:bigint"`
-	RampFeeLocal          *int64     `json:"ramp_fee_local,omitempty" gorm:"type:bigint"`
+	ServiceFeeUSD         *int64     `json:"service_fee_usd,omitempty" gorm:"type:bigint"`
+	ServiceFeeLocal       *int64     `json:"service_fee_local,omitempty" gorm:"type:bigint"`
+	PartnerFeeUSD         *int64     `json:"partner_fee_usd,omitempty" gorm:"type:bigint"`
+	PartnerFeeLocal       *int64     `json:"partner_fee_local,omitempty" gorm:"type:bigint"`
 
 	// MoneyGram cash-pickup fields (see migration 000008).
 	// RampInteractiveURL is the SEP-24 webview URL sent to the user via SMS.

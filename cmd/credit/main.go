@@ -354,7 +354,7 @@ func main() {
 	ussdCtrl := controllers.NewUSSDController(ussdService)
 
 	// ---- 14. Webhook service + controller ----
-	webhookSvc := webhook.NewService(disbursementAdapter, nil, disbursementAdapter)
+	webhookSvc := webhook.NewService(disbursementAdapter, nil, disbursementAdapter, ycAdapter)
 	webhookCtrl := controllers.NewWebhookController(webhookSvc, cfg.Payments.YellowCard.WebhookSecret)
 
 	// ---- 15. Pollers ----

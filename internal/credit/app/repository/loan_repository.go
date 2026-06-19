@@ -346,8 +346,10 @@ func (r *loanRepository) Update(ctx context.Context, loan *models.Loan) error {
 			"quoted_at":                   loan.QuotedAt,
 			"conversion_spread_bps":       loan.ConversionSpreadBps,
 			"borrow_index":                loan.BorrowIndex,
-			"ramp_fee_usd":                loan.RampFeeUSD,
-			"ramp_fee_local":              loan.RampFeeLocal,
+			"service_fee_usd":             loan.ServiceFeeUSD,
+			"service_fee_local":           loan.ServiceFeeLocal,
+			"partner_fee_usd":             loan.PartnerFeeUSD,
+			"partner_fee_local":           loan.PartnerFeeLocal,
 
 			"ramp_interactive_url":     loan.RampInteractiveURL,
 			"ramp_external_ref":        loan.RampExternalRef,

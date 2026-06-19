@@ -102,15 +102,13 @@ func (a *MoneyGramPollerAdapter) RecordTransactionUpdate(ctx context.Context, lo
 	if v := strings.TrimSpace(tx.AmountFee); v != "" {
 		cents, ok := decimalToCents(v)
 		if ok {
-			req.RampFeeLocal = &cents
+			req.ServiceFeeLocal = &cents
 			feeCents = cents
 			any = true
 		}
 	}
 	// MG's SEP-24 amount_out is the value the user receives, already net of
-	// amount_fee — so it equals delivered_amount_kes. (Unlike YC's
-	// converted_amount, which is gross and requires subtracting ramp_fee_local
-	// — handled in DisbursementStatusAdapter.recordDeliveredAmount.)
+	// amount_fee — so it equals delivered_amount_kes.
 	_ = feeCents
 	if grossKnown {
 		delivered := grossCents

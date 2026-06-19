@@ -40,8 +40,10 @@ type UpdateLoanRequest struct {
 	QuotedAt              *time.Time `json:"quoted_at,omitempty"`
 	ConversionSpreadBps   *int32     `json:"conversion_spread_bps,omitempty"`
 	BorrowIndex           *int64     `json:"borrow_index,omitempty"`
-	RampFeeUSD            *int64     `json:"ramp_fee_usd,omitempty"`
-	RampFeeLocal          *int64     `json:"ramp_fee_local,omitempty"`
+	ServiceFeeUSD         *int64     `json:"service_fee_usd,omitempty"`
+	ServiceFeeLocal       *int64     `json:"service_fee_local,omitempty"`
+	PartnerFeeUSD         *int64     `json:"partner_fee_usd,omitempty"`
+	PartnerFeeLocal       *int64     `json:"partner_fee_local,omitempty"`
 
 	// MoneyGram cash-pickup fields.
 	RampInteractiveURL    *string  `json:"ramp_interactive_url,omitempty"`
@@ -119,8 +121,10 @@ type LoanResponse struct {
 	QuotedAt              *time.Time `json:"quoted_at,omitempty"`
 	ConversionSpreadBps   *int32     `json:"conversion_spread_bps,omitempty"`
 	BorrowIndex           *int64     `json:"borrow_index,omitempty"`
-	RampFeeUSD            *int64     `json:"ramp_fee_usd,omitempty"`
-	RampFeeLocal          *int64     `json:"ramp_fee_local,omitempty"`
+	ServiceFeeUSD         *int64     `json:"service_fee_usd,omitempty"`
+	ServiceFeeLocal       *int64     `json:"service_fee_local,omitempty"`
+	PartnerFeeUSD         *int64     `json:"partner_fee_usd,omitempty"`
+	PartnerFeeLocal       *int64     `json:"partner_fee_local,omitempty"`
 
 	RampInteractiveURL    *string  `json:"ramp_interactive_url,omitempty"`
 	RampExternalRef       *string  `json:"ramp_external_ref,omitempty"`

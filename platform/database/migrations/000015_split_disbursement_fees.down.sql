@@ -1,0 +1,7 @@
+ALTER TABLE loans DROP COLUMN IF EXISTS service_fee_usd;
+ALTER TABLE loans DROP COLUMN IF EXISTS service_fee_local;
+ALTER TABLE loans DROP COLUMN IF EXISTS partner_fee_usd;
+ALTER TABLE loans DROP COLUMN IF EXISTS partner_fee_local;
+
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS ramp_fee_usd BIGINT;
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS ramp_fee_local BIGINT;

@@ -106,10 +106,6 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 		if loan.SettlementMethod != nil && *loan.SettlementMethod == "fiat" {
 			a.repayVaultIfNeeded(ctx, loan, "fiat_complete")
 		}
-		// Stamp delivered_amount_kes = ramp_fiat_amount - ramp_fee_local
-		// (both in cents). This is the actual fiat the borrower received;
-		// downstream SMS + UI should prefer this over ramp_fiat_amount.
-		a.recordDeliveredAmount(ctx, loan)
 	case yellowcard.DisbursementFailed:
 		// Either path: the borrowed USDC is back in (or was never out of)
 		// treasury, so repay the vault. repayVaultIfNeeded is idempotent via
@@ -235,46 +231,48 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 	)
 }
 
-// recordDeliveredAmount computes and persists the net fiat the borrower
-// actually received: ramp_fiat_amount - ramp_fee_local. Both are in cents.
-// Idempotent: skips when DeliveredAmtKES is already set, so a replayed
-// DisbursementComplete webhook won't overwrite. NULL inputs are treated as
-// zero — a missing ramp_fee_local still yields a usable delivered amount.
-func (a *DisbursementStatusAdapter) recordDeliveredAmount(ctx context.Context, loan *models.Loan) {
+// RecordDisbursementCompletion persists the final financials of a completed
+// payment: delivered_amount_kes (convertedAmount, the gross fiat the borrower
+// received) and the service/partner fees, all in cents. Idempotent: skips when
+// DeliveredAmtKES is already set, so a replayed DisbursementComplete webhook
+// won't overwrite.
+func (a *DisbursementStatusAdapter) RecordDisbursementCompletion(sequenceID string, fin webhook.CompletionFinancials) error {
+	ctx := context.Background()
+	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
+	if err != nil {
+		return fmt.Errorf("completion financials: find loan by sequence %s: %w", sequenceID, err)
+	}
 	if loan.DeliveredAmtKES != nil {
-		return
+		return nil
 	}
-	if loan.RampFiatAmount == nil {
-		return
-	}
-	gross := *loan.RampFiatAmount
-	fee := int64(0)
-	if loan.RampFeeLocal != nil {
-		fee = *loan.RampFeeLocal
-	}
-	delivered := gross - fee
-	if delivered < 0 {
-		a.logger.Warn("delivered_amount_kes would be negative — skipping",
-			"loan_id", loan.ID,
-			"ramp_fiat_amount", gross,
-			"ramp_fee_local", fee,
-		)
-		return
-	}
+
+	delivered := majorToCents(fin.ConvertedAmountLocal)
+	serviceFeeUSD := majorToCents(fin.ServiceFeeAmountUSD)
+	serviceFeeLocal := majorToCents(fin.ServiceFeeAmountLocal)
+	partnerFeeUSD := majorToCents(fin.PartnerFeeAmountUSD)
+	partnerFeeLocal := majorToCents(fin.PartnerFeeAmountLocal)
+
 	loan.DeliveredAmtKES = &delivered
+	loan.ServiceFeeUSD = &serviceFeeUSD
+	loan.ServiceFeeLocal = &serviceFeeLocal
+	loan.PartnerFeeUSD = &partnerFeeUSD
+	loan.PartnerFeeLocal = &partnerFeeLocal
+
 	if err := a.repo.Update(ctx, loan); err != nil {
-		a.logger.Warn("failed to persist delivered_amount_kes",
-			"loan_id", loan.ID,
-			"error", err,
-		)
-		return
+		return fmt.Errorf("completion financials: persist loan %s: %w", loan.ID, err)
 	}
-	a.logger.Info("delivered_amount_kes recorded",
+	a.logger.Info("disbursement completion financials recorded",
 		"loan_id", loan.ID,
-		"delivered_kes_cents", delivered,
-		"gross_kes_cents", gross,
-		"fee_kes_cents", fee,
+		"delivered_local_cents", delivered,
+		"service_fee_local_cents", serviceFeeLocal,
+		"partner_fee_local_cents", partnerFeeLocal,
 	)
+	return nil
+}
+
+// majorToCents converts a major-unit amount (e.g. 29.99 USD) to integer cents.
+func majorToCents(v float64) int64 {
+	return int64(v*100 + 0.5)
 }
 
 // IsDirectSettlement reports whether the loan identified by sequenceID is
