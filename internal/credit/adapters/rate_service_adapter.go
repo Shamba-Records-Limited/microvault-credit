@@ -22,14 +22,14 @@ func NewRateServiceAdapter(quoter offramp.Quoter) *RateServiceAdapter {
 	return &RateServiceAdapter{quoter: quoter}
 }
 
-// GetExchangeRate returns the buy rate for the given currency (e.g. "KES").
+// GetExchangeRate returns the sell rate for the given currency (e.g. "KES").
 func (a *RateServiceAdapter) GetExchangeRate(ctx context.Context, currency string) (float64, error) {
 	rate, err := a.quoter.Quote(ctx, offramp.QuoteRequest{Currency: currency})
 	if err != nil {
 		return 0, fmt.Errorf("get exchange rate for %s: %w", currency, err)
 	}
-	if rate.BuyRate <= 0 {
-		return 0, fmt.Errorf("invalid buy rate for %s: %.4f", currency, rate.BuyRate)
+	if rate.SellRate <= 0 {
+		return 0, fmt.Errorf("invalid sell rate for %s: %.4f", currency, rate.SellRate)
 	}
-	return rate.BuyRate, nil
+	return rate.SellRate, nil
 }

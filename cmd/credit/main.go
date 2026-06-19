@@ -162,13 +162,19 @@ func main() {
 		logger.Error("YELLOWCARD_TEST_DESTINATION_PHONE_OVERRIDE is set but SERVER_ENVIRONMENT=production — override ignored")
 		ycTestPhoneOverride = ""
 	}
+	ycTestAddressOverride := os.Getenv("YELLOWCARD_TEST_DESTINATION_ADDRESS_OVERRIDE")
+	if ycTestAddressOverride != "" && os.Getenv("SERVER_ENVIRONMENT") == "production" {
+		logger.Error("YELLOWCARD_TEST_DESTINATION_ADDRESS_OVERRIDE is set but SERVER_ENVIRONMENT=production — override ignored")
+		ycTestAddressOverride = ""
+	}
 	ycOffRamp := ussdadapters.NewYellowCardOffRampAdapter(ussdadapters.YellowCardOffRampConfig{
-		Adapter:                      ycAdapter,
-		Treasury:                     treasuryTransfer,
-		BusinessID:                   cfg.Payments.YellowCard.BusinessID,
-		BusinessName:                 cfg.Payments.YellowCard.BusinessName,
-		Logger:                       logger,
-		TestDestinationPhoneOverride: ycTestPhoneOverride,
+		Adapter:                        ycAdapter,
+		Treasury:                       treasuryTransfer,
+		BusinessID:                     cfg.Payments.YellowCard.BusinessID,
+		BusinessName:                   cfg.Payments.YellowCard.BusinessName,
+		Logger:                         logger,
+		TestDestinationPhoneOverride:   ycTestPhoneOverride,
+		TestDestinationAddressOverride: ycTestAddressOverride,
 	})
 	offRampRegistry := offramp.NewRegistry()
 	if err := offRampRegistry.Register(ycOffRamp); err != nil {

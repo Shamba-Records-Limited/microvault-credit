@@ -59,7 +59,7 @@ func (a *LoanServiceAdapter) SetFXOrchestrator(orch *moneygram.FXOrchestrator) {
 
 // FXConfig tunes the entry-rate quoting that happens just before the loan is
 // initiated against a provider. BufferPct is applied multiplicatively to the
-// quoted buy rate (entry_rate_used = buy_rate * (1 - BufferPct)) and recorded
+// quoted sell rate (entry_rate_used = sell_rate * (1 - BufferPct)) and recorded
 // on the loan for downstream drift detection.
 type FXConfig struct {
 	BufferPct float64 // 0.02 = 2 %. Falls back to DefaultFXBufferPct when ≤ 0.
@@ -568,9 +568,9 @@ func (a *LoanServiceAdapter) requoteEntryRate(
 			"provider", p.ID(), "currency", currency, "error", err)
 		return 0, "", 0
 	}
-	rate := q.BuyRate
+	rate := q.SellRate
 	if rate == 0 {
-		rate = q.Rate
+		rate = q.BuyRate
 	}
 	if rate <= 0 {
 		return 0, "", 0
@@ -988,9 +988,9 @@ func (a *LoanServiceAdapter) fetchFXForQuote(ctx context.Context, currency strin
 	if err != nil {
 		return 0, "", err
 	}
-	rate := q.BuyRate
+	rate := q.SellRate
 	if rate == 0 {
-		rate = q.Rate
+		rate = q.BuyRate
 	}
 	if rate <= 0 {
 		return 0, "", fmt.Errorf("quoter returned non-positive rate")
