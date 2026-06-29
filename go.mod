@@ -16,7 +16,7 @@ require (
 	github.com/redis/go-redis/v9 v9.20.0
 	github.com/swaggo/swag v1.16.6
 	gorm.io/datatypes v1.2.7
-	gorm.io/gorm v1.31.1
+	gorm.io/gorm v1.31.2
 )
 
 require (
