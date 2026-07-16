@@ -25,6 +25,7 @@ type Service interface {
 	// Loan management
 	Create(ctx context.Context, req CreateLoanRequest) (*LoanResponse, error)
 	GetByID(ctx context.Context, id string) (*LoanResponse, error)
+	GetByRampShortCode(ctx context.Context, code string) (*LoanResponse, error)
 	GetByUserID(ctx context.Context, userID string, pagination services.Pagination) (*services.PaginatedResponse[LoanResponse], error)
 	GetActiveLoans(ctx context.Context, pagination services.Pagination) (*services.PaginatedResponse[LoanResponse], error)
 	Update(ctx context.Context, id string, req UpdateLoanRequest) (*LoanResponse, error)
@@ -112,6 +113,20 @@ func (s *service) GetByID(ctx context.Context, id string) (*LoanResponse, error)
 			return nil, ErrLoanNotFound
 		}
 		log.Printf("GetByID: failed to get loan: %v", err)
+		return nil, err
+	}
+
+	return toLoanResponse(loan), nil
+}
+
+// GetByRampShortCode resolves the loan behind a /r/{code} SMS redirect.
+func (s *service) GetByRampShortCode(ctx context.Context, code string) (*LoanResponse, error) {
+	loan, err := s.repo.GetByRampShortCode(ctx, code)
+	if err != nil {
+		if errors.Is(err, repository.ErrLoanNotFound) {
+			return nil, ErrLoanNotFound
+		}
+		log.Printf("GetByRampShortCode: failed to get loan: %v", err)
 		return nil, err
 	}
 
@@ -279,6 +294,9 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanRequest) 
 	if req.RampInteractiveURL != nil {
 		loan.RampInteractiveURL = req.RampInteractiveURL
 	}
+	if req.RampShortCode != nil {
+		loan.RampShortCode = req.RampShortCode
+	}
 	if req.RampExternalRef != nil {
 		loan.RampExternalRef = req.RampExternalRef
 	}
@@ -308,6 +326,9 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanRequest) 
 	}
 	if req.RampInteractiveURL != nil {
 		loan.RampInteractiveURL = req.RampInteractiveURL
+	}
+	if req.RampShortCode != nil {
+		loan.RampShortCode = req.RampShortCode
 	}
 	if req.RampExternalRef != nil {
 		loan.RampExternalRef = req.RampExternalRef
@@ -651,6 +672,7 @@ func toLoanResponse(loan *models.Loan) *LoanResponse {
 		PartnerFeeLocal:       loan.PartnerFeeLocal,
 
 		RampInteractiveURL:    loan.RampInteractiveURL,
+		RampShortCode:         loan.RampShortCode,
 		RampExternalRef:       loan.RampExternalRef,
 		RampMoreInfoURL:       loan.RampMoreInfoURL,
 		RampChildAccountIndex: loan.RampChildAccountIndex,

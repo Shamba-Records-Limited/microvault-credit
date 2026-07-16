@@ -70,6 +70,8 @@ type Loan struct {
 	RampExternalRef       *string `json:"ramp_external_ref,omitempty" gorm:"type:varchar(100);index"`
 	RampMoreInfoURL       *string `json:"ramp_more_info_url,omitempty" gorm:"type:text"`
 	RampChildAccountIndex *int64  `json:"ramp_child_account_index,omitempty" gorm:"type:bigint"`
+	// RampShortCode maps a /r/{code} SMS redirect to RampInteractiveURL.
+	RampShortCode *string `json:"ramp_short_code,omitempty" gorm:"type:varchar(24);uniqueIndex"`
 
 	// FX audit fields capture the rate the loan was quoted at, the source
 	// label, the entry buffer percentage applied, and the user's originally

@@ -47,6 +47,7 @@ type UpdateLoanRequest struct {
 
 	// MoneyGram cash-pickup fields.
 	RampInteractiveURL    *string  `json:"ramp_interactive_url,omitempty"`
+	RampShortCode         *string  `json:"ramp_short_code,omitempty"`
 	RampExternalRef       *string  `json:"ramp_external_ref,omitempty"`
 	RampMoreInfoURL       *string  `json:"ramp_more_info_url,omitempty"`
 	RampChildAccountIndex *int64   `json:"ramp_child_account_index,omitempty"`
@@ -127,6 +128,7 @@ type LoanResponse struct {
 	PartnerFeeLocal       *int64     `json:"partner_fee_local,omitempty"`
 
 	RampInteractiveURL    *string  `json:"ramp_interactive_url,omitempty"`
+	RampShortCode         *string  `json:"ramp_short_code,omitempty"`
 	RampExternalRef       *string  `json:"ramp_external_ref,omitempty"`
 	RampMoreInfoURL       *string  `json:"ramp_more_info_url,omitempty"`
 	RampChildAccountIndex *int64   `json:"ramp_child_account_index,omitempty"`

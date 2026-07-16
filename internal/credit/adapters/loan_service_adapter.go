@@ -47,6 +47,14 @@ type LoanServiceAdapter struct {
 	fxBufferPct   float64
 	dedupe        *dedupeGate
 	fxOrch        *moneygram.FXOrchestrator // optional; wired post-construction
+	publicBaseURL string                    // origin for SMS short-links; optional
+}
+
+// SetPublicBaseURL sets the externally-reachable origin used to build the
+// cash-pickup SMS short-link (e.g. https://microvault.outray.app). When empty,
+// the raw MoneyGram interactive URL is sent instead.
+func (a *LoanServiceAdapter) SetPublicBaseURL(url string) {
+	a.publicBaseURL = url
 }
 
 // SetFXOrchestrator attaches a MoneyGram FXOrchestrator after construction.
@@ -730,10 +738,25 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 		// poller backfill amount_out / external_ref / withdraw_memo.
 		mgInitiated := "mg_initiated"
 		updateReq.DisbursementStatus = &mgInitiated
+		var smsLink string
 		if mg, ok := result.Provider.(moneygram.CashPickupPayload); ok {
 			if mg.InteractiveURL != "" {
 				v := mg.InteractiveURL
 				updateReq.RampInteractiveURL = &v
+				smsLink = v
+
+				// A short-link redirect keeps the SMS within its width; the raw
+				// URL embeds a ~500-char SEP-24 JWT. Falls back to the raw URL
+				// when no public base URL is configured or code generation fails.
+				if a.publicBaseURL != "" {
+					if code, err := newShortCode(); err != nil {
+						a.logger.Warn("short-code generation failed; sending raw URL",
+							"loan_id", loanID, "error", err)
+					} else {
+						updateReq.RampShortCode = &code
+						smsLink = a.publicBaseURL + "/r/" + code
+					}
+				}
 			}
 		}
 		if _, err := a.loanSvc.Update(ctx, loanID, updateReq); err != nil {
@@ -742,22 +765,20 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 		}
 
 		// SMS user the interactive URL so they can complete KYC.
-		if a.loanNotifier != nil && req.PhoneNumber != "" {
-			if mg, ok := result.Provider.(moneygram.CashPickupPayload); ok && mg.InteractiveURL != "" {
-				notification := contracts.LoanNotification{
-					LoanID:          loanID,
-					PhoneNumber:     req.PhoneNumber,
-					DisplayAmount:   float64(req.PrincipalAmount) / 1e7,
-					DisplayCurrency: "USD",
-					InteractiveURL:  mg.InteractiveURL,
-				}
-				if createResp.LoanReference != nil {
-					notification.LoanReference = *createResp.LoanReference
-				}
-				if smsErr := a.loanNotifier.NotifyLoanCashPickupInitiated(ctx, notification); smsErr != nil {
-					a.logger.Warn("cash-pickup SMS failed",
-						"loan_id", loanID, "error", smsErr)
-				}
+		if a.loanNotifier != nil && req.PhoneNumber != "" && smsLink != "" {
+			notification := contracts.LoanNotification{
+				LoanID:          loanID,
+				PhoneNumber:     req.PhoneNumber,
+				DisplayAmount:   float64(req.PrincipalAmount) / 1e7,
+				DisplayCurrency: "USD",
+				InteractiveURL:  smsLink,
+			}
+			if createResp.LoanReference != nil {
+				notification.LoanReference = *createResp.LoanReference
+			}
+			if smsErr := a.loanNotifier.NotifyLoanCashPickupInitiated(ctx, notification); smsErr != nil {
+				a.logger.Warn("cash-pickup SMS failed",
+					"loan_id", loanID, "error", smsErr)
 			}
 		}
 

@@ -13,6 +13,7 @@ import (
 	_ "github.com/Shamba-Records-Limited/microvault-credit/cmd/credit/docs"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/adapters"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/handlers"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
 	"github.com/Shamba-Records-Limited/microvault/pkg/account"
@@ -220,7 +221,7 @@ func main() {
 		ServerSigningKey:  cfg.Payments.MoneyGram.ServerSigningKey,
 		NetworkPassphrase: cfg.Payments.MoneyGram.NetworkPassphrase,
 		USDCIssuer:        cfg.Payments.MoneyGram.USDCIssuer,
-		TreasurySecret:    cfg.Stellar.TreasurySecretKey,
+		TreasurySecret:    cfg.Payments.MoneyGram.AuthSecret,
 		Logger:            logger,
 	}
 	if cfg.Payments.MoneyGram.HasRESTCredentials() {
@@ -236,9 +237,29 @@ func main() {
 	if err != nil {
 		log.Fatalf("MoneyGram client construction failed: %v", err)
 	}
+
+	// Funds wallet: SEP-24 account + USDC send source. Distinct from the auth
+	// wallet in prod; both default to TREASURY_SECRET_KEY.
+	mgFundsAddr, err := cfg.Payments.MoneyGram.FundsAddress()
+	if err != nil {
+		log.Fatalf("MoneyGram funds address derivation failed: %v", err)
+	}
+	mgFundsSvc := stellar.NewService(
+		rpcClient,
+		cfg.Stellar.NetworkPassphrase,
+		cfg.Payments.MoneyGram.FundsSecret,
+		cfg.Stellar.AdminSecretKey,
+		cfg.Stellar.ContractID,
+		cfg.Stellar.USDCIssuer,
+	)
+	mgFundsTransfer := ussdadapters.NewStellarTreasuryTransfer(mgFundsSvc, logger)
+	mgAuthAddr, _ := cfg.Payments.MoneyGram.AuthAddress()
+	logger.Info("moneygram wallets resolved", "auth_address", mgAuthAddr, "funds_address", mgFundsAddr)
+
 	mgAdapter, err := ussdadapters.NewMoneyGramOffRampAdapter(ussdadapters.MoneyGramOffRampConfig{
-		Client: mgClient,
-		Logger: logger,
+		Client:      mgClient,
+		FundsPubkey: mgFundsAddr,
+		Logger:      logger,
 	})
 	if err != nil {
 		log.Fatalf("MoneyGram off-ramp adapter construction failed: %v", err)
@@ -311,6 +332,7 @@ func main() {
 	if fxOrch != nil {
 		loanAdapter.SetFXOrchestrator(fxOrch)
 	}
+	loanAdapter.SetPublicBaseURL(cfg.Server.PublicBaseURL)
 
 	// ---- 12. DisbursementStatusAdapter (webhook callbacks) ----
 	disbursementAdapter := adapters.NewDisbursementStatusAdapter(
@@ -382,7 +404,7 @@ func main() {
 		mgPollerAdapter,     // LoanFetcher + LoanRecorder
 		mgPollerAdapter,     // LoanRecorder (same impl)
 		disbursementAdapter, // DisbursementUpdater (reused from YC flow)
-		treasuryTransfer,    // TreasuryTransfer for USDC to MG anchor
+		mgFundsTransfer,     // funds-wallet sender for USDC to MG anchor
 		nil,                 // AlertService — log-only for now
 		mgpoller.DefaultConfig(),
 		logger,
@@ -430,6 +452,10 @@ func main() {
 
 	// Webhook routes
 	api.Post("/webhooks/yellowcard", webhookCtrl.HandleYellowCardWebhook)
+
+	// Cash-pickup SMS short-link → MoneyGram interactive URL redirect.
+	redirectHandler := handlers.NewInteractiveRedirectHandler(loanSvc, logger)
+	app.Get("/r/:code", redirectHandler.Handle)
 
 	// ---- 17. Start server ----
 	sigChan := make(chan os.Signal, 1)

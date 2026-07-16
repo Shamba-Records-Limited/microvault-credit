@@ -29,6 +29,7 @@ var (
 	ErrFailedToGetLoansByDisbStatus   = errors.New("failed to get loans by disbursement status")
 	ErrFailedToGetLoanByWithdrawMemo  = errors.New("failed to get loan by ramp withdraw memo")
 	ErrFailedToGetLoanByExternalRef   = errors.New("failed to get loan by ramp external ref")
+	ErrFailedToGetLoanByShortCode     = errors.New("failed to get loan by ramp short code")
 	ErrFailedToGetActiveMGLoans       = errors.New("failed to get active MoneyGram loans")
 	ErrFailedToGetActiveByProvider    = errors.New("failed to get active loans by provider")
 )
@@ -47,6 +48,7 @@ type LoanRepository interface {
 	GetByDisbursementStatus(ctx context.Context, status string, limit int) ([]*models.Loan, error)
 	GetByRampWithdrawMemo(ctx context.Context, memo string) (*models.Loan, error)
 	GetByRampExternalRef(ctx context.Context, ref string) (*models.Loan, error)
+	GetByRampShortCode(ctx context.Context, code string) (*models.Loan, error)
 	GetActiveMoneyGramLoans(ctx context.Context, limit int) ([]*models.Loan, error)
 
 	// GetActiveByProvider returns loans where ramp_provider matches the given
@@ -280,6 +282,22 @@ func (r *loanRepository) GetByRampExternalRef(ctx context.Context, ref string) (
 	if result.Error != nil {
 		log.Printf("GetByRampExternalRef: database error: %v", result.Error)
 		return nil, ErrFailedToGetLoanByExternalRef
+	}
+	return &loan, nil
+}
+
+// GetByRampShortCode resolves the loan behind a /r/{code} SMS redirect.
+func (r *loanRepository) GetByRampShortCode(ctx context.Context, code string) (*models.Loan, error) {
+	var loan models.Loan
+	result := r.db.WithContext(ctx).
+		Where("ramp_short_code = ? AND deleted_at IS NULL", code).
+		First(&loan)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil, ErrLoanNotFound
+	}
+	if result.Error != nil {
+		log.Printf("GetByRampShortCode: database error: %v", result.Error)
+		return nil, ErrFailedToGetLoanByShortCode
 	}
 	return &loan, nil
 }
