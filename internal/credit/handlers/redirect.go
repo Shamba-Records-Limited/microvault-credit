@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 
@@ -45,7 +46,16 @@ func (h *InteractiveRedirectHandler) Handle(c *fiber.Ctx) error {
 	}
 
 	resp, err := h.loans.GetByRampShortCode(c.UserContext(), code)
-	if err != nil || resp == nil || resp.RampInteractiveURL == nil || *resp.RampInteractiveURL == "" {
+	if err != nil {
+		if !errors.Is(err, loan.ErrLoanNotFound) {
+			// Unexpected — e.g. a missing ramp_short_code column (migration not
+			// applied). Surface it rather than masking as a plain 404.
+			h.logger.Error("short-code lookup failed", "code", code, "error", err)
+		}
+		return c.SendStatus(fiber.StatusNotFound)
+	}
+	if resp == nil || resp.RampInteractiveURL == nil || *resp.RampInteractiveURL == "" {
+		h.logger.Warn("short-code resolved but no interactive URL", "code", code)
 		return c.SendStatus(fiber.StatusNotFound)
 	}
 

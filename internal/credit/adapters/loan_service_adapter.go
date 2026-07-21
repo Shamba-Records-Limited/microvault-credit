@@ -20,6 +20,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
+	"github.com/Shamba-Records-Limited/microvault/pkg/urlshortener"
 )
 
 // DefaultFXBufferPct is the safety margin applied to the re-quoted FX rate
@@ -36,18 +37,27 @@ var _ ussd.LoanService = (*LoanServiceAdapter)(nil)
 // The active loan product is loaded once at construction and cached in
 // productConfig; the USSD handler reads it via [GetProductConfig].
 type LoanServiceAdapter struct {
-	loanSvc       loan.Service
-	productSvc    loanproduct.Service
-	stellarSvc    stellar.Service
-	offRamps      *offramp.Registry
-	loanNotifier  contracts.LoanNotifier
-	txnSvc        transaction.Service
-	logger        *slog.Logger
-	productConfig *ussd.LoanProductConfig
-	fxBufferPct   float64
-	dedupe        *dedupeGate
-	fxOrch        *moneygram.FXOrchestrator // optional; wired post-construction
-	publicBaseURL string                    // origin for SMS short-links; optional
+	loanSvc        loan.Service
+	productSvc     loanproduct.Service
+	stellarSvc     stellar.Service
+	offRamps       *offramp.Registry
+	loanNotifier   contracts.LoanNotifier
+	txnSvc         transaction.Service
+	logger         *slog.Logger
+	productConfig  *ussd.LoanProductConfig
+	fxBufferPct    float64
+	dedupe         *dedupeGate
+	fxOrch         *moneygram.FXOrchestrator // optional; wired post-construction
+	publicBaseURL  string                    // origin for SMS short-links; optional
+	shortener      urlshortener.Shortener    // optional; further shortens the SMS link
+	accountEnsurer AccountEnsurer            // ensures the child on-chain identity exists before lending
+}
+
+// AccountEnsurer guarantees a user's child Stellar account exists on-chain
+// before a loan is disbursed. Implemented by the core user-service adapter,
+// which holds the wallet derivation seed.
+type AccountEnsurer interface {
+	EnsureOnChainAccount(ctx context.Context, accountIndex int, address string) error
 }
 
 // SetPublicBaseURL sets the externally-reachable origin used to build the
@@ -55,6 +65,19 @@ type LoanServiceAdapter struct {
 // the raw MoneyGram interactive URL is sent instead.
 func (a *LoanServiceAdapter) SetPublicBaseURL(url string) {
 	a.publicBaseURL = url
+}
+
+// SetShortener injects an external URL shortener applied to the final
+// cash-pickup SMS link. When publicBaseURL is set it shortens the /r/{code}
+// redirect (no token exposed); otherwise it shortens the raw MoneyGram URL.
+func (a *LoanServiceAdapter) SetShortener(s urlshortener.Shortener) {
+	a.shortener = s
+}
+
+// SetAccountEnsurer injects the on-chain account guarantor consulted before
+// each vault borrow.
+func (a *LoanServiceAdapter) SetAccountEnsurer(e AccountEnsurer) {
+	a.accountEnsurer = e
 }
 
 // SetFXOrchestrator attaches a MoneyGram FXOrchestrator after construction.
@@ -294,6 +317,20 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		}
 	}
 
+	// Ensure the borrower's child account exists on-chain before lending — it
+	// is the fund-less identity we use for tracking/auditing, so we cannot
+	// disburse without it. Normally created asynchronously at registration;
+	// this is the safety net for that rare failure.
+	if a.accountEnsurer != nil {
+		if err := a.accountEnsurer.EnsureOnChainAccount(ctx, int(req.ChildAccountIndex), req.StellarAddress); err != nil {
+			a.logger.Error("on-chain account ensure failed; aborting disbursement",
+				"loan_id", loanID, "address", req.StellarAddress, "error", err)
+			cancelStatus := "cancelled"
+			_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{VaultTxStatus: &cancelStatus})
+			return nil, fmt.Errorf("ensure on-chain account: %w", err)
+		}
+	}
+
 	// Step 4: Borrow from Stellar vault.
 	borrowResp, err := a.stellarSvc.BorrowFromVault(ctx, stellar.BorrowRequest{
 		RecipientAddress: req.StellarAddress,
@@ -519,12 +556,18 @@ func (a *LoanServiceAdapter) buildProviderOptions(payoutMethod string, req *ussd
 			SettlementMethod: yellowcard.SettlementMethodDirect,
 		}, nil
 	case offramp.PayoutMethodCashPickup:
-		if req.BirthDate == "" {
-			return nil, fmt.Errorf("cash-pickup requires BirthDate on LoanRequest")
-		}
+		// BirthDate is optional SEP-9 prefill — when absent the user supplies
+		// it in MoneyGram's webview.
 		return moneygram.Options{
-			BirthDate:         req.BirthDate,
-			ChildAccountIndex: req.ChildAccountIndex,
+			FirstName:          req.FirstName,
+			LastName:           req.LastName,
+			MobileNumber:       req.PhoneNumber,
+			BirthDate:          req.BirthDate,
+			Address:            req.Address,
+			PostalCode:         req.PostalCode,
+			City:               req.City,
+			AddressCountryCode: req.AddressCountryCode,
+			ChildAccountIndex:  req.ChildAccountIndex,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported payout method %q", payoutMethod)
@@ -738,30 +781,45 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 		// poller backfill amount_out / external_ref / withdraw_memo.
 		mgInitiated := "mg_initiated"
 		updateReq.DisbursementStatus = &mgInitiated
-		var smsLink string
-		if mg, ok := result.Provider.(moneygram.CashPickupPayload); ok {
-			if mg.InteractiveURL != "" {
-				v := mg.InteractiveURL
-				updateReq.RampInteractiveURL = &v
-				smsLink = v
+		var rawURL, shortCode string
+		if mg, ok := result.Provider.(moneygram.CashPickupPayload); ok && mg.InteractiveURL != "" {
+			rawURL = mg.InteractiveURL
+			updateReq.RampInteractiveURL = &rawURL
 
-				// A short-link redirect keeps the SMS within its width; the raw
-				// URL embeds a ~500-char SEP-24 JWT. Falls back to the raw URL
-				// when no public base URL is configured or code generation fails.
-				if a.publicBaseURL != "" {
-					if code, err := newShortCode(); err != nil {
-						a.logger.Warn("short-code generation failed; sending raw URL",
-							"loan_id", loanID, "error", err)
-					} else {
-						updateReq.RampShortCode = &code
-						smsLink = a.publicBaseURL + "/r/" + code
-					}
+			// A short-link redirect keeps the SMS within its width; the raw
+			// URL embeds a ~500-char SEP-24 JWT.
+			if a.publicBaseURL != "" {
+				if code, err := newShortCode(); err != nil {
+					a.logger.Warn("short-code generation failed; sending raw URL",
+						"loan_id", loanID, "error", err)
+				} else {
+					shortCode = code
+					updateReq.RampShortCode = &code
 				}
 			}
 		}
+
+		// The SMS link is the short redirect only when its code was actually
+		// persisted — otherwise the redirect would 404, so fall back to the raw
+		// URL.
+		smsLink := rawURL
 		if _, err := a.loanSvc.Update(ctx, loanID, updateReq); err != nil {
 			a.logger.Warn("failed to record cash-pickup initiation",
 				"loan_id", loanID, "error", err)
+		} else if shortCode != "" {
+			smsLink = a.publicBaseURL + "/r/" + shortCode
+		}
+
+		// Optionally shorten the final link via dub.co (branded short domain +
+		// rich preview). On failure keep the existing link — SMS delivery is
+		// more important than link length.
+		if a.shortener != nil && smsLink != "" {
+			if short, err := a.shortener.Shorten(ctx, smsLink); err != nil {
+				a.logger.Warn("dub shorten failed; sending unshortened link",
+					"loan_id", loanID, "error", err)
+			} else {
+				smsLink = short
+			}
 		}
 
 		// SMS user the interactive URL so they can complete KYC.

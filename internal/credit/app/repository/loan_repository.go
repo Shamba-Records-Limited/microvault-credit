@@ -370,6 +370,7 @@ func (r *loanRepository) Update(ctx context.Context, loan *models.Loan) error {
 			"partner_fee_local":           loan.PartnerFeeLocal,
 
 			"ramp_interactive_url":     loan.RampInteractiveURL,
+			"ramp_short_code":          loan.RampShortCode,
 			"ramp_external_ref":        loan.RampExternalRef,
 			"ramp_more_info_url":       loan.RampMoreInfoURL,
 			"ramp_child_account_index": loan.RampChildAccountIndex,

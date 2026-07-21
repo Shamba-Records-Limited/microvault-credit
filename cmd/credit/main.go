@@ -37,6 +37,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
+	"github.com/Shamba-Records-Limited/microvault/pkg/urlshortener"
 	"github.com/Shamba-Records-Limited/microvault/pkg/user"
 	"github.com/Shamba-Records-Limited/microvault/pkg/validation"
 	"github.com/Shamba-Records-Limited/microvault/pkg/webhook"
@@ -333,6 +334,11 @@ func main() {
 		loanAdapter.SetFXOrchestrator(fxOrch)
 	}
 	loanAdapter.SetPublicBaseURL(cfg.Server.PublicBaseURL)
+	loanAdapter.SetAccountEnsurer(userAdapter)
+	if cfg.Shortener.Enabled() {
+		loanAdapter.SetShortener(urlshortener.NewDub(cfg.Shortener.APIKey, cfg.Shortener.ImagePreviewURL))
+		log.Printf("WARNING: dub.co link shortener enabled — cash-pickup SMS links are sent to dub.co")
+	}
 
 	// ---- 12. DisbursementStatusAdapter (webhook callbacks) ----
 	disbursementAdapter := adapters.NewDisbursementStatusAdapter(
@@ -354,8 +360,20 @@ func main() {
 	pinService := pin.NewService(coreRepos.User, pinRepo, accountNotifier, cfg.Auth.PINLockoutDuration)
 	log.Println("PIN service initialized")
 
+	// Resolve SMS language from the recipient's stored preference so every
+	// notification (including background poller/job sends) is localized.
+	langResolver := func(ctx context.Context, phone string) string {
+		u, err := userSvc.GetByMobileNumber(ctx, phone)
+		if err != nil || u == nil {
+			return ""
+		}
+		return u.PreferredLanguage
+	}
+	loanNotifier.SetLanguageResolver(langResolver)
+	accountNotifier.SetLanguageResolver(langResolver)
+
 	// ---- 13. USSD stack ----
-	sessionManager := ussd.NewSessionManager(redisClient, 0) // default 5min TTL
+	sessionManager := ussd.NewSessionManager(redisClient, cfg.Mobile.SessionTimeout)
 	menuRegistry := ussd.NewMenuRegistry()
 
 	// Register standard loan menus
