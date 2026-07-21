@@ -72,6 +72,10 @@ type Loan struct {
 	RampChildAccountIndex *int64  `json:"ramp_child_account_index,omitempty" gorm:"type:bigint"`
 	// RampShortCode maps a /r/{code} SMS redirect to RampInteractiveURL.
 	RampShortCode *string `json:"ramp_short_code,omitempty" gorm:"type:varchar(24);uniqueIndex"`
+	// RampStellarTxHash is the treasury -> MG USDC payment hash. Set once the
+	// send succeeds and used as the poller's local idempotency marker, so a
+	// slow MG stellar_transaction_id echo can't trigger a duplicate payment.
+	RampStellarTxHash *string `json:"ramp_stellar_tx_hash,omitempty" gorm:"type:varchar(64)"`
 
 	// FX audit fields capture the rate the loan was quoted at, the source
 	// label, the entry buffer percentage applied, and the user's originally

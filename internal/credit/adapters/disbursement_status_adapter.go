@@ -391,6 +391,80 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(sequenceID string
 	return nil
 }
 
+// NotifyCashPickupReady sends the borrower their MoneyGram pickup reference
+// once the anchor confirms the cash is collectable. Called by the MG poller on
+// pending_user_transfer_complete.
+func (a *DisbursementStatusAdapter) NotifyCashPickupReady(sequenceID string) error {
+	ctx := context.Background()
+
+	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
+	if err != nil {
+		a.logger.Error("failed to find loan for cash-pickup ready notification",
+			"sequence_id", sequenceID,
+			"error", err,
+		)
+		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
+	}
+
+	if a.loanNotifier == nil {
+		a.logger.Warn("loan notifier not configured, skipping cash-pickup ready SMS",
+			"loan_id", loan.ID,
+		)
+		return nil
+	}
+
+	loanRef := loan.ID
+	if loan.LoanReference != nil {
+		loanRef = *loan.LoanReference
+	}
+
+	// The reference the borrower quotes at the agent. Without it the SMS is
+	// not actionable, so skip rather than send a half-useful message — the
+	// poller keeps ticking and will retry once MG supplies it.
+	if loan.RampExternalRef == nil || *loan.RampExternalRef == "" {
+		a.logger.Warn("no MoneyGram reference yet, deferring cash-pickup ready SMS",
+			"loan_id", loan.ID,
+		)
+		return fmt.Errorf("loan %s has no ramp_external_ref", loan.ID)
+	}
+
+	displayAmount := float64(0)
+	displayCurrency := "KES"
+	switch {
+	case loan.DeliveredAmtKES != nil:
+		displayAmount = float64(*loan.DeliveredAmtKES) / 100
+	case loan.RampFiatAmount != nil:
+		displayAmount = float64(*loan.RampFiatAmount) / 100
+	}
+	if loan.RampFiatCurr != nil {
+		displayCurrency = *loan.RampFiatCurr
+	}
+
+	phone := ""
+	if loan.User != nil {
+		phone = loan.User.MobileNumber
+	}
+
+	if err := a.loanNotifier.NotifyLoanCashPickupReady(ctx, contracts.LoanNotification{
+		LoanID:          loan.ID,
+		LoanReference:   loanRef,
+		PhoneNumber:     phone,
+		DisplayAmount:   displayAmount,
+		DisplayCurrency: displayCurrency,
+		CashPickupRef:   *loan.RampExternalRef,
+	}); err != nil {
+		a.logger.Warn("failed to send cash-pickup ready SMS",
+			"loan_id", loan.ID,
+			"error", err,
+		)
+		return err
+	}
+
+	a.logger.Info("cash-pickup ready SMS sent",
+		"loan_id", loan.ID, "reference", *loan.RampExternalRef)
+	return nil
+}
+
 // NotifyDisbursementFailed sends an SMS notification that the disbursement failed.
 func (a *DisbursementStatusAdapter) NotifyDisbursementFailed(sequenceID string) error {
 	ctx := context.Background()

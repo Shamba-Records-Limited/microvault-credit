@@ -145,7 +145,48 @@ func (a *MoneyGramPollerAdapter) RecordTransactionUpdate(ctx context.Context, lo
 // dedicated column on loans for this yet, and the mgpoller already uses
 // MG's own tx.stellar_transaction_id as the idempotency marker, so logging
 // here is sufficient for audit until a column is added.
-func (a *MoneyGramPollerAdapter) RecordSendUSDC(_ context.Context, loanID string, txHash string) error {
+// sendPendingMarker is written to loans.ramp_stellar_tx_hash to claim a send
+// before it is submitted. A real hash is 64 hex chars, so this sentinel is
+// unambiguous. Its presence makes HasStellarSend true, which blocks a second
+// payment if the process dies mid-send.
+const sendPendingMarker = "pending"
+
+// RecordSendAttempt claims the send before submission. See sendPendingMarker.
+func (a *MoneyGramPollerAdapter) RecordSendAttempt(ctx context.Context, loanID string) error {
+	marker := sendPendingMarker
+	if _, err := a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
+		RampStellarTxHash: &marker,
+	}); err != nil {
+		return fmt.Errorf("claim send attempt for loan %s: %w", loanID, err)
+	}
+	return nil
+}
+
+// ClearSendAttempt releases the claim after a payment that definitively moved
+// no funds, so a later tick can retry.
+func (a *MoneyGramPollerAdapter) ClearSendAttempt(ctx context.Context, loanID string) error {
+	empty := ""
+	if _, err := a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
+		RampStellarTxHash: &empty,
+	}); err != nil {
+		return fmt.Errorf("release send claim for loan %s: %w", loanID, err)
+	}
+	return nil
+}
+
+func (a *MoneyGramPollerAdapter) RecordSendUSDC(ctx context.Context, loanID string, txHash string) error {
+	if txHash == "" {
+		return fmt.Errorf("moneygram poller adapter: empty send tx hash for loan %s", loanID)
+	}
+
+	// Persisted so the poller's idempotency guard survives a slow MoneyGram
+	// stellar_transaction_id echo — without this it re-sends every tick.
+	if _, err := a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
+		RampStellarTxHash: &txHash,
+	}); err != nil {
+		return fmt.Errorf("record send usdc hash for loan %s: %w", loanID, err)
+	}
+
 	a.logger.Info("treasury to MoneyGram USDC send recorded",
 		"loan_id", loanID, "tx_hash", txHash)
 	return nil
@@ -178,6 +219,9 @@ func projectLoanRecord(l *models.Loan) mgpoller.LoanRecord {
 	if l.DisbursementStatus != nil {
 		rec.DisbursementStatus = *l.DisbursementStatus
 	}
+	// Local proof we already paid MG's anchor. Authoritative over MG's
+	// stellar_transaction_id, which can lag minutes behind the payment.
+	rec.HasStellarSend = l.RampStellarTxHash != nil && *l.RampStellarTxHash != ""
 	if l.User != nil {
 		rec.PhoneNumber = l.User.MobileNumber
 	}

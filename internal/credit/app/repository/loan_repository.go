@@ -63,6 +63,13 @@ type LoanRepository interface {
 
 	// Update operations
 	Update(ctx context.Context, loan *models.Loan) error
+
+	// UpdateFields writes only the supplied columns. Preferred over Update for
+	// partial changes: Update rewrites every column, which on this table means
+	// re-writing the ~1KB SEP-24 URLs and touching all 20 indexes for a
+	// one-field change. Keys are validated against the same allow-list Update
+	// uses; unknown columns are rejected.
+	UpdateFields(ctx context.Context, id string, fields map[string]any) error
 	Restore(ctx context.Context, id string) error
 
 	// Delete operations
@@ -328,67 +335,108 @@ func (r *loanRepository) GetActiveMoneyGramLoans(ctx context.Context, limit int)
 
 // --- Update Operations ---
 
-// Update updates a loan record.
-func (r *loanRepository) Update(ctx context.Context, loan *models.Loan) error {
-	result := r.db.WithContext(ctx).
-		Model(loan).
-		Omit(clause.Associations).
-		Where("id = ? AND deleted_at IS NULL", loan.ID).
-		Updates(map[string]interface{}{
-			"status":                      loan.Status,
-			"approved_at":                 loan.ApprovedAt,
-			"approved_by":                 loan.ApprovedBy,
-			"disbursed_at":                loan.DisbursedAt,
-			"repaid_at":                   loan.RepaidAt,
-			"defaulted_at":                loan.DefaultedAt,
-			"vault_tx_hash":               loan.VaultTxHash,
-			"vault_tx_status":             loan.VaultTxStatus,
-			"vault_repay_tx_hash":         loan.VaultRepayTxHash,
-			"vault_repay_status":          loan.VaultRepayStatus,
-			"ramp_provider":               loan.RampProvider,
-			"ramp_request_id":             loan.RampRequestID,
-			"ramp_fiat_amount":            loan.RampFiatAmount,
-			"ramp_fiat_currency":          loan.RampFiatCurr,
-			"momo_provider":               loan.MomoProvider,
-			"momo_transaction_id":         loan.MomoTxID,
-			"momo_status":                 loan.MomoStatus,
-			"settlement_method":           loan.SettlementMethod,
-			"disbursement_status":         loan.DisbursementStatus,
-			"ramp_sequence_id":            loan.RampSequenceID,
-			"origination_fee":             loan.OriginationFee,
-			"origination_fee_bps":         loan.OriginationFeeBps,
-			"total_amount":                loan.TotalAmount,
-			"disbursement_rate_bps":       loan.DisbursementRateBps,
-			"delivered_amount_kes":        loan.DeliveredAmtKES,
-			"quoted_repayment_amount_kes": loan.QuotedRepaymentAmtKES,
-			"quoted_at":                   loan.QuotedAt,
-			"conversion_spread_bps":       loan.ConversionSpreadBps,
-			"borrow_index":                loan.BorrowIndex,
-			"service_fee_usd":             loan.ServiceFeeUSD,
-			"service_fee_local":           loan.ServiceFeeLocal,
-			"partner_fee_usd":             loan.PartnerFeeUSD,
-			"partner_fee_local":           loan.PartnerFeeLocal,
+// loanUpdateMap is the single source of truth for which loan columns may be
+// written, and how each maps onto the model. Both Update (full rewrite) and
+// UpdateFields (partial) derive from it, so the allow-list cannot drift out of
+// sync with the writer — an omission here has silently dropped writes before.
+func loanUpdateMap(loan *models.Loan) map[string]interface{} {
+	return map[string]interface{}{
+		"status":                      loan.Status,
+		"approved_at":                 loan.ApprovedAt,
+		"approved_by":                 loan.ApprovedBy,
+		"disbursed_at":                loan.DisbursedAt,
+		"repaid_at":                   loan.RepaidAt,
+		"defaulted_at":                loan.DefaultedAt,
+		"vault_tx_hash":               loan.VaultTxHash,
+		"vault_tx_status":             loan.VaultTxStatus,
+		"vault_repay_tx_hash":         loan.VaultRepayTxHash,
+		"vault_repay_status":          loan.VaultRepayStatus,
+		"ramp_provider":               loan.RampProvider,
+		"ramp_request_id":             loan.RampRequestID,
+		"ramp_fiat_amount":            loan.RampFiatAmount,
+		"ramp_fiat_currency":          loan.RampFiatCurr,
+		"momo_provider":               loan.MomoProvider,
+		"momo_transaction_id":         loan.MomoTxID,
+		"momo_status":                 loan.MomoStatus,
+		"settlement_method":           loan.SettlementMethod,
+		"disbursement_status":         loan.DisbursementStatus,
+		"ramp_sequence_id":            loan.RampSequenceID,
+		"origination_fee":             loan.OriginationFee,
+		"origination_fee_bps":         loan.OriginationFeeBps,
+		"total_amount":                loan.TotalAmount,
+		"disbursement_rate_bps":       loan.DisbursementRateBps,
+		"delivered_amount_kes":        loan.DeliveredAmtKES,
+		"quoted_repayment_amount_kes": loan.QuotedRepaymentAmtKES,
+		"quoted_at":                   loan.QuotedAt,
+		"conversion_spread_bps":       loan.ConversionSpreadBps,
+		"borrow_index":                loan.BorrowIndex,
+		"service_fee_usd":             loan.ServiceFeeUSD,
+		"service_fee_local":           loan.ServiceFeeLocal,
+		"partner_fee_usd":             loan.PartnerFeeUSD,
+		"partner_fee_local":           loan.PartnerFeeLocal,
 
-			"ramp_interactive_url":     loan.RampInteractiveURL,
-			"ramp_short_code":          loan.RampShortCode,
-			"ramp_external_ref":        loan.RampExternalRef,
-			"ramp_more_info_url":       loan.RampMoreInfoURL,
-			"ramp_child_account_index": loan.RampChildAccountIndex,
-			"entry_rate_used":          loan.EntryRateUsed,
-			"entry_rate_source":        loan.EntryRateSource,
-			"entry_buffer_pct":         loan.EntryBufferPct,
-			"requested_local_amount":   loan.RequestedLocalAmount,
-			"ramp_withdraw_memo":       loan.RampWithdrawMemo,
-			"ramp_withdraw_memo_type":  loan.RampWithdrawMemoType,
-
-			"updated_at": time.Now(),
-		})
-	if result.RowsAffected == 0 {
-		return ErrLoanNotFound
+		"ramp_interactive_url":     loan.RampInteractiveURL,
+		"ramp_short_code":          loan.RampShortCode,
+		"ramp_external_ref":        loan.RampExternalRef,
+		"ramp_more_info_url":       loan.RampMoreInfoURL,
+		"ramp_child_account_index": loan.RampChildAccountIndex,
+		"ramp_stellar_tx_hash":     loan.RampStellarTxHash,
+		"entry_rate_used":          loan.EntryRateUsed,
+		"entry_rate_source":        loan.EntryRateSource,
+		"entry_buffer_pct":         loan.EntryBufferPct,
+		"requested_local_amount":   loan.RequestedLocalAmount,
+		"ramp_withdraw_memo":       loan.RampWithdrawMemo,
+		"ramp_withdraw_memo_type":  loan.RampWithdrawMemoType,
 	}
+}
+
+// loanUpdatableColumns is the set of column names loanUpdateMap can write.
+var loanUpdatableColumns = func() map[string]bool {
+	cols := make(map[string]bool)
+	for k := range loanUpdateMap(&models.Loan{}) {
+		cols[k] = true
+	}
+	return cols
+}()
+
+// Update rewrites every updatable column from the model. Prefer UpdateFields
+// for partial changes.
+func (r *loanRepository) Update(ctx context.Context, loan *models.Loan) error {
+	fields := loanUpdateMap(loan)
+	fields["updated_at"] = time.Now()
+	return r.updateColumns(ctx, loan.ID, fields)
+}
+
+// UpdateFields writes only the supplied columns. See the interface docs.
+func (r *loanRepository) UpdateFields(ctx context.Context, id string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(fields)+1)
+	for k, v := range fields {
+		if !loanUpdatableColumns[k] {
+			log.Printf("UpdateFields: rejected non-updatable column %q", k)
+			return ErrFailedToUpdateLoan
+		}
+		out[k] = v
+	}
+	out["updated_at"] = time.Now()
+	return r.updateColumns(ctx, id, out)
+}
+
+// updateColumns applies a pre-validated column map to one loan row.
+func (r *loanRepository) updateColumns(ctx context.Context, id string, fields map[string]interface{}) error {
+	result := r.db.WithContext(ctx).
+		Model(&models.Loan{}).
+		Omit(clause.Associations).
+		Where("id = ? AND deleted_at IS NULL", id).
+		Updates(fields)
 	if result.Error != nil {
 		log.Printf("Update: database error: %v", result.Error)
 		return ErrFailedToUpdateLoan
+	}
+	if result.RowsAffected == 0 {
+		return ErrLoanNotFound
 	}
 	return nil
 }

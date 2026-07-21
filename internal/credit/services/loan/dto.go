@@ -51,6 +51,7 @@ type UpdateLoanRequest struct {
 	RampExternalRef       *string  `json:"ramp_external_ref,omitempty"`
 	RampMoreInfoURL       *string  `json:"ramp_more_info_url,omitempty"`
 	RampChildAccountIndex *int64   `json:"ramp_child_account_index,omitempty"`
+	RampStellarTxHash     *string  `json:"ramp_stellar_tx_hash,omitempty"`
 	EntryRateUsed         *float64 `json:"entry_rate_used,omitempty"`
 	EntryRateSource       *string  `json:"entry_rate_source,omitempty"`
 	EntryBufferPct        *float64 `json:"entry_buffer_pct,omitempty"`
@@ -132,6 +133,7 @@ type LoanResponse struct {
 	RampExternalRef       *string  `json:"ramp_external_ref,omitempty"`
 	RampMoreInfoURL       *string  `json:"ramp_more_info_url,omitempty"`
 	RampChildAccountIndex *int64   `json:"ramp_child_account_index,omitempty"`
+	RampStellarTxHash     *string  `json:"ramp_stellar_tx_hash,omitempty"`
 	EntryRateUsed         *float64 `json:"entry_rate_used,omitempty"`
 	EntryRateSource       *string  `json:"entry_rate_source,omitempty"`
 	EntryBufferPct        *float64 `json:"entry_buffer_pct,omitempty"`
@@ -147,4 +149,132 @@ type LoanResponse struct {
 type LoanFilters struct {
 	UserID string `json:"user_id,omitempty"`
 	Status string `json:"status,omitempty"`
+}
+
+// changedFields returns only the columns this request actually sets, so a
+// partial update writes a handful of columns instead of rewriting the whole
+// row (including the ~1KB SEP-24 URLs) and every index on it.
+//
+// This is the single place the request-to-column mapping lives; the repository
+// validates the keys against its own allow-list.
+func (r UpdateLoanRequest) changedFields() map[string]any {
+	f := make(map[string]any, 39)
+	if r.VaultTxHash != nil {
+		f["vault_tx_hash"] = r.VaultTxHash
+	}
+	if r.VaultTxStatus != nil {
+		f["vault_tx_status"] = r.VaultTxStatus
+	}
+	if r.VaultRepayTxHash != nil {
+		f["vault_repay_tx_hash"] = r.VaultRepayTxHash
+	}
+	if r.VaultRepayStatus != nil {
+		f["vault_repay_status"] = r.VaultRepayStatus
+	}
+	if r.RampProvider != nil {
+		f["ramp_provider"] = r.RampProvider
+	}
+	if r.RampRequestID != nil {
+		f["ramp_request_id"] = r.RampRequestID
+	}
+	if r.RampFiatAmount != nil {
+		f["ramp_fiat_amount"] = r.RampFiatAmount
+	}
+	if r.RampFiatCurr != nil {
+		f["ramp_fiat_currency"] = r.RampFiatCurr
+	}
+	if r.MomoProvider != nil {
+		f["momo_provider"] = r.MomoProvider
+	}
+	if r.MomoTxID != nil {
+		f["momo_transaction_id"] = r.MomoTxID
+	}
+	if r.MomoStatus != nil {
+		f["momo_status"] = r.MomoStatus
+	}
+	if r.OriginationFee != nil {
+		f["origination_fee"] = r.OriginationFee
+	}
+	if r.OriginationFeeBps != nil {
+		f["origination_fee_bps"] = r.OriginationFeeBps
+	}
+	if r.TotalAmount != nil {
+		f["total_amount"] = r.TotalAmount
+	}
+	if r.SettlementMethod != nil {
+		f["settlement_method"] = r.SettlementMethod
+	}
+	if r.DisbursementStatus != nil {
+		f["disbursement_status"] = r.DisbursementStatus
+	}
+	if r.RampSequenceID != nil {
+		f["ramp_sequence_id"] = r.RampSequenceID
+	}
+	if r.DisbursementRateBps != nil {
+		f["disbursement_rate_bps"] = r.DisbursementRateBps
+	}
+	if r.DeliveredAmtKES != nil {
+		f["delivered_amount_kes"] = r.DeliveredAmtKES
+	}
+	if r.QuotedRepaymentAmtKES != nil {
+		f["quoted_repayment_amount_kes"] = r.QuotedRepaymentAmtKES
+	}
+	if r.QuotedAt != nil {
+		f["quoted_at"] = r.QuotedAt
+	}
+	if r.ConversionSpreadBps != nil {
+		f["conversion_spread_bps"] = r.ConversionSpreadBps
+	}
+	if r.BorrowIndex != nil {
+		f["borrow_index"] = r.BorrowIndex
+	}
+	if r.ServiceFeeUSD != nil {
+		f["service_fee_usd"] = r.ServiceFeeUSD
+	}
+	if r.ServiceFeeLocal != nil {
+		f["service_fee_local"] = r.ServiceFeeLocal
+	}
+	if r.PartnerFeeUSD != nil {
+		f["partner_fee_usd"] = r.PartnerFeeUSD
+	}
+	if r.PartnerFeeLocal != nil {
+		f["partner_fee_local"] = r.PartnerFeeLocal
+	}
+	if r.RampInteractiveURL != nil {
+		f["ramp_interactive_url"] = r.RampInteractiveURL
+	}
+	if r.RampShortCode != nil {
+		f["ramp_short_code"] = r.RampShortCode
+	}
+	if r.RampExternalRef != nil {
+		f["ramp_external_ref"] = r.RampExternalRef
+	}
+	if r.RampMoreInfoURL != nil {
+		f["ramp_more_info_url"] = r.RampMoreInfoURL
+	}
+	if r.RampStellarTxHash != nil {
+		f["ramp_stellar_tx_hash"] = r.RampStellarTxHash
+	}
+	if r.RampChildAccountIndex != nil {
+		f["ramp_child_account_index"] = r.RampChildAccountIndex
+	}
+	if r.EntryRateUsed != nil {
+		f["entry_rate_used"] = r.EntryRateUsed
+	}
+	if r.EntryRateSource != nil {
+		f["entry_rate_source"] = r.EntryRateSource
+	}
+	if r.EntryBufferPct != nil {
+		f["entry_buffer_pct"] = r.EntryBufferPct
+	}
+	if r.RequestedLocalAmount != nil {
+		f["requested_local_amount"] = r.RequestedLocalAmount
+	}
+	if r.RampWithdrawMemo != nil {
+		f["ramp_withdraw_memo"] = r.RampWithdrawMemo
+	}
+	if r.RampWithdrawMemoType != nil {
+		f["ramp_withdraw_memo_type"] = r.RampWithdrawMemoType
+	}
+	return f
 }

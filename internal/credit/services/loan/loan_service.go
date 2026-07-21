@@ -199,168 +199,27 @@ func (s *service) GetActiveLoans(ctx context.Context, pagination services.Pagina
 
 // Update updates loan information
 func (s *service) Update(ctx context.Context, id string, req UpdateLoanRequest) (*LoanResponse, error) {
-	// Get existing loan
+	// Write only what the caller actually set. Rewriting every column made a
+	// one-field change re-write the ~1KB SEP-24 URLs and touch all 20 indexes
+	// on loans; the poller does this for every active loan every 30s.
+	if fields := req.changedFields(); len(fields) > 0 {
+		if err := s.repo.UpdateFields(ctx, id, fields); err != nil {
+			if errors.Is(err, repository.ErrLoanNotFound) {
+				return nil, ErrLoanNotFound
+			}
+			log.Printf("Update: failed to update loan: %v", err)
+			return nil, err
+		}
+	}
+
+	// Read back so the response reflects committed state rather than a
+	// locally-mutated copy.
 	loan, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, repository.ErrLoanNotFound) {
 			return nil, ErrLoanNotFound
 		}
 		log.Printf("Update: failed to get loan: %v", err)
-		return nil, err
-	}
-
-	// Update fields
-	if req.VaultTxHash != nil {
-		loan.VaultTxHash = req.VaultTxHash
-	}
-	if req.VaultTxStatus != nil {
-		loan.VaultTxStatus = req.VaultTxStatus
-	}
-	if req.VaultRepayTxHash != nil {
-		loan.VaultRepayTxHash = req.VaultRepayTxHash
-	}
-	if req.VaultRepayStatus != nil {
-		loan.VaultRepayStatus = req.VaultRepayStatus
-	}
-	if req.RampProvider != nil {
-		loan.RampProvider = req.RampProvider
-	}
-	if req.RampRequestID != nil {
-		loan.RampRequestID = req.RampRequestID
-	}
-	if req.RampFiatAmount != nil {
-		loan.RampFiatAmount = req.RampFiatAmount
-	}
-	if req.RampFiatCurr != nil {
-		loan.RampFiatCurr = req.RampFiatCurr
-	}
-	if req.MomoProvider != nil {
-		loan.MomoProvider = req.MomoProvider
-	}
-	if req.MomoTxID != nil {
-		loan.MomoTxID = req.MomoTxID
-	}
-	if req.MomoStatus != nil {
-		loan.MomoStatus = req.MomoStatus
-	}
-	if req.OriginationFee != nil {
-		loan.OriginationFee = req.OriginationFee
-	}
-	if req.OriginationFeeBps != nil {
-		loan.OriginationFeeBps = req.OriginationFeeBps
-	}
-	if req.TotalAmount != nil {
-		loan.TotalAmount = req.TotalAmount
-	}
-	if req.SettlementMethod != nil {
-		loan.SettlementMethod = req.SettlementMethod
-	}
-	if req.DisbursementStatus != nil {
-		loan.DisbursementStatus = req.DisbursementStatus
-	}
-	if req.RampSequenceID != nil {
-		loan.RampSequenceID = req.RampSequenceID
-	}
-	if req.DisbursementRateBps != nil {
-		loan.DisbursementRateBps = req.DisbursementRateBps
-	}
-	if req.DeliveredAmtKES != nil {
-		loan.DeliveredAmtKES = req.DeliveredAmtKES
-	}
-	if req.QuotedRepaymentAmtKES != nil {
-		loan.QuotedRepaymentAmtKES = req.QuotedRepaymentAmtKES
-	}
-	if req.QuotedAt != nil {
-		loan.QuotedAt = req.QuotedAt
-	}
-	if req.ConversionSpreadBps != nil {
-		loan.ConversionSpreadBps = req.ConversionSpreadBps
-	}
-	if req.BorrowIndex != nil {
-		loan.BorrowIndex = req.BorrowIndex
-	}
-	if req.ServiceFeeUSD != nil {
-		loan.ServiceFeeUSD = req.ServiceFeeUSD
-	}
-	if req.ServiceFeeLocal != nil {
-		loan.ServiceFeeLocal = req.ServiceFeeLocal
-	}
-	if req.PartnerFeeUSD != nil {
-		loan.PartnerFeeUSD = req.PartnerFeeUSD
-	}
-	if req.PartnerFeeLocal != nil {
-		loan.PartnerFeeLocal = req.PartnerFeeLocal
-	}
-	if req.RampInteractiveURL != nil {
-		loan.RampInteractiveURL = req.RampInteractiveURL
-	}
-	if req.RampShortCode != nil {
-		loan.RampShortCode = req.RampShortCode
-	}
-	if req.RampExternalRef != nil {
-		loan.RampExternalRef = req.RampExternalRef
-	}
-	if req.RampMoreInfoURL != nil {
-		loan.RampMoreInfoURL = req.RampMoreInfoURL
-	}
-	if req.RampChildAccountIndex != nil {
-		loan.RampChildAccountIndex = req.RampChildAccountIndex
-	}
-	if req.EntryRateUsed != nil {
-		loan.EntryRateUsed = req.EntryRateUsed
-	}
-	if req.EntryRateSource != nil {
-		loan.EntryRateSource = req.EntryRateSource
-	}
-	if req.EntryBufferPct != nil {
-		loan.EntryBufferPct = req.EntryBufferPct
-	}
-	if req.RequestedLocalAmount != nil {
-		loan.RequestedLocalAmount = req.RequestedLocalAmount
-	}
-	if req.RampWithdrawMemo != nil {
-		loan.RampWithdrawMemo = req.RampWithdrawMemo
-	}
-	if req.RampWithdrawMemoType != nil {
-		loan.RampWithdrawMemoType = req.RampWithdrawMemoType
-	}
-	if req.RampInteractiveURL != nil {
-		loan.RampInteractiveURL = req.RampInteractiveURL
-	}
-	if req.RampShortCode != nil {
-		loan.RampShortCode = req.RampShortCode
-	}
-	if req.RampExternalRef != nil {
-		loan.RampExternalRef = req.RampExternalRef
-	}
-	if req.RampMoreInfoURL != nil {
-		loan.RampMoreInfoURL = req.RampMoreInfoURL
-	}
-	if req.RampChildAccountIndex != nil {
-		loan.RampChildAccountIndex = req.RampChildAccountIndex
-	}
-	if req.EntryRateUsed != nil {
-		loan.EntryRateUsed = req.EntryRateUsed
-	}
-	if req.EntryRateSource != nil {
-		loan.EntryRateSource = req.EntryRateSource
-	}
-	if req.EntryBufferPct != nil {
-		loan.EntryBufferPct = req.EntryBufferPct
-	}
-	if req.RequestedLocalAmount != nil {
-		loan.RequestedLocalAmount = req.RequestedLocalAmount
-	}
-	if req.RampWithdrawMemo != nil {
-		loan.RampWithdrawMemo = req.RampWithdrawMemo
-	}
-	if req.RampWithdrawMemoType != nil {
-		loan.RampWithdrawMemoType = req.RampWithdrawMemoType
-	}
-
-	// Update in database
-	if err := s.repo.Update(ctx, loan); err != nil {
-		log.Printf("Update: failed to update loan: %v", err)
 		return nil, err
 	}
 
@@ -676,6 +535,7 @@ func toLoanResponse(loan *models.Loan) *LoanResponse {
 		RampExternalRef:       loan.RampExternalRef,
 		RampMoreInfoURL:       loan.RampMoreInfoURL,
 		RampChildAccountIndex: loan.RampChildAccountIndex,
+		RampStellarTxHash:     loan.RampStellarTxHash,
 		EntryRateUsed:         loan.EntryRateUsed,
 		EntryRateSource:       loan.EntryRateSource,
 		EntryBufferPct:        loan.EntryBufferPct,
