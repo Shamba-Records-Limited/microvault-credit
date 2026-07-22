@@ -399,6 +399,13 @@ var loanUpdatableColumns = func() map[string]bool {
 	return cols
 }()
 
+// IsUpdatableColumn reports whether col may be written via UpdateFields. Exposed
+// so the service layer's partial-update mapping can be test-guarded against
+// drift from this allow-list.
+func IsUpdatableColumn(col string) bool {
+	return loanUpdatableColumns[col]
+}
+
 // Update rewrites every updatable column from the model. Prefer UpdateFields
 // for partial changes.
 func (r *loanRepository) Update(ctx context.Context, loan *models.Loan) error {
