@@ -85,10 +85,19 @@ type Loan struct {
 	EntryBufferPct       *float64 `json:"entry_buffer_pct,omitempty" gorm:"type:numeric(6,4)"`
 	RequestedLocalAmount *int64   `json:"requested_local_amount,omitempty" gorm:"type:bigint"`
 
-	// SEP-24 withdraw memo returned on MG's transaction object; used by the
-	// Stellar ingest worker to match refund inbound USDC back to the loan.
+	// SEP-24 withdraw memo returned on MG's transaction object; used to match
+	// refund inbound USDC back to the loan.
 	RampWithdrawMemo     *string `json:"ramp_withdraw_memo,omitempty" gorm:"type:varchar(64);index"`
 	RampWithdrawMemoType *string `json:"ramp_withdraw_memo_type,omitempty" gorm:"type:varchar(10)"`
+
+	// Refund settlement, written when MoneyGram returns the USDC — usually
+	// because the borrower cancelled in MG's UI. RampRefundShortfall is what MG
+	// kept back (its refund fee included); non-zero means the treasury absorbed
+	// the difference and the loan needs manual settlement.
+	RampRefundTxHash    *string    `json:"ramp_refund_tx_hash,omitempty" gorm:"type:varchar(64)"`
+	RampRefundAmount    *int64     `json:"ramp_refund_amount,omitempty" gorm:"type:bigint"`
+	RampRefundShortfall *int64     `json:"ramp_refund_shortfall,omitempty" gorm:"type:bigint"`
+	RampRefundedAt      *time.Time `json:"ramp_refunded_at,omitempty"`
 
 	CreatedAt time.Time      `json:"created_at" gorm:"autoCreateTime;not null"`
 	UpdatedAt time.Time      `json:"updated_at" gorm:"autoUpdateTime;not null"`

@@ -58,6 +58,11 @@ type UpdateLoanRequest struct {
 	RequestedLocalAmount  *int64   `json:"requested_local_amount,omitempty"`
 	RampWithdrawMemo      *string  `json:"ramp_withdraw_memo,omitempty"`
 	RampWithdrawMemoType  *string  `json:"ramp_withdraw_memo_type,omitempty"`
+
+	RampRefundTxHash    *string    `json:"ramp_refund_tx_hash,omitempty"`
+	RampRefundAmount    *int64     `json:"ramp_refund_amount,omitempty"`
+	RampRefundShortfall *int64     `json:"ramp_refund_shortfall,omitempty"`
+	RampRefundedAt      *time.Time `json:"ramp_refunded_at,omitempty"`
 }
 
 // ApproveLoanRequest represents the request to approve a loan
@@ -140,6 +145,11 @@ type LoanResponse struct {
 	RequestedLocalAmount  *int64   `json:"requested_local_amount,omitempty"`
 	RampWithdrawMemo      *string  `json:"ramp_withdraw_memo,omitempty"`
 	RampWithdrawMemoType  *string  `json:"ramp_withdraw_memo_type,omitempty"`
+
+	RampRefundTxHash    *string    `json:"ramp_refund_tx_hash,omitempty"`
+	RampRefundAmount    *int64     `json:"ramp_refund_amount,omitempty"`
+	RampRefundShortfall *int64     `json:"ramp_refund_shortfall,omitempty"`
+	RampRefundedAt      *time.Time `json:"ramp_refunded_at,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -275,6 +285,18 @@ func (r UpdateLoanRequest) changedFields() map[string]any {
 	}
 	if r.RampWithdrawMemoType != nil {
 		f["ramp_withdraw_memo_type"] = r.RampWithdrawMemoType
+	}
+	if r.RampRefundTxHash != nil {
+		f["ramp_refund_tx_hash"] = r.RampRefundTxHash
+	}
+	if r.RampRefundAmount != nil {
+		f["ramp_refund_amount"] = r.RampRefundAmount
+	}
+	if r.RampRefundShortfall != nil {
+		f["ramp_refund_shortfall"] = r.RampRefundShortfall
+	}
+	if r.RampRefundedAt != nil {
+		f["ramp_refunded_at"] = r.RampRefundedAt
 	}
 	return f
 }

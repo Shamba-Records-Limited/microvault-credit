@@ -543,6 +543,11 @@ func toLoanResponse(loan *models.Loan) *LoanResponse {
 		RampWithdrawMemo:      loan.RampWithdrawMemo,
 		RampWithdrawMemoType:  loan.RampWithdrawMemoType,
 
+		RampRefundTxHash:    loan.RampRefundTxHash,
+		RampRefundAmount:    loan.RampRefundAmount,
+		RampRefundShortfall: loan.RampRefundShortfall,
+		RampRefundedAt:      loan.RampRefundedAt,
+
 		CreatedAt: loan.CreatedAt,
 		UpdatedAt: loan.UpdatedAt,
 	}

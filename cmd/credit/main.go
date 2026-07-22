@@ -36,6 +36,7 @@ import (
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
+	stellarrpc "github.com/Shamba-Records-Limited/microvault/pkg/stellar/rpc"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
 	"github.com/Shamba-Records-Limited/microvault/pkg/urlshortener"
 	"github.com/Shamba-Records-Limited/microvault/pkg/user"
@@ -413,17 +414,18 @@ func main() {
 	// MoneyGram SEP-24 lifecycle poller.
 	// Drives pending_user_transfer_start to SendUSDC, pending_user_transfer_complete
 	// to backfill amount_out + cash-pickup reference, terminal to finalise.
-	mgPollerAdapter, err := adapters.NewMoneyGramPollerAdapter(repos.Loan, loanSvc, logger)
+	mgPollerAdapter, err := adapters.NewMoneyGramPollerAdapter(repos.Loan, loanSvc, txnSvc, logger)
 	if err != nil {
 		log.Fatalf("MoneyGram poller adapter construction failed: %v", err)
 	}
 	mgP, err := mgpoller.NewPoller(
 		mgClient,
-		mgPollerAdapter,     // LoanFetcher + LoanRecorder
-		mgPollerAdapter,     // LoanRecorder (same impl)
-		disbursementAdapter, // DisbursementUpdater (reused from YC flow)
-		mgFundsTransfer,     // funds-wallet sender for USDC to MG anchor
-		nil,                 // AlertService — log-only for now
+		mgPollerAdapter,                   // LoanFetcher + LoanRecorder
+		mgPollerAdapter,                   // LoanRecorder (same impl)
+		disbursementAdapter,               // DisbursementUpdater (reused from YC flow)
+		mgFundsTransfer,                   // funds-wallet sender for USDC to MG anchor
+		stellarrpc.NewVerifier(rpcClient), // confirms MG's refunds landed on-ledger
+		nil,                               // AlertService — log-only for now
 		mgpoller.DefaultConfig(),
 		logger,
 	)

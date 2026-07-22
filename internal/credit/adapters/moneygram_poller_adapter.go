@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
+	txmodels "github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/stellaranchor"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
+	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
 )
 
 // Compile-time checks.
@@ -27,14 +30,16 @@ var (
 type MoneyGramPollerAdapter struct {
 	repo    repository.LoanRepository
 	loanSvc loan.Service
+	txnSvc  transaction.Service
 	logger  *slog.Logger
 }
 
 // NewMoneyGramPollerAdapter builds the adapter. repo and loanSvc are
-// required; logger may be nil.
+// required; txnSvc and logger may be nil.
 func NewMoneyGramPollerAdapter(
 	repo repository.LoanRepository,
 	loanSvc loan.Service,
+	txnSvc transaction.Service,
 	logger *slog.Logger,
 ) (*MoneyGramPollerAdapter, error) {
 	if repo == nil {
@@ -49,6 +54,7 @@ func NewMoneyGramPollerAdapter(
 	return &MoneyGramPollerAdapter{
 		repo:    repo,
 		loanSvc: loanSvc,
+		txnSvc:  txnSvc,
 		logger:  logger.With("component", "mgpoller_adapter"),
 	}, nil
 }
@@ -190,6 +196,90 @@ func (a *MoneyGramPollerAdapter) RecordSendUSDC(ctx context.Context, loanID stri
 	a.logger.Info("treasury to MoneyGram USDC send recorded",
 		"loan_id", loanID, "tx_hash", txHash)
 	return nil
+}
+
+// RecordRefund persists a settled MoneyGram refund. Written before the vault
+// repay so a crash mid-repay still leaves a record of what came back and in
+// which Stellar transaction.
+func (a *MoneyGramPollerAdapter) RecordRefund(ctx context.Context, loanID string, refund mgpoller.RefundRecord) error {
+	if refund.TxHash == "" {
+		return fmt.Errorf("moneygram poller adapter: empty refund tx hash for loan %s", loanID)
+	}
+
+	now := time.Now()
+	req := loan.UpdateLoanRequest{
+		RampRefundTxHash: &refund.TxHash,
+		RampRefundAmount: &refund.NetStroops,
+		RampRefundedAt:   &now,
+	}
+	// Written unconditionally, including zero: the column doubles as the ops
+	// flag, so "settled with nothing outstanding" has to be distinguishable
+	// from "never settled".
+	req.RampRefundShortfall = &refund.ShortfallStroops
+
+	if _, err := a.loanSvc.Update(ctx, loanID, req); err != nil {
+		return fmt.Errorf("record refund for loan %s: %w", loanID, err)
+	}
+
+	a.logger.Info("MoneyGram refund recorded",
+		"loan_id", loanID,
+		"refund_tx_hash", refund.TxHash,
+		"net_stroops", refund.NetStroops,
+		"shortfall_stroops", refund.ShortfallStroops)
+
+	a.recordRefundTransaction(ctx, loanID, refund)
+	return nil
+}
+
+// recordRefundTransaction writes the refund to the transactions ledger. Best
+// effort: the loan row is the system of record for the refund, so a failure
+// here is logged and never blocks the vault repay behind it.
+func (a *MoneyGramPollerAdapter) recordRefundTransaction(ctx context.Context, loanID string, refund mgpoller.RefundRecord) {
+	if a.txnSvc == nil {
+		return
+	}
+
+	loanRow, err := a.repo.GetByID(ctx, loanID)
+	if err != nil {
+		a.logger.Warn("could not load loan to record refund transaction",
+			"loan_id", loanID, "error", err)
+		return
+	}
+
+	desc := fmt.Sprintf("MoneyGram refund for cancelled cash pickup (shortfall: %d stroops)",
+		refund.ShortfallStroops)
+	provider := "moneygram"
+	txHash := refund.TxHash
+
+	txnResp, err := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
+		UserID:           &loanRow.UserID,
+		AccountID:        &loanRow.AccountID,
+		LoanID:           &loanID,
+		TxType:           txmodels.TxTypeRefund,
+		TxCategory:       txmodels.TxCategoryOnChain,
+		Amount:           refund.NetStroops,
+		Asset:            "USDC",
+		StellarTxHash:    &txHash,
+		ExternalProvider: &provider,
+		Description:      &desc,
+	})
+	if err != nil {
+		a.logger.Warn("failed to record refund transaction",
+			"loan_id", loanID, "error", err)
+		return
+	}
+
+	// The refund is already confirmed on-ledger by the time we get here, so
+	// the row goes straight to success rather than sitting at pending.
+	if txnResp != nil {
+		status := txmodels.TxStatusSuccess
+		if _, err := a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{
+			Status: &status,
+		}); err != nil {
+			a.logger.Warn("failed to mark refund transaction successful",
+				"loan_id", loanID, "transaction_id", txnResp.ID, "error", err)
+		}
+	}
 }
 
 // projectLoanRecord maps a Loan row into the mgpoller projection. Pointer

@@ -45,7 +45,7 @@ type LoanRepository interface {
 	GetActiveLoans(ctx context.Context, limit, offset int) ([]*models.Loan, error)
 	GetActiveLoansByStatus(ctx context.Context, status string, limit, offset int) ([]*models.Loan, error)
 	GetBySequenceID(ctx context.Context, sequenceID string) (*models.Loan, error)
-	GetByDisbursementStatus(ctx context.Context, status string, limit int) ([]*models.Loan, error)
+	GetByDisbursementStatus(ctx context.Context, status, provider string, limit int) ([]*models.Loan, error)
 	GetByRampWithdrawMemo(ctx context.Context, memo string) (*models.Loan, error)
 	GetByRampExternalRef(ctx context.Context, ref string) (*models.Loan, error)
 	GetByRampShortCode(ctx context.Context, code string) (*models.Loan, error)
@@ -239,12 +239,22 @@ func (r *loanRepository) GetBySequenceID(ctx context.Context, sequenceID string)
 	return nil, ErrFailedToGetLoanBySequenceID
 }
 
-// GetByDisbursementStatus retrieves loans by their disbursement status.
-func (r *loanRepository) GetByDisbursementStatus(ctx context.Context, status string, limit int) ([]*models.Loan, error) {
+// GetByDisbursementStatus retrieves loans by their disbursement status,
+// optionally narrowed to a single ramp provider. An empty provider matches
+// every provider.
+//
+// Callers driving a provider-specific state machine must pass their provider:
+// disbursement_status values are shared across providers, so an unscoped query
+// hands one provider's poller another provider's loans.
+func (r *loanRepository) GetByDisbursementStatus(ctx context.Context, status, provider string, limit int) ([]*models.Loan, error) {
 	var loans []*models.Loan
-	result := r.db.WithContext(ctx).
+	query := r.db.WithContext(ctx).
 		Preload("User").
-		Where("disbursement_status = ? AND deleted_at IS NULL", status).
+		Where("disbursement_status = ? AND deleted_at IS NULL", status)
+	if provider != "" {
+		query = query.Where("ramp_provider = ?", provider)
+	}
+	result := query.
 		Order("created_at ASC").
 		Limit(limit).
 		Find(&loans)
@@ -317,7 +327,10 @@ func (r *loanRepository) GetActiveMoneyGramLoans(ctx context.Context, limit int)
 	if limit <= 0 {
 		limit = 100
 	}
-	terminal := []string{"completed", "failed", "refund_pending", "refund_received"}
+	// refund_pending is deliberately absent: a refunded MG loan is not finished,
+	// it is awaiting inbound USDC. Parking it here would strand it, since the MG
+	// poller is the only thing that reads MoneyGram's state.
+	terminal := []string{"completed", "failed", "refund_received"}
 	var loans []*models.Loan
 	result := r.db.WithContext(ctx).
 		Preload("User").
@@ -387,6 +400,10 @@ func loanUpdateMap(loan *models.Loan) map[string]interface{} {
 		"requested_local_amount":   loan.RequestedLocalAmount,
 		"ramp_withdraw_memo":       loan.RampWithdrawMemo,
 		"ramp_withdraw_memo_type":  loan.RampWithdrawMemoType,
+		"ramp_refund_tx_hash":      loan.RampRefundTxHash,
+		"ramp_refund_amount":       loan.RampRefundAmount,
+		"ramp_refund_shortfall":    loan.RampRefundShortfall,
+		"ramp_refunded_at":         loan.RampRefundedAt,
 	}
 }
 

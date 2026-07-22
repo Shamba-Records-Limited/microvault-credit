@@ -104,7 +104,7 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 		// Fiat complete: YC fronted fiat, USDC still in treasury to repay.
 		// Direct complete: USDC sent to YC wallet to do NOT repay.
 		if loan.SettlementMethod != nil && *loan.SettlementMethod == "fiat" {
-			a.repayVaultIfNeeded(ctx, loan, "fiat_complete")
+			_ = a.repayVaultIfNeeded(ctx, loan, "fiat_complete", nil)
 		}
 	case yellowcard.DisbursementFailed:
 		// Either path: the borrowed USDC is back in (or was never out of)
@@ -117,7 +117,7 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 		if loan.SettlementMethod != nil && *loan.SettlementMethod == "direct" {
 			trigger = "direct_failed"
 		}
-		a.repayVaultIfNeeded(ctx, loan, trigger)
+		_ = a.repayVaultIfNeeded(ctx, loan, trigger, nil)
 	}
 
 	return nil
@@ -126,27 +126,37 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 // repayVaultIfNeeded checks whether USDC is still in the treasury for this loan
 // and, if so, calls RepayToVault to return it to the pool. Idempotent: skips if
 // VaultRepayTxHash is already set.
-func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan *models.Loan, trigger string) {
+//
+// amountOverride repays a specific stroop amount instead of the loan principal.
+// Refunds need this: an anchor may return less than we sent, and repaying the
+// full principal would draw the difference from unrelated treasury funds.
+func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan *models.Loan, trigger string, amountOverride *int64) error {
 	// Idempotency: already repaid.
 	if loan.VaultRepayTxHash != nil && *loan.VaultRepayTxHash != "" {
 		a.logger.Info("vault repay already completed, skipping",
 			"loan_id", loan.ID,
 			"repay_tx_hash", *loan.VaultRepayTxHash,
 		)
-		return
+		return nil
 	}
 
 	// No vault borrow happened — nothing to repay.
 	if loan.VaultTxHash == nil || *loan.VaultTxHash == "" {
-		return
+		return nil
 	}
 
 	if a.stellarSvc == nil {
 		a.logger.Error("stellar service not configured, cannot repay vault", "loan_id", loan.ID)
-		return
+		return fmt.Errorf("stellar service not configured")
 	}
 
 	amount := loan.PrincipalAmount
+	if amountOverride != nil {
+		amount = *amountOverride
+	}
+	if amount <= 0 {
+		return fmt.Errorf("refusing to repay a non-positive amount (%d stroops)", amount)
+	}
 	a.logger.Info("initiating vault repay",
 		"loan_id", loan.ID,
 		"amount_stroops", amount,
@@ -173,7 +183,7 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 				"error", upErr,
 			)
 		}
-		return
+		return fmt.Errorf("repay to vault: %w", err)
 	}
 
 	// Persist repay tx hash + success status on the loan.
@@ -229,6 +239,7 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 		"amount_repaid", repayResp.AmountRepaid,
 		"trigger", trigger,
 	)
+	return nil
 }
 
 // RecordDisbursementCompletion persists the final financials of a completed
@@ -323,8 +334,23 @@ func (a *DisbursementStatusAdapter) RepayVault(sequenceID string) error {
 	if err != nil {
 		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
 	}
-	a.repayVaultIfNeeded(ctx, loan, "explicit_repay")
+	_ = a.repayVaultIfNeeded(ctx, loan, "explicit_repay", nil)
 	return nil
+}
+
+// RepayVaultAmount returns an explicit stroop amount to the vault rather than
+// the loan principal, and unlike RepayVault it surfaces the failure.
+//
+// Used for anchor refunds, where the amount that came back is authoritative:
+// repaying the principal when the anchor withheld a fee would draw the shortfall
+// from unrelated treasury funds. The caller retries on error.
+func (a *DisbursementStatusAdapter) RepayVaultAmount(sequenceID string, amountStroops int64) error {
+	ctx := context.Background()
+	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
+	if err != nil {
+		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
+	}
+	return a.repayVaultIfNeeded(ctx, loan, "anchor_refund", &amountStroops)
 }
 
 // NotifyDisbursementComplete sends an SMS notification that the disbursement completed.
@@ -465,6 +491,43 @@ func (a *DisbursementStatusAdapter) NotifyCashPickupReady(sequenceID string) err
 	return nil
 }
 
+// NotifyRefundReceived tells the borrower their cash pickup was cancelled and
+// the funds returned.
+func (a *DisbursementStatusAdapter) NotifyRefundReceived(sequenceID string) error {
+	ctx := context.Background()
+
+	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
+	if err != nil {
+		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
+	}
+
+	if a.loanNotifier == nil {
+		a.logger.Warn("loan notifier not configured, skipping refund SMS", "loan_id", loan.ID)
+		return nil
+	}
+
+	loanRef := loan.ID
+	if loan.LoanReference != nil {
+		loanRef = *loan.LoanReference
+	}
+	phone := ""
+	if loan.User != nil {
+		phone = loan.User.MobileNumber
+	}
+
+	if err := a.loanNotifier.NotifyLoanCashPickupCancelled(ctx, contracts.LoanNotification{
+		LoanID:        loan.ID,
+		LoanReference: loanRef,
+		PhoneNumber:   phone,
+	}); err != nil {
+		a.logger.Warn("failed to send refund SMS", "loan_id", loan.ID, "error", err)
+		return err
+	}
+
+	a.logger.Info("refund SMS sent", "loan_id", loan.ID)
+	return nil
+}
+
 // NotifyDisbursementFailed sends an SMS notification that the disbursement failed.
 func (a *DisbursementStatusAdapter) NotifyDisbursementFailed(sequenceID string) error {
 	ctx := context.Background()
@@ -566,11 +629,19 @@ func mapDisbursementToTxStatus(disbursementStatus string) string {
 	}
 }
 
-// GetRefundPendingDisbursements returns disbursements awaiting crypto refund.
+// GetRefundPendingDisbursements returns YellowCard disbursements awaiting
+// crypto refund.
+//
+// Scoped to yellowcard deliberately. RefundPoller resolves each record against
+// the YellowCard API using RampRequestID, so a MoneyGram loan sitting in
+// refund_pending would be looked up with an MG transaction ID — which at best
+// errors every cycle and at worst matches an unrelated YC payment and triggers
+// a mobile-money failover for a cash-pickup loan. MoneyGram refunds are the
+// MG poller's responsibility.
 func (a *DisbursementStatusAdapter) GetRefundPendingDisbursements() ([]webhook.RefundPendingRecord, error) {
 	ctx := context.Background()
 
-	loans, err := a.repo.GetByDisbursementStatus(ctx, "refund_pending", 100)
+	loans, err := a.repo.GetByDisbursementStatus(ctx, "refund_pending", "yellowcard", 100)
 	if err != nil {
 		a.logger.Error("failed to fetch refund pending disbursements", "error", err)
 		return nil, fmt.Errorf("fetch refund pending: %w", err)
