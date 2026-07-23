@@ -12,8 +12,8 @@ var (
 	ErrFactorAlreadyExists = errors.New("credit factor already exists for this user and score")
 
 	// Validation errors
-	ErrInvalidInput         = errors.New("invalid input")
-	ErrInvalidFactorValue   = errors.New("invalid factor value")
-	ErrInvalidFactorWeight  = errors.New("invalid factor weight")
-	ErrInvalidFactorName    = errors.New("invalid factor name")
+	ErrInvalidInput        = errors.New("invalid input")
+	ErrInvalidFactorValue  = errors.New("invalid factor value")
+	ErrInvalidFactorWeight = errors.New("invalid factor weight")
+	ErrInvalidFactorName   = errors.New("invalid factor name")
 )

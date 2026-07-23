@@ -67,13 +67,10 @@ func (s *service) Create(ctx context.Context, req CreateLoanRequest) (*LoanRespo
 	// Calculate due date
 	dueDate := time.Now().AddDate(0, 0, req.DurationDays)
 
-	// Compute interest, origination fee, and total owed at origination using
-	// the top-up model: borrower repays principal + interest + fee. Interest
-	// is simple, pro-rated against a 365-day year; the vault's borrow_index
-	// drives the real accrual, so this is a quote, not the source of truth.
-	interestAmount := req.PrincipalAmount * int64(req.InterestRateBps) * int64(req.DurationDays) / (10000 * 365)
+	// Only the origination fee is fixed at creation. Interest is not projected:
+	// it accrues against the vault's borrow_index and the borrower is told to
+	// check their balance, so a stored total would be a promise we do not make.
 	originationFee := req.PrincipalAmount * int64(req.OriginationFeeBps) / 10000
-	totalAmount := req.PrincipalAmount + interestAmount + originationFee
 
 	// Create loan model
 	loan := &models.Loan{
@@ -82,13 +79,11 @@ func (s *service) Create(ctx context.Context, req CreateLoanRequest) (*LoanRespo
 		ProductID:         req.ProductID,
 		PrincipalAmount:   req.PrincipalAmount,
 		PrincipalAsset:    req.PrincipalAsset,
-		InterestRateBps:   req.InterestRateBps,
-		InterestAmount:    &interestAmount,
+		VaultAPRBps:       req.VaultAPRBps,
 		DurationDays:      req.DurationDays,
 		RepaymentSchedule: req.RepaymentSchedule,
 		DueDate:           &dueDate,
 		Status:            models.LoanStatusPending,
-		TotalAmount:       &totalAmount,
 	}
 	if req.OriginationFeeBps > 0 {
 		feeBps := req.OriginationFeeBps
@@ -318,17 +313,8 @@ func (s *service) Disburse(ctx context.Context, id string, req DisburseLoanReque
 	if req.RampFiatCurr != nil {
 		loan.RampFiatCurr = req.RampFiatCurr
 	}
-	if req.MomoProvider != nil {
-		loan.MomoProvider = req.MomoProvider
-	}
-	if req.MomoTxID != nil {
-		loan.MomoTxID = req.MomoTxID
-	}
 	if req.SettlementMethod != nil {
 		loan.SettlementMethod = req.SettlementMethod
-	}
-	if req.DisbursementStatus != nil {
-		loan.DisbursementStatus = req.DisbursementStatus
 	}
 	if req.RampSequenceID != nil {
 		loan.RampSequenceID = req.RampSequenceID
@@ -466,7 +452,7 @@ func (s *service) validateCreateRequest(req CreateLoanRequest) error {
 		return ErrInvalidInput
 	}
 
-	if req.InterestRateBps <= 0 {
+	if req.VaultAPRBps <= 0 {
 		return ErrInvalidInterestRate
 	}
 
@@ -484,59 +470,57 @@ func (s *service) validateCreateRequest(req CreateLoanRequest) error {
 // toLoanResponse converts a loan model to response DTO
 func toLoanResponse(loan *models.Loan) *LoanResponse {
 	return &LoanResponse{
-		ID:                    loan.ID,
-		LoanReference:         loan.LoanReference,
-		UserID:                loan.UserID,
-		AccountID:             loan.AccountID,
-		ProductID:             loan.ProductID,
-		PrincipalAmount:       loan.PrincipalAmount,
-		PrincipalAsset:        loan.PrincipalAsset,
-		InterestRateBps:       loan.InterestRateBps,
-		InterestAmount:        loan.InterestAmount,
-		OriginationFee:        loan.OriginationFee,
-		OriginationFeeBps:     loan.OriginationFeeBps,
-		TotalAmount:           loan.TotalAmount,
-		DurationDays:          loan.DurationDays,
-		RepaymentSched:        loan.RepaymentSchedule,
-		DueDate:               loan.DueDate,
-		Status:                loan.Status,
-		ApprovedAt:            loan.ApprovedAt,
-		ApprovedBy:            loan.ApprovedBy,
-		DisbursedAt:           loan.DisbursedAt,
-		RepaidAt:              loan.RepaidAt,
-		DefaultedAt:           loan.DefaultedAt,
-		VaultTxHash:           loan.VaultTxHash,
-		VaultTxStatus:         loan.VaultTxStatus,
-		VaultRepayTxHash:      loan.VaultRepayTxHash,
-		VaultRepayStatus:      loan.VaultRepayStatus,
-		RampProvider:          loan.RampProvider,
-		RampRequestID:         loan.RampRequestID,
-		RampFiatAmount:        loan.RampFiatAmount,
-		RampFiatCurr:          loan.RampFiatCurr,
-		MomoProvider:          loan.MomoProvider,
-		MomoTxID:              loan.MomoTxID,
-		MomoStatus:            loan.MomoStatus,
-		SettlementMethod:      loan.SettlementMethod,
-		DisbursementStatus:    loan.DisbursementStatus,
-		RampSequenceID:        loan.RampSequenceID,
-		DisbursementRateBps:   loan.DisbursementRateBps,
-		DeliveredAmtKES:       loan.DeliveredAmtKES,
-		QuotedRepaymentAmtKES: loan.QuotedRepaymentAmtKES,
-		QuotedAt:              loan.QuotedAt,
-		ConversionSpreadBps:   loan.ConversionSpreadBps,
-		BorrowIndex:           loan.BorrowIndex,
-		ServiceFeeUSD:         loan.ServiceFeeUSD,
-		ServiceFeeLocal:       loan.ServiceFeeLocal,
-		PartnerFeeUSD:         loan.PartnerFeeUSD,
-		PartnerFeeLocal:       loan.PartnerFeeLocal,
+		ID:                   loan.ID,
+		LoanReference:        loan.LoanReference,
+		UserID:               loan.UserID,
+		AccountID:            loan.AccountID,
+		ProductID:            loan.ProductID,
+		PrincipalAmount:      loan.PrincipalAmount,
+		PrincipalAsset:       loan.PrincipalAsset,
+		VaultAPRBps:          loan.VaultAPRBps,
+		OriginationFee:       loan.OriginationFee,
+		OriginationFeeBps:    loan.OriginationFeeBps,
+		DurationDays:         loan.DurationDays,
+		RepaymentSched:       loan.RepaymentSchedule,
+		DueDate:              loan.DueDate,
+		Status:               loan.Status,
+		ApprovedAt:           loan.ApprovedAt,
+		ApprovedBy:           loan.ApprovedBy,
+		DisbursedAt:          loan.DisbursedAt,
+		RepaidAt:             loan.RepaidAt,
+		DefaultedAt:          loan.DefaultedAt,
+		VaultTxHash:          loan.VaultTxHash,
+		VaultTxStatus:        loan.VaultTxStatus,
+		VaultRepayTxHash:     loan.VaultRepayTxHash,
+		VaultRepayStatus:     loan.VaultRepayStatus,
+		RampProvider:         loan.RampProvider,
+		RampRequestID:        loan.RampRequestID,
+		RampFiatAmount:       loan.RampFiatAmount,
+		RampFiatCurr:         loan.RampFiatCurr,
+		SettlementMethod:     loan.SettlementMethod,
+		DisbursementStatus:   ptrString(loan.DeriveDisbursementStatus()),
+		RampSequenceID:       loan.RampSequenceID,
+		DisbursementRate:     loan.DisbursementRate,
+		DeliveredAmountLocal: loan.DeliveredAmountLocal,
+		ConversionSpreadBps:  loan.ConversionSpreadBps,
+		BorrowIndex:          loan.BorrowIndex,
+		ServiceFeeUSD:        loan.ServiceFeeUSD,
+		ServiceFeeLocal:      loan.ServiceFeeLocal,
+		PartnerFeeUSD:        loan.PartnerFeeUSD,
+		PartnerFeeLocal:      loan.PartnerFeeLocal,
+		TelcoFeeUSD:          loan.TelcoFeeUSD,
+		TelcoFeeLocal:        loan.TelcoFeeLocal,
+		TaxUSD:               loan.TaxUSD,
+		TaxLocal:             loan.TaxLocal,
 
 		RampInteractiveURL:    loan.RampInteractiveURL,
 		RampShortCode:         loan.RampShortCode,
+		RampMoreInfoShortCode: loan.RampMoreInfoShortCode,
 		RampExternalRef:       loan.RampExternalRef,
 		RampMoreInfoURL:       loan.RampMoreInfoURL,
 		RampChildAccountIndex: loan.RampChildAccountIndex,
 		RampStellarTxHash:     loan.RampStellarTxHash,
-		EntryRateUsed:         loan.EntryRateUsed,
+		EntryRateBuffered:     loan.EntryRateBuffered,
 		EntryRateSource:       loan.EntryRateSource,
 		EntryBufferPct:        loan.EntryBufferPct,
 		RequestedLocalAmount:  loan.RequestedLocalAmount,
@@ -552,3 +536,6 @@ func toLoanResponse(loan *models.Loan) *LoanResponse {
 		UpdatedAt: loan.UpdatedAt,
 	}
 }
+
+// ptrString is used for response fields that are computed rather than stored.
+func ptrString(v string) *string { return &v }

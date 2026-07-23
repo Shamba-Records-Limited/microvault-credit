@@ -4,17 +4,17 @@ import "time"
 
 // CreateFarmRecordRequest represents the request to create a new farm record
 type CreateFarmRecordRequest struct {
-	UserID              string   `json:"user_id" validate:"required"`
-	FarmName            string   `json:"farm_name" validate:"required"`
-	Location            *string  `json:"location,omitempty"`
-	SizeHectares        *float64 `json:"size_hectares,omitempty"`
-	OwnershipType       *string  `json:"ownership_type,omitempty"`
-	PrimaryCrop         *string  `json:"primary_crop,omitempty"`
-	SecondaryCrops      []string `json:"secondary_crops,omitempty"`
-	IrrigationType      *string  `json:"irrigation_type,omitempty"`
-	AnnualYieldEstimate *int64   `json:"annual_yield_estimate,omitempty"`
+	UserID              string     `json:"user_id" validate:"required"`
+	FarmName            string     `json:"farm_name" validate:"required"`
+	Location            *string    `json:"location,omitempty"`
+	SizeHectares        *float64   `json:"size_hectares,omitempty"`
+	OwnershipType       *string    `json:"ownership_type,omitempty"`
+	PrimaryCrop         *string    `json:"primary_crop,omitempty"`
+	SecondaryCrops      []string   `json:"secondary_crops,omitempty"`
+	IrrigationType      *string    `json:"irrigation_type,omitempty"`
+	AnnualYieldEstimate *int64     `json:"annual_yield_estimate,omitempty"`
 	LastHarvestDate     *time.Time `json:"last_harvest_date,omitempty"`
-	IsVerified          bool     `json:"is_verified"`
+	IsVerified          bool       `json:"is_verified"`
 }
 
 // UpdateFarmRecordRequest represents the request to update farm record information

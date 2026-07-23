@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -126,6 +127,7 @@ func main() {
 		cfg.Mobile.AfricasTalking.Username,
 		cfg.Mobile.AfricasTalking.APIKey,
 		cfg.Mobile.AfricasTalking.BaseURL,
+		cfg.Mobile.AfricasTalking.HTTPTimeout,
 	)
 	smsService.RegisterProvider("africastalking", atSMSAdapter)
 
@@ -281,10 +283,18 @@ func main() {
 		if err != nil {
 			return 0, err
 		}
-		if len(rates) == 0 {
-			return 0, fmt.Errorf("yellowcard: no rates for %s", currency)
+		// Match on Code rather than trusting position. The ?currency= filter is
+		// honoured today, so rates[0] is right — but quoting a loan at another
+		// market's rate is not a failure worth risking on that assumption.
+		for _, r := range rates {
+			if strings.EqualFold(r.Code, currency) {
+				if r.Sell <= 0 {
+					return 0, fmt.Errorf("yellowcard: no sell rate for %s", currency)
+				}
+				return r.Sell, nil
+			}
 		}
-		return rates[0].Sell, nil
+		return 0, fmt.Errorf("yellowcard: no rates for %s", currency)
 	})
 	fxOrch, err := mgClient.NewFXOrchestrator(ycFallback, moneygram.FXOrchestratorConfig{})
 	if err != nil {
@@ -314,6 +324,8 @@ func main() {
 			MediumThreshold:    cfg.Stellar.MultiSigMediumThreshold,
 			HighThreshold:      cfg.Stellar.MultiSigHighThreshold,
 		},
+		logger,
+		nil, // AlertService — chain-status failures log-only for now
 	)
 	if err != nil {
 		log.Fatalf("Failed to create user service adapter: %v", err)
@@ -349,6 +361,7 @@ func main() {
 		stellarSvc,
 		logger,
 	)
+	disbursementAdapter.SetPublicBaseURL(cfg.Server.PublicBaseURL)
 
 	// ---- 12b. Rate service adapter ----
 	// YC is the canonical Quoter for the USSD pre-loan rate display. MG's
@@ -426,7 +439,7 @@ func main() {
 		mgFundsTransfer,                   // funds-wallet sender for USDC to MG anchor
 		stellarrpc.NewVerifier(rpcClient), // confirms MG's refunds landed on-ledger
 		nil,                               // AlertService — log-only for now
-		mgpoller.DefaultConfig(),
+		mgPollerConfig(cfg),
 		logger,
 	)
 	if err != nil {
@@ -512,4 +525,31 @@ func main() {
 	}
 
 	log.Println("Application shutdown complete.")
+}
+
+// mgPollerConfig overlays the MoneyGram poller settings from the environment
+// onto the package defaults. Unset values stay zero and NewPoller keeps its
+// own default, so config never duplicates the defaults.
+func mgPollerConfig(cfg *config.Config) mgpoller.PollerConfig {
+	c := mgpoller.DefaultConfig()
+	mg := cfg.Payments.MoneyGram
+	if mg.PollInterval > 0 {
+		c.PollInterval = mg.PollInterval
+	}
+	if mg.PollMaxBatch > 0 {
+		c.MaxBatch = mg.PollMaxBatch
+	}
+	if mg.RefundSettleMaxAttempts > 0 {
+		c.RefundSettleMaxAttempts = mg.RefundSettleMaxAttempts
+	}
+	// MoneyGram refunds return to the SEP-24 funds wallet, which is a different
+	// account from the SEP-10 auth wallet outside development. Left unset, the
+	// poller would watch the auth account and no refund would ever settle.
+	if addr, err := mg.FundsAddress(); err == nil {
+		c.RefundDestination = addr
+	} else {
+		log.Printf("MoneyGram funds address unresolved, refund destination falls back to the SEP-10 account: %v", err)
+	}
+	c.RefundAssetIssuer = cfg.Stellar.USDCIssuer
+	return c
 }

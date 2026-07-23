@@ -4,33 +4,33 @@ import "time"
 
 // CreateCashflowAnalysisRequest represents the request to create a new cashflow analysis
 type CreateCashflowAnalysisRequest struct {
-	UserID                string            `json:"user_id" validate:"required"`
-	AnalysisPeriodStart   time.Time         `json:"analysis_period_start" validate:"required"`
-	AnalysisPeriodEnd     time.Time         `json:"analysis_period_end" validate:"required"`
-	TotalIncome           int64             `json:"total_income" validate:"gte=0"`
-	TotalExpenses         int64             `json:"total_expenses" validate:"gte=0"`
-	IncomeStabilityScore  int               `json:"income_stability_score"`
+	UserID                 string           `json:"user_id" validate:"required"`
+	AnalysisPeriodStart    time.Time        `json:"analysis_period_start" validate:"required"`
+	AnalysisPeriodEnd      time.Time        `json:"analysis_period_end" validate:"required"`
+	TotalIncome            int64            `json:"total_income" validate:"gte=0"`
+	TotalExpenses          int64            `json:"total_expenses" validate:"gte=0"`
+	IncomeStabilityScore   int              `json:"income_stability_score"`
 	ExpenseRegularityScore int              `json:"expense_regularity_score"`
-	TransactionCount      int               `json:"transaction_count"`
-	UniqueIncomeSources   int               `json:"unique_income_sources"`
-	IncomeSources         map[string]int64  `json:"income_sources,omitempty"`
-	ExpenseCategories     map[string]int64  `json:"expense_categories,omitempty"`
-	SeasonalPattern       *string           `json:"seasonal_pattern,omitempty"`
-	RiskFlags             []string          `json:"risk_flags,omitempty"`
+	TransactionCount       int              `json:"transaction_count"`
+	UniqueIncomeSources    int              `json:"unique_income_sources"`
+	IncomeSources          map[string]int64 `json:"income_sources,omitempty"`
+	ExpenseCategories      map[string]int64 `json:"expense_categories,omitempty"`
+	SeasonalPattern        *string          `json:"seasonal_pattern,omitempty"`
+	RiskFlags              []string         `json:"risk_flags,omitempty"`
 }
 
 // UpdateCashflowAnalysisRequest represents the request to update cashflow analysis information
 type UpdateCashflowAnalysisRequest struct {
-	TotalIncome            *int64            `json:"total_income,omitempty"`
-	TotalExpenses          *int64            `json:"total_expenses,omitempty"`
-	IncomeStabilityScore   *int              `json:"income_stability_score,omitempty"`
-	ExpenseRegularityScore *int              `json:"expense_regularity_score,omitempty"`
-	TransactionCount       *int              `json:"transaction_count,omitempty"`
-	UniqueIncomeSources    *int              `json:"unique_income_sources,omitempty"`
-	IncomeSources          map[string]int64  `json:"income_sources,omitempty"`
-	ExpenseCategories      map[string]int64  `json:"expense_categories,omitempty"`
-	SeasonalPattern        *string           `json:"seasonal_pattern,omitempty"`
-	RiskFlags              []string          `json:"risk_flags,omitempty"`
+	TotalIncome            *int64           `json:"total_income,omitempty"`
+	TotalExpenses          *int64           `json:"total_expenses,omitempty"`
+	IncomeStabilityScore   *int             `json:"income_stability_score,omitempty"`
+	ExpenseRegularityScore *int             `json:"expense_regularity_score,omitempty"`
+	TransactionCount       *int             `json:"transaction_count,omitempty"`
+	UniqueIncomeSources    *int             `json:"unique_income_sources,omitempty"`
+	IncomeSources          map[string]int64 `json:"income_sources,omitempty"`
+	ExpenseCategories      map[string]int64 `json:"expense_categories,omitempty"`
+	SeasonalPattern        *string          `json:"seasonal_pattern,omitempty"`
+	RiskFlags              []string         `json:"risk_flags,omitempty"`
 }
 
 // CashflowAnalysisResponse represents the response containing cashflow analysis information

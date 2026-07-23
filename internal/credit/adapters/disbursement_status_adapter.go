@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
@@ -26,11 +27,54 @@ var (
 // webhook.RefundPendingFetcher, and webhook.TransactionRecorder using
 // the credit loan repository and transaction service.
 type DisbursementStatusAdapter struct {
-	repo         repository.LoanRepository
-	loanNotifier contracts.LoanNotifier
-	txnSvc       transaction.Service
-	stellarSvc   stellar.Service
-	logger       *slog.Logger
+	publicBaseURL string // origin for SMS short-links; optional
+	repo          repository.LoanRepository
+	loanNotifier  contracts.LoanNotifier
+	txnSvc        transaction.Service
+	stellarSvc    stellar.Service
+	logger        *slog.Logger
+}
+
+// notifyAsync sends a borrower notification off the caller's thread.
+//
+// These methods are driven by the MoneyGram poller, whose poll() loop walks
+// the batch serially — so a synchronous send made every other loan in the
+// batch wait behind one SMS, including treasury transfers. With provider-level
+// retries a stalled gateway could hold a tick for minutes.
+//
+// Every caller already treats delivery as best effort and only logs the error,
+// so returning before the send completes loses nothing. See notifyLeakGuard:
+// the timeout is a backstop, never a delivery deadline.
+func (a *DisbursementStatusAdapter) notifyAsync(label, loanID string, send func(ctx context.Context) error) {
+	if a.loanNotifier == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), notifyLeakGuard)
+		defer cancel()
+		if err := send(ctx); err != nil {
+			a.logger.Warn("borrower notification failed",
+				"notification", label, "loan_id", loanID, "error", err)
+			return
+		}
+		a.logger.Info("borrower notification sent", "notification", label, "loan_id", loanID)
+	}()
+}
+
+// SetPublicBaseURL sets the externally-reachable origin used to build the
+// /r/{code} support link carried in the cash-pickup ready SMS. When unset the
+// SMS omits the link rather than sending a bare path.
+func (a *DisbursementStatusAdapter) SetPublicBaseURL(url string) {
+	a.publicBaseURL = url
+}
+
+// moreInfoLink returns the borrower-facing support link, or "" when the loan
+// has no code yet or no origin is configured.
+func (a *DisbursementStatusAdapter) moreInfoLink(loan *models.Loan) string {
+	if a.publicBaseURL == "" || loan.RampMoreInfoShortCode == nil || *loan.RampMoreInfoShortCode == "" {
+		return ""
+	}
+	return a.publicBaseURL + "/r/" + *loan.RampMoreInfoShortCode
 }
 
 // NewDisbursementStatusAdapter creates a new DisbursementStatusAdapter.
@@ -63,13 +107,24 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
 	}
 
-	loan.DisbursementStatus = &status
+	status = canonicalDisbursementStatus(status)
 
-	// Sync main loan status with final payout results
-	if status == yellowcard.DisbursementComplete {
-		loan.Status = models.LoanStatusDisbursed
-	} else if status == yellowcard.DisbursementFailed {
-		loan.Status = models.LoanStatusOffRampFailed
+	// Disbursement state is derived, so a status update writes the facts it
+	// implies rather than a label. Terminal outcomes move the loan's own
+	// status; the two states that are not derivable get their markers stamped.
+	if next := loanStatusForDisbursement(status); next != "" {
+		loan.Status = next
+	}
+	now := time.Now()
+	switch status {
+	case models.DisbursementStatusRefundPending:
+		if loan.RampRefundDeclaredAt == nil {
+			loan.RampRefundDeclaredAt = &now
+		}
+	case models.DisbursementStatusProcessing:
+		if loan.RampPickupReadyAt == nil {
+			loan.RampPickupReadyAt = &now
+		}
 	}
 
 	if err := a.repo.Update(ctx, loan); err != nil {
@@ -89,10 +144,10 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 	)
 
 	// Sync transaction status for off-ramp transactions.
-	if loan.RampRequestID != nil && a.txnSvc != nil {
+	if a.txnSvc != nil {
 		txStatus := mapDisbursementToTxStatus(status)
 		if txStatus != "" {
-			if err := a.UpdateTransactionByExternalID(ctx, *loan.RampRequestID, txStatus, status); err != nil {
+			if err := a.UpdateOffRampTransaction(ctx, loan.ID, txStatus, status); err != nil {
 				a.logger.Warn("failed to sync transaction status", "loan_id", loan.ID, "error", err)
 			}
 		}
@@ -100,13 +155,13 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 
 	// Trigger vault repay when USDC is confirmed to still be in treasury.
 	switch status {
-	case yellowcard.DisbursementComplete:
+	case models.DisbursementStatusCompleted:
 		// Fiat complete: YC fronted fiat, USDC still in treasury to repay.
 		// Direct complete: USDC sent to YC wallet to do NOT repay.
 		if loan.SettlementMethod != nil && *loan.SettlementMethod == "fiat" {
 			_ = a.repayVaultIfNeeded(ctx, loan, "fiat_complete", nil)
 		}
-	case yellowcard.DisbursementFailed:
+	case models.DisbursementStatusFailed:
 		// Either path: the borrowed USDC is back in (or was never out of)
 		// treasury, so repay the vault. repayVaultIfNeeded is idempotent via
 		// VaultRepayTxHash, so a later RefundPoller cycle won't double-repay.
@@ -200,12 +255,11 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 
 	// Record vault_repay transaction for audit trail.
 	if a.txnSvc != nil {
-		desc := fmt.Sprintf("Vault repay (trigger: %s)", trigger)
+		desc := "Vault repay"
 		txnResp, txnErr := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
 			UserID:           &loan.UserID,
 			LoanID:           &loan.ID,
 			TxType:           txmodels.TxTypeVaultRepay,
-			TxCategory:       txmodels.TxCategoryOnChain,
 			Amount:           repayResp.AmountRepaid,
 			Asset:            "USDC",
 			StellarTxHash:    &repayResp.TxHash,
@@ -213,6 +267,7 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 			ContractID:       &repayResp.ContractID,
 			ContractFunction: &repayResp.ContractFunction,
 			Description:      &desc,
+			Metadata:         txMetadata(map[string]any{"trigger": trigger}),
 		})
 		if txnErr != nil {
 			a.logger.Warn("failed to record vault repay transaction",
@@ -227,7 +282,6 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 			successStatus := txmodels.TxStatusSuccess
 			_, _ = a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{
 				Status:        &successStatus,
-				StellarStatus: &repayResp.Status,
 				StellarLedger: &repayResp.Ledger,
 			})
 		}
@@ -243,9 +297,9 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 }
 
 // RecordDisbursementCompletion persists the final financials of a completed
-// payment: delivered_amount_kes (convertedAmount, the gross fiat the borrower
+// payment: delivered_amount_local (convertedAmount, the gross fiat the borrower
 // received) and the service/partner fees, all in cents. Idempotent: skips when
-// DeliveredAmtKES is already set, so a replayed DisbursementComplete webhook
+// DeliveredAmountLocal is already set, so a replayed DisbursementComplete webhook
 // won't overwrite.
 func (a *DisbursementStatusAdapter) RecordDisbursementCompletion(sequenceID string, fin webhook.CompletionFinancials) error {
 	ctx := context.Background()
@@ -253,7 +307,7 @@ func (a *DisbursementStatusAdapter) RecordDisbursementCompletion(sequenceID stri
 	if err != nil {
 		return fmt.Errorf("completion financials: find loan by sequence %s: %w", sequenceID, err)
 	}
-	if loan.DeliveredAmtKES != nil {
+	if loan.DeliveredAmountLocal != nil {
 		return nil
 	}
 
@@ -263,7 +317,7 @@ func (a *DisbursementStatusAdapter) RecordDisbursementCompletion(sequenceID stri
 	partnerFeeUSD := majorToCents(fin.PartnerFeeAmountUSD)
 	partnerFeeLocal := majorToCents(fin.PartnerFeeAmountLocal)
 
-	loan.DeliveredAmtKES = &delivered
+	loan.DeliveredAmountLocal = &delivered
 	loan.ServiceFeeUSD = &serviceFeeUSD
 	loan.ServiceFeeLocal = &serviceFeeLocal
 	loan.PartnerFeeUSD = &partnerFeeUSD
@@ -378,15 +432,15 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(sequenceID string
 		loanRef = *loan.LoanReference
 	}
 
-	// Prefer delivered_amount_kes (net of provider fees) over ramp_fiat_amount
+	// Prefer delivered_amount_local (net of provider fees) over ramp_fiat_amount
 	// so the SMS reflects what the borrower actually received. Fall back to
 	// the gross amount when delivered hasn't been recorded yet (e.g. webhook
 	// arrived out of order).
 	displayAmount := float64(0)
 	displayCurrency := "KES"
 	switch {
-	case loan.DeliveredAmtKES != nil:
-		displayAmount = float64(*loan.DeliveredAmtKES) / 100
+	case loan.DeliveredAmountLocal != nil:
+		displayAmount = float64(*loan.DeliveredAmountLocal) / 100
 	case loan.RampFiatAmount != nil:
 		displayAmount = float64(*loan.RampFiatAmount) / 100
 	}
@@ -399,21 +453,16 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(sequenceID string
 		phone = loan.User.MobileNumber
 	}
 
-	if err := a.loanNotifier.NotifyLoanDisbursed(ctx, contracts.LoanNotification{
+	note := contracts.LoanNotification{
 		LoanID:          loan.ID,
 		LoanReference:   loanRef,
 		PhoneNumber:     phone,
 		DisplayAmount:   displayAmount,
 		DisplayCurrency: displayCurrency,
-	}); err != nil {
-		a.logger.Warn("failed to send completion SMS",
-			"loan_id", loan.ID,
-			"error", err,
-		)
-		return err
 	}
-
-	a.logger.Info("disbursement completion SMS sent", "loan_id", loan.ID)
+	a.notifyAsync("disbursement_complete", loan.ID, func(ctx context.Context) error {
+		return a.loanNotifier.NotifyLoanDisbursed(ctx, note)
+	})
 	return nil
 }
 
@@ -457,8 +506,8 @@ func (a *DisbursementStatusAdapter) NotifyCashPickupReady(sequenceID string) err
 	displayAmount := float64(0)
 	displayCurrency := "KES"
 	switch {
-	case loan.DeliveredAmtKES != nil:
-		displayAmount = float64(*loan.DeliveredAmtKES) / 100
+	case loan.DeliveredAmountLocal != nil:
+		displayAmount = float64(*loan.DeliveredAmountLocal) / 100
 	case loan.RampFiatAmount != nil:
 		displayAmount = float64(*loan.RampFiatAmount) / 100
 	}
@@ -471,23 +520,18 @@ func (a *DisbursementStatusAdapter) NotifyCashPickupReady(sequenceID string) err
 		phone = loan.User.MobileNumber
 	}
 
-	if err := a.loanNotifier.NotifyLoanCashPickupReady(ctx, contracts.LoanNotification{
-		LoanID:          loan.ID,
-		LoanReference:   loanRef,
-		PhoneNumber:     phone,
-		DisplayAmount:   displayAmount,
-		DisplayCurrency: displayCurrency,
-		CashPickupRef:   *loan.RampExternalRef,
-	}); err != nil {
-		a.logger.Warn("failed to send cash-pickup ready SMS",
-			"loan_id", loan.ID,
-			"error", err,
-		)
-		return err
+	note := contracts.LoanNotification{
+		LoanID:            loan.ID,
+		LoanReference:     loanRef,
+		PhoneNumber:       phone,
+		DisplayAmount:     displayAmount,
+		DisplayCurrency:   displayCurrency,
+		CashPickupRef:     *loan.RampExternalRef,
+		CashPickupInfoURL: a.moreInfoLink(loan),
 	}
-
-	a.logger.Info("cash-pickup ready SMS sent",
-		"loan_id", loan.ID, "reference", *loan.RampExternalRef)
+	a.notifyAsync("cash_pickup_ready", loan.ID, func(ctx context.Context) error {
+		return a.loanNotifier.NotifyLoanCashPickupReady(ctx, note)
+	})
 	return nil
 }
 
@@ -515,16 +559,14 @@ func (a *DisbursementStatusAdapter) NotifyRefundReceived(sequenceID string) erro
 		phone = loan.User.MobileNumber
 	}
 
-	if err := a.loanNotifier.NotifyLoanCashPickupCancelled(ctx, contracts.LoanNotification{
+	note := contracts.LoanNotification{
 		LoanID:        loan.ID,
 		LoanReference: loanRef,
 		PhoneNumber:   phone,
-	}); err != nil {
-		a.logger.Warn("failed to send refund SMS", "loan_id", loan.ID, "error", err)
-		return err
 	}
-
-	a.logger.Info("refund SMS sent", "loan_id", loan.ID)
+	a.notifyAsync("refund_received", loan.ID, func(ctx context.Context) error {
+		return a.loanNotifier.NotifyLoanCashPickupCancelled(ctx, note)
+	})
 	return nil
 }
 
@@ -558,27 +600,27 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementFailed(sequenceID string) 
 		phone = loan.User.MobileNumber
 	}
 
-	if err := a.loanNotifier.NotifyLoanFailed(ctx, contracts.LoanNotification{
+	note := contracts.LoanNotification{
 		LoanID:        loan.ID,
 		LoanReference: loanRef,
 		PhoneNumber:   phone,
-	}); err != nil {
-		a.logger.Warn("failed to send failure SMS",
-			"loan_id", loan.ID,
-			"error", err,
-		)
-		return err
 	}
-
-	a.logger.Info("disbursement failure SMS sent", "loan_id", loan.ID)
+	a.notifyAsync("disbursement_failed", loan.ID, func(ctx context.Context) error {
+		return a.loanNotifier.NotifyLoanFailed(ctx, note)
+	})
 	return nil
 }
 
-// UpdateTransactionByExternalID updates an existing transaction found by its external ID.
-func (a *DisbursementStatusAdapter) UpdateTransactionByExternalID(ctx context.Context, externalID string, status string, externalStatus string) error {
-	txnResp, err := a.txnSvc.GetByExternalID(ctx, externalID)
+// UpdateOffRampTransaction syncs the loan's off-ramp row with the provider's
+// reported status.
+//
+// Resolved by loan and type rather than by external ID: every leg of an anchor
+// transaction now shares the provider's request ID, so that lookup no longer
+// identifies one row.
+func (a *DisbursementStatusAdapter) UpdateOffRampTransaction(ctx context.Context, loanID string, status string, externalStatus string) error {
+	txnResp, err := a.txnSvc.GetByLoanIDAndType(ctx, loanID, txmodels.TxTypeOffRamp)
 	if err != nil || txnResp == nil {
-		a.logger.Debug("no transaction found for external ID", "external_id", externalID)
+		a.logger.Debug("no off-ramp transaction found for loan", "loan_id", loanID)
 		return nil
 	}
 
@@ -592,7 +634,7 @@ func (a *DisbursementStatusAdapter) UpdateTransactionByExternalID(ctx context.Co
 // RecordFiatFailover records a fiat failover transaction after a direct settlement refund.
 func (a *DisbursementStatusAdapter) RecordFiatFailover(ctx context.Context, rec webhook.RefundPendingRecord, newRequestID string) error {
 	provider := "yellowcard"
-	desc := fmt.Sprintf("Fiat failover after direct settlement refund (original: %s)", rec.PaymentID)
+	desc := "Fiat failover after direct settlement refund"
 
 	asset := rec.RampFiatCurrency
 	if asset == "" {
@@ -603,26 +645,28 @@ func (a *DisbursementStatusAdapter) RecordFiatFailover(ctx context.Context, rec 
 		UserID:           &rec.UserID,
 		LoanID:           &rec.LoanID,
 		TxType:           txmodels.TxTypeFiatFailover,
-		TxCategory:       txmodels.TxCategoryOffChain,
 		Amount:           rec.RampFiatAmount,
 		Asset:            asset,
 		ExternalID:       &newRequestID,
 		ExternalProvider: &provider,
 		Description:      &desc,
+		Metadata:         txMetadata(map[string]any{"original_request_id": rec.PaymentID}),
 	})
 	return err
 }
 
 // mapDisbursementToTxStatus maps YellowCard disbursement statuses to transaction statuses.
 func mapDisbursementToTxStatus(disbursementStatus string) string {
+	// Canonical values, not YellowCard's wire ones: callers pass the output of
+	// canonicalDisbursementStatus, so "complete" never arrives here.
 	switch disbursementStatus {
-	case yellowcard.DisbursementComplete:
+	case models.DisbursementStatusCompleted:
 		return txmodels.TxStatusSuccess
-	case yellowcard.DisbursementFailed:
+	case models.DisbursementStatusFailed:
 		return txmodels.TxStatusFailed
-	case yellowcard.DisbursementProcessing, yellowcard.DisbursementDirectSubmitted:
+	case models.DisbursementStatusProcessing, yellowcard.DisbursementDirectSubmitted:
 		return txmodels.TxStatusSubmitted
-	case yellowcard.DisbursementRefundPending, yellowcard.DisbursementRefundReceived:
+	case models.DisbursementStatusRefundPending, models.DisbursementStatusRefundReceived:
 		return txmodels.TxStatusPending
 	default:
 		return ""
@@ -641,7 +685,7 @@ func mapDisbursementToTxStatus(disbursementStatus string) string {
 func (a *DisbursementStatusAdapter) GetRefundPendingDisbursements() ([]webhook.RefundPendingRecord, error) {
 	ctx := context.Background()
 
-	loans, err := a.repo.GetByDisbursementStatus(ctx, "refund_pending", "yellowcard", 100)
+	loans, err := a.repo.GetRefundDeclared(ctx, "yellowcard", 100)
 	if err != nil {
 		a.logger.Error("failed to fetch refund pending disbursements", "error", err)
 		return nil, fmt.Errorf("fetch refund pending: %w", err)
@@ -693,4 +737,38 @@ func (a *DisbursementStatusAdapter) GetRefundPendingDisbursements() ([]webhook.R
 	}
 
 	return records, nil
+}
+
+// canonicalDisbursementStatus maps a provider's wire value onto the loan
+// model's vocabulary.
+//
+// YellowCard reports completion as "complete" while MoneyGram and the model
+// use "completed". Both reached this adapter untranslated, so a MoneyGram
+// completion never matched the YellowCard constant and never advanced the loan
+// — every cash-pickup loan stayed "disbursing" for life, including refunded
+// ones, which left them inside GetActiveLoans.
+func canonicalDisbursementStatus(status string) string {
+	if status == yellowcard.DisbursementComplete {
+		return models.DisbursementStatusCompleted
+	}
+	return status
+}
+
+// loanStatusForDisbursement returns the loan status a terminal payout outcome
+// implies, or "" when the outcome is not terminal and the loan status stands.
+//
+// A settled refund is LoanStatusCancelled: the borrower received nothing and
+// owes nothing. How it ended is already recorded in disbursement_status, so a
+// separate refunded loan status would differ only in provenance.
+func loanStatusForDisbursement(status string) string {
+	switch status {
+	case models.DisbursementStatusCompleted:
+		return models.LoanStatusDisbursed
+	case models.DisbursementStatusFailed:
+		return models.LoanStatusOffRampFailed
+	case models.DisbursementStatusRefundReceived:
+		return models.LoanStatusCancelled
+	default:
+		return ""
+	}
 }

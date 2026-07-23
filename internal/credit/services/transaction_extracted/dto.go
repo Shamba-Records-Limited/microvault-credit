@@ -47,11 +47,11 @@ type TransactionSummaryResponse struct {
 
 // TransactionFilters represents filters for listing extracted transactions
 type TransactionFilters struct {
-	UserID      string    `json:"user_id,omitempty"`
-	DocumentID  string    `json:"document_id,omitempty"`
-	Category    string    `json:"category,omitempty"`
-	Source      string    `json:"source,omitempty"`
-	TxType      string    `json:"tx_type,omitempty"`
-	StartDate   time.Time `json:"start_date,omitempty"`
-	EndDate     time.Time `json:"end_date,omitempty"`
+	UserID     string    `json:"user_id,omitempty"`
+	DocumentID string    `json:"document_id,omitempty"`
+	Category   string    `json:"category,omitempty"`
+	Source     string    `json:"source,omitempty"`
+	TxType     string    `json:"tx_type,omitempty"`
+	StartDate  time.Time `json:"start_date,omitempty"`
+	EndDate    time.Time `json:"end_date,omitempty"`
 }

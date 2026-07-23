@@ -16,14 +16,14 @@ func TestChangedFields_OnlyEmitsSetFields(t *testing.T) {
 	}
 
 	// Two fields set.
-	status := "processing"
+	method := "cash_pickup"
 	hash := "abc123"
-	req := UpdateLoanRequest{DisbursementStatus: &status, RampStellarTxHash: &hash}
+	req := UpdateLoanRequest{SettlementMethod: &method, RampStellarTxHash: &hash}
 	got := req.changedFields()
 	if len(got) != 2 {
 		t.Fatalf("expected 2 fields, got %d: %v", len(got), got)
 	}
-	if got["disbursement_status"] != &status || got["ramp_stellar_tx_hash"] != &hash {
+	if got["settlement_method"] != &method || got["ramp_stellar_tx_hash"] != &hash {
 		t.Fatalf("wrong columns/values: %v", got)
 	}
 }

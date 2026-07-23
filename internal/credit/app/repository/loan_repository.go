@@ -45,14 +45,17 @@ type LoanRepository interface {
 	GetActiveLoans(ctx context.Context, limit, offset int) ([]*models.Loan, error)
 	GetActiveLoansByStatus(ctx context.Context, status string, limit, offset int) ([]*models.Loan, error)
 	GetBySequenceID(ctx context.Context, sequenceID string) (*models.Loan, error)
-	GetByDisbursementStatus(ctx context.Context, status, provider string, limit int) ([]*models.Loan, error)
+	// GetRefundDeclared returns loans whose anchor has declared a refund that
+	// has not yet settled, oldest first. Scoped by provider because each
+	// provider's refund is resolved through its own API.
+	GetRefundDeclared(ctx context.Context, provider string, limit int) ([]*models.Loan, error)
 	GetByRampWithdrawMemo(ctx context.Context, memo string) (*models.Loan, error)
 	GetByRampExternalRef(ctx context.Context, ref string) (*models.Loan, error)
 	GetByRampShortCode(ctx context.Context, code string) (*models.Loan, error)
 	GetActiveMoneyGramLoans(ctx context.Context, limit int) ([]*models.Loan, error)
 
 	// GetActiveByProvider returns loans where ramp_provider matches the given
-	// provider and disbursement_status is in a non-terminal state. Used by
+	// provider and the loan has not reached a terminal status. Used by
 	// provider-specific pollers to enumerate work.
 	GetActiveByProvider(ctx context.Context, provider string, limit int, offset int) ([]*models.Loan, error)
 
@@ -169,11 +172,17 @@ func (r *loanRepository) GetActiveLoansByStatus(ctx context.Context, status stri
 	return loans, nil
 }
 
+// inFlightLoanStatuses are the statuses a loan holds while its payout is still
+// running. Replaces a disbursement_status filter that listed pending and
+// processing — values MoneyGram never wrote, so MG loans matched neither and
+// the per-user dedupe gate let a borrower open concurrent cash pickups.
+var inFlightLoanStatuses = []string{models.LoanStatusApproved, models.LoanStatusDisbursing}
+
 func (r *loanRepository) GetActiveByProvider(ctx context.Context, provider string, limit, offset int) ([]*models.Loan, error) {
 	var loans []*models.Loan
 	result := r.db.WithContext(ctx).
-		Where("ramp_provider = ? AND disbursement_status IN ? AND deleted_at IS NULL",
-			provider, []string{models.DisbursementStatusPending, models.DisbursementStatusProcessing}).
+		Where("ramp_provider = ? AND status IN ? AND deleted_at IS NULL",
+			provider, inFlightLoanStatuses).
 		Order("created_at DESC").
 		Limit(limit).
 		Offset(offset).
@@ -188,8 +197,8 @@ func (r *loanRepository) GetActiveByProvider(ctx context.Context, provider strin
 func (r *loanRepository) GetActiveByUserAndProvider(ctx context.Context, userID, provider string) ([]*models.Loan, error) {
 	var loans []*models.Loan
 	result := r.db.WithContext(ctx).
-		Where("user_id = ? AND ramp_provider = ? AND disbursement_status IN ? AND deleted_at IS NULL",
-			userID, provider, []string{models.DisbursementStatusPending, models.DisbursementStatusProcessing}).
+		Where("user_id = ? AND ramp_provider = ? AND status IN ? AND deleted_at IS NULL",
+			userID, provider, inFlightLoanStatuses).
 		Order("created_at DESC").
 		Find(&loans)
 	if result.Error != nil {
@@ -239,27 +248,26 @@ func (r *loanRepository) GetBySequenceID(ctx context.Context, sequenceID string)
 	return nil, ErrFailedToGetLoanBySequenceID
 }
 
-// GetByDisbursementStatus retrieves loans by their disbursement status,
-// optionally narrowed to a single ramp provider. An empty provider matches
-// every provider.
+// GetRefundDeclared implements LoanRepository.
 //
 // Callers driving a provider-specific state machine must pass their provider:
-// disbursement_status values are shared across providers, so an unscoped query
-// hands one provider's poller another provider's loans.
-func (r *loanRepository) GetByDisbursementStatus(ctx context.Context, status, provider string, limit int) ([]*models.Loan, error) {
+// a refund is resolved through the declaring provider's API, so an unscoped
+// query hands one provider's poller another provider's loans.
+func (r *loanRepository) GetRefundDeclared(ctx context.Context, provider string, limit int) ([]*models.Loan, error) {
 	var loans []*models.Loan
 	query := r.db.WithContext(ctx).
 		Preload("User").
-		Where("disbursement_status = ? AND deleted_at IS NULL", status)
+		Where("ramp_refund_declared_at IS NOT NULL AND status IN ? AND deleted_at IS NULL",
+			inFlightLoanStatuses)
 	if provider != "" {
 		query = query.Where("ramp_provider = ?", provider)
 	}
 	result := query.
-		Order("created_at ASC").
+		Order("ramp_refund_declared_at ASC").
 		Limit(limit).
 		Find(&loans)
 	if result.Error != nil {
-		log.Printf("GetByDisbursementStatus: database error: %v", result.Error)
+		log.Printf("GetRefundDeclared: database error: %v", result.Error)
 		return nil, ErrFailedToGetLoansByDisbStatus
 	}
 	return loans, nil
@@ -307,7 +315,7 @@ func (r *loanRepository) GetByRampExternalRef(ctx context.Context, ref string) (
 func (r *loanRepository) GetByRampShortCode(ctx context.Context, code string) (*models.Loan, error) {
 	var loan models.Loan
 	result := r.db.WithContext(ctx).
-		Where("ramp_short_code = ? AND deleted_at IS NULL", code).
+		Where("(ramp_short_code = ? OR ramp_more_info_short_code = ?) AND deleted_at IS NULL", code, code).
 		First(&loan)
 	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return nil, ErrLoanNotFound
@@ -320,22 +328,22 @@ func (r *loanRepository) GetByRampShortCode(ctx context.Context, code string) (*
 }
 
 // GetActiveMoneyGramLoans returns loans currently being driven by the MG
-// poller — ramp_provider="moneygram" with a non-terminal disbursement_status.
+// poller — ramp_provider="moneygram" that have not reached a terminal status.
 // Preloads User so the poller has the phone number for drift / failure SMS
 // without a second round-trip.
 func (r *loanRepository) GetActiveMoneyGramLoans(ctx context.Context, limit int) ([]*models.Loan, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	// refund_pending is deliberately absent: a refunded MG loan is not finished,
-	// it is awaiting inbound USDC. Parking it here would strand it, since the MG
-	// poller is the only thing that reads MoneyGram's state.
-	terminal := []string{"completed", "failed", "refund_received"}
+	// A declared-but-unsettled refund stays in this set: the loan is not
+	// finished, it is awaiting inbound USDC, and the MG poller is the only
+	// thing that will settle it. It is still LoanStatusDisbursing until the
+	// refund is verified, so no special case is needed.
 	var loans []*models.Loan
 	result := r.db.WithContext(ctx).
 		Preload("User").
-		Where("ramp_provider = ? AND disbursement_status NOT IN ? AND deleted_at IS NULL",
-			"moneygram", terminal).
+		Where("ramp_provider = ? AND status IN ? AND deleted_at IS NULL",
+			"moneygram", inFlightLoanStatuses).
 		Order("created_at ASC").
 		Limit(limit).
 		Find(&loans)
@@ -354,56 +362,56 @@ func (r *loanRepository) GetActiveMoneyGramLoans(ctx context.Context, limit int)
 // sync with the writer — an omission here has silently dropped writes before.
 func loanUpdateMap(loan *models.Loan) map[string]interface{} {
 	return map[string]interface{}{
-		"status":                      loan.Status,
-		"approved_at":                 loan.ApprovedAt,
-		"approved_by":                 loan.ApprovedBy,
-		"disbursed_at":                loan.DisbursedAt,
-		"repaid_at":                   loan.RepaidAt,
-		"defaulted_at":                loan.DefaultedAt,
-		"vault_tx_hash":               loan.VaultTxHash,
-		"vault_tx_status":             loan.VaultTxStatus,
-		"vault_repay_tx_hash":         loan.VaultRepayTxHash,
-		"vault_repay_status":          loan.VaultRepayStatus,
-		"ramp_provider":               loan.RampProvider,
-		"ramp_request_id":             loan.RampRequestID,
-		"ramp_fiat_amount":            loan.RampFiatAmount,
-		"ramp_fiat_currency":          loan.RampFiatCurr,
-		"momo_provider":               loan.MomoProvider,
-		"momo_transaction_id":         loan.MomoTxID,
-		"momo_status":                 loan.MomoStatus,
-		"settlement_method":           loan.SettlementMethod,
-		"disbursement_status":         loan.DisbursementStatus,
-		"ramp_sequence_id":            loan.RampSequenceID,
-		"origination_fee":             loan.OriginationFee,
-		"origination_fee_bps":         loan.OriginationFeeBps,
-		"total_amount":                loan.TotalAmount,
-		"disbursement_rate_bps":       loan.DisbursementRateBps,
-		"delivered_amount_kes":        loan.DeliveredAmtKES,
-		"quoted_repayment_amount_kes": loan.QuotedRepaymentAmtKES,
-		"quoted_at":                   loan.QuotedAt,
-		"conversion_spread_bps":       loan.ConversionSpreadBps,
-		"borrow_index":                loan.BorrowIndex,
-		"service_fee_usd":             loan.ServiceFeeUSD,
-		"service_fee_local":           loan.ServiceFeeLocal,
-		"partner_fee_usd":             loan.PartnerFeeUSD,
-		"partner_fee_local":           loan.PartnerFeeLocal,
+		"status":                 loan.Status,
+		"approved_at":            loan.ApprovedAt,
+		"approved_by":            loan.ApprovedBy,
+		"disbursed_at":           loan.DisbursedAt,
+		"repaid_at":              loan.RepaidAt,
+		"defaulted_at":           loan.DefaultedAt,
+		"vault_tx_hash":          loan.VaultTxHash,
+		"vault_tx_status":        loan.VaultTxStatus,
+		"vault_repay_tx_hash":    loan.VaultRepayTxHash,
+		"vault_repay_status":     loan.VaultRepayStatus,
+		"ramp_provider":          loan.RampProvider,
+		"ramp_request_id":        loan.RampRequestID,
+		"ramp_fiat_amount":       loan.RampFiatAmount,
+		"ramp_fiat_currency":     loan.RampFiatCurr,
+		"settlement_method":      loan.SettlementMethod,
+		"ramp_sequence_id":       loan.RampSequenceID,
+		"origination_fee":        loan.OriginationFee,
+		"origination_fee_bps":    loan.OriginationFeeBps,
+		"disbursement_rate":      loan.DisbursementRate,
+		"delivered_amount_local": loan.DeliveredAmountLocal,
+		"conversion_spread_bps":  loan.ConversionSpreadBps,
+		"borrow_index":           loan.BorrowIndex,
+		"service_fee_usd":        loan.ServiceFeeUSD,
+		"service_fee_local":      loan.ServiceFeeLocal,
+		"partner_fee_usd":        loan.PartnerFeeUSD,
+		"partner_fee_local":      loan.PartnerFeeLocal,
+		"telco_fee_usd":          loan.TelcoFeeUSD,
+		"telco_fee_local":        loan.TelcoFeeLocal,
+		"tax_usd":                loan.TaxUSD,
+		"tax_local":              loan.TaxLocal,
 
-		"ramp_interactive_url":     loan.RampInteractiveURL,
-		"ramp_short_code":          loan.RampShortCode,
-		"ramp_external_ref":        loan.RampExternalRef,
-		"ramp_more_info_url":       loan.RampMoreInfoURL,
-		"ramp_child_account_index": loan.RampChildAccountIndex,
-		"ramp_stellar_tx_hash":     loan.RampStellarTxHash,
-		"entry_rate_used":          loan.EntryRateUsed,
-		"entry_rate_source":        loan.EntryRateSource,
-		"entry_buffer_pct":         loan.EntryBufferPct,
-		"requested_local_amount":   loan.RequestedLocalAmount,
-		"ramp_withdraw_memo":       loan.RampWithdrawMemo,
-		"ramp_withdraw_memo_type":  loan.RampWithdrawMemoType,
-		"ramp_refund_tx_hash":      loan.RampRefundTxHash,
-		"ramp_refund_amount":       loan.RampRefundAmount,
-		"ramp_refund_shortfall":    loan.RampRefundShortfall,
-		"ramp_refunded_at":         loan.RampRefundedAt,
+		"ramp_interactive_url":      loan.RampInteractiveURL,
+		"ramp_short_code":           loan.RampShortCode,
+		"ramp_more_info_short_code": loan.RampMoreInfoShortCode,
+		"ramp_external_ref":         loan.RampExternalRef,
+		"ramp_more_info_url":        loan.RampMoreInfoURL,
+		"ramp_child_account_index":  loan.RampChildAccountIndex,
+		"ramp_stellar_tx_hash":      loan.RampStellarTxHash,
+		"entry_rate_buffered":       loan.EntryRateBuffered,
+		"entry_rate_source":         loan.EntryRateSource,
+		"entry_buffer_pct":          loan.EntryBufferPct,
+		"requested_local_amount":    loan.RequestedLocalAmount,
+		"ramp_withdraw_memo":        loan.RampWithdrawMemo,
+		"ramp_withdraw_memo_type":   loan.RampWithdrawMemoType,
+		"ramp_refund_declared_at":   loan.RampRefundDeclaredAt,
+		"ramp_pickup_ready_at":      loan.RampPickupReadyAt,
+		"ramp_refund_tx_hash":       loan.RampRefundTxHash,
+		"ramp_refund_amount":        loan.RampRefundAmount,
+		"ramp_refund_shortfall":     loan.RampRefundShortfall,
+		"ramp_refunded_at":          loan.RampRefundedAt,
 	}
 }
 

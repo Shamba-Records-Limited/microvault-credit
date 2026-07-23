@@ -75,3 +75,65 @@ func TestRedirect_SettledLoan410(t *testing.T) {
 		t.Fatalf("got %d, want 410", resp.StatusCode)
 	}
 }
+
+// The support link's whole purpose is to work after the withdrawal settles —
+// when the borrower is at an agent with a problem. Routing it through the same
+// terminal check as the interactive URL would 410 it exactly then.
+func TestRedirect_MoreInfoLinkSurvivesSettlement(t *testing.T) {
+	settled := models.DisbursementStatusCompleted
+	app := newTestApp(stubResolver{resp: &loan.LoanResponse{
+		RampInteractiveURL:    strptr("https://stellar.moneygram.com/sep24?token=xyz"),
+		RampShortCode:         strptr("interact"),
+		RampMoreInfoURL:       strptr("https://moneygram.com/support/72540163"),
+		RampMoreInfoShortCode: strptr("support1"),
+		DisbursementStatus:    &settled,
+	}})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/support1", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusFound {
+		t.Fatalf("got %d, want 302 — the support link must outlive the withdrawal", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Location"); got != "https://moneygram.com/support/72540163" {
+		t.Fatalf("redirected to %q, want the support URL", got)
+	}
+}
+
+// The interactive webview must stop working once settled, so a leaked SMS
+// cannot reopen a completed session.
+func TestRedirect_InteractiveLinkDiesOnSettlement(t *testing.T) {
+	settled := models.DisbursementStatusCompleted
+	app := newTestApp(stubResolver{resp: &loan.LoanResponse{
+		RampInteractiveURL:    strptr("https://stellar.moneygram.com/sep24?token=xyz"),
+		RampShortCode:         strptr("interact"),
+		RampMoreInfoURL:       strptr("https://moneygram.com/support/72540163"),
+		RampMoreInfoShortCode: strptr("support1"),
+		DisbursementStatus:    &settled,
+	}})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/interact", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusGone {
+		t.Fatalf("got %d, want 410", resp.StatusCode)
+	}
+}
+
+// A loan whose more-info URL has not arrived yet must 404 rather than redirect
+// to an empty location.
+func TestRedirect_MoreInfoCodeWithoutURL(t *testing.T) {
+	app := newTestApp(stubResolver{resp: &loan.LoanResponse{
+		RampMoreInfoShortCode: strptr("support1"),
+	}})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/support1", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("got %d, want 404", resp.StatusCode)
+	}
+}

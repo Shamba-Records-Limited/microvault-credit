@@ -16,8 +16,8 @@ var (
 	ErrConfigAlreadyInactive = errors.New("global lending limit config is already inactive")
 
 	// Validation errors
-	ErrInvalidInput      = errors.New("invalid input")
-	ErrInvalidConfigKey  = errors.New("invalid config key")
+	ErrInvalidInput       = errors.New("invalid input")
+	ErrInvalidConfigKey   = errors.New("invalid config key")
 	ErrInvalidConfigValue = errors.New("invalid config value")
-	ErrInvalidValueType  = errors.New("invalid value type")
+	ErrInvalidValueType   = errors.New("invalid value type")
 )

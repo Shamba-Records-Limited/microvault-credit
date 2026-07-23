@@ -19,15 +19,15 @@ type CreateCreditScoreRequest struct {
 
 // UpdateCreditScoreRequest represents the request to update credit score information
 type UpdateCreditScoreRequest struct {
-	Score                *int       `json:"score,omitempty"`
-	ScoreVersion         *string    `json:"score_version,omitempty"`
-	TotalLoans           *int       `json:"total_loans,omitempty"`
-	SuccessfulRepayments *int       `json:"successful_repayments,omitempty"`
-	Defaults             *int       `json:"defaults,omitempty"`
-	CurrentOutstanding   *int64     `json:"current_outstanding,omitempty"`
-	DaysOverdue          *int       `json:"days_overdue,omitempty"`
-	MaxLoanAmount        *int64     `json:"max_loan_amount,omitempty"`
-	MaxConcurrentLoans   *int       `json:"max_concurrent_loans,omitempty"`
+	Score                *int    `json:"score,omitempty"`
+	ScoreVersion         *string `json:"score_version,omitempty"`
+	TotalLoans           *int    `json:"total_loans,omitempty"`
+	SuccessfulRepayments *int    `json:"successful_repayments,omitempty"`
+	Defaults             *int    `json:"defaults,omitempty"`
+	CurrentOutstanding   *int64  `json:"current_outstanding,omitempty"`
+	DaysOverdue          *int    `json:"days_overdue,omitempty"`
+	MaxLoanAmount        *int64  `json:"max_loan_amount,omitempty"`
+	MaxConcurrentLoans   *int    `json:"max_concurrent_loans,omitempty"`
 }
 
 // CreditScoreResponse represents the response containing credit score information

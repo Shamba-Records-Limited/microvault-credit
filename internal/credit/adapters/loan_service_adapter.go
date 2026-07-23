@@ -60,6 +60,42 @@ type AccountEnsurer interface {
 	EnsureOnChainAccount(ctx context.Context, accountIndex int, address string) error
 }
 
+// notifyLeakGuard is a backstop, not a delivery deadline.
+//
+// The notifier decides when to give up: its retry sequence is finite and every
+// attempt is bounded by the provider's own per-request timeout, so the
+// goroutine always terminates on its own. This only catches a notifier that
+// fails to self-bound.
+//
+// It must therefore never be the binding constraint — if it cancels a send
+// mid-sequence it suppresses retries that were meant to run, which is the
+// failure it exists to prevent. Sized well above any plausible sequence
+// (AT_HTTP_TIMEOUT seconds x 3 attempts, plus backoff).
+const notifyLeakGuard = 10 * time.Minute
+
+// notifyAsync sends a borrower notification off the disbursement path.
+//
+// Nothing downstream reads the result: the pipeline treats every send as best
+// effort and only logs failures. Sending inline therefore bought nothing while
+// putting a slow SMS gateway directly between the vault borrow and the
+// off-ramp initiate — with provider retries a stalled gateway could hold the
+// pipeline for minutes, staling the entry FX rate quoted before approval.
+//
+// Uses a detached context: the pipeline's own context may be cancelled, and a
+// notification outliving it is correct.
+func (a *LoanServiceAdapter) notifyAsync(label, loanID string, send func(ctx context.Context) error) {
+	if a.loanNotifier == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), notifyLeakGuard)
+		defer cancel()
+		if err := send(ctx); err != nil {
+			a.logger.Warn("borrower notification failed", "notification", label, "loan_id", loanID, "error", err)
+		}
+	}()
+}
+
 // SetPublicBaseURL sets the externally-reachable origin used to build the
 // cash-pickup SMS short-link (e.g. https://microvault.outray.app). When empty,
 // the raw MoneyGram interactive URL is sent instead.
@@ -258,7 +294,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		ProductID:         &productID,
 		PrincipalAmount:   req.PrincipalAmount,
 		PrincipalAsset:    req.PrincipalAsset,
-		InterestRateBps:   interestRateBps,
+		VaultAPRBps:       interestRateBps,
 		OriginationFeeBps: a.productConfig.OriginationFeeBps,
 		DurationDays:      req.DurationDays,
 		RepaymentSchedule: req.RepaymentSched,
@@ -306,15 +342,12 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		// implies a push disbursement, which is misleading here — a follow-up
 		// SMS with the MoneyGram interactive URL is sent once the off-ramp
 		// initiates (see recordSuccessfulInitiate).
-		var smsErr error
-		if payoutMethod == offramp.PayoutMethodCashPickup {
-			smsErr = a.loanNotifier.NotifyLoanCashPickupApproved(ctx, notification)
-		} else {
-			smsErr = a.loanNotifier.NotifyLoanApproved(ctx, notification)
-		}
-		if smsErr != nil {
-			a.logger.Warn("approval SMS failed", "loan_id", loanID, "error", smsErr)
-		}
+		a.notifyAsync("approval", loanID, func(ctx context.Context) error {
+			if payoutMethod == offramp.PayoutMethodCashPickup {
+				return a.loanNotifier.NotifyLoanCashPickupApproved(ctx, notification)
+			}
+			return a.loanNotifier.NotifyLoanApproved(ctx, notification)
+		})
 	}
 
 	// Ensure the borrower's child account exists on-chain before lending — it
@@ -367,7 +400,6 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			AccountID:        &req.AccountID,
 			LoanID:           &loanID,
 			TxType:           models.TxTypeVaultBorrow,
-			TxCategory:       models.TxCategoryOnChain,
 			Amount:           borrowResp.AmountBorrowed,
 			Asset:            "USDC",
 			StellarTxHash:    &borrowResp.TxHash,
@@ -387,7 +419,6 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			successStatus := models.TxStatusSuccess
 			_, _ = a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{
 				Status:        &successStatus,
-				StellarStatus: &borrowResp.Status,
 				StellarLedger: &borrowResp.Ledger,
 			})
 		}
@@ -446,14 +477,9 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			"vault_tx_hash", borrowResp.TxHash,
 			"error", err,
 		)
-		// Mark disbursement_status so a retry mechanism can pick it up, and
-		// flip the loan's top-level Status to LoanStatusOffRampFailed so it
-		// is no longer treated as a live disbursement. This is distinct from
-		// LoanStatusDefaulted — the borrower owes nothing.
-		offRampFailedStatus := "offramp_failed"
-		_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
-			DisbursementStatus: &offRampFailedStatus,
-		})
+		// Flip the loan's status so it is no longer treated as a live
+		// disbursement. Distinct from LoanStatusDefaulted — the borrower owes
+		// nothing. The disbursement view derives from this.
 		if _, mErr := a.loanSvc.MarkAsOffRampFailed(ctx, loanID); mErr != nil {
 			a.logger.Warn("failed to flip loan status to offramp_failed",
 				"loan_id", loanID, "error", mErr)
@@ -470,12 +496,15 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			}
 			// Off-ramp failure SMS — distinct from the credit-default copy;
 			// the borrower's USDC never left the treasury (or has been repaid).
-			_ = a.loanNotifier.NotifyLoanOffRampFailed(ctx, contracts.LoanNotification{
+			failedNote := contracts.LoanNotification{
 				LoanID:          loanID,
 				LoanReference:   loanRef,
 				PhoneNumber:     req.PhoneNumber,
 				DisplayAmount:   notifyAmount,
 				DisplayCurrency: notifyCurrency,
+			}
+			a.notifyAsync("offramp_failed", loanID, func(ctx context.Context) error {
+				return a.loanNotifier.NotifyLoanOffRampFailed(ctx, failedNote)
 			})
 		}
 	} else {
@@ -528,9 +557,6 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	// result is a synchronous disbursement; for cash-pickup it's an
 	// awaiting-user state — the poller advances it later.
 	totalAmount := req.PrincipalAmount
-	if createResp.TotalAmount != nil {
-		totalAmount = *createResp.TotalAmount
-	}
 	status := "disbursed"
 	switch {
 	case offRampFailed:
@@ -619,14 +645,16 @@ func (a *LoanServiceAdapter) requoteEntryRate(
 			"provider", p.ID(), "currency", currency, "error", err)
 		return 0, "", 0
 	}
-	rate := q.SellRate
-	if rate == 0 {
-		rate = q.BuyRate
-	}
-	if rate <= 0 {
+	// Sell only. Falling back to the buy rate would quote the borrower at the
+	// wrong side of the spread, and nothing on the loan afterwards records
+	// which side was used — entry_rate_source names the provider, not the leg.
+	// No usable sell rate means no entry rate; the caller proceeds without one.
+	if q.SellRate <= 0 {
+		a.logger.Warn("entry-rate re-quote: provider returned no sell rate",
+			"provider", p.ID(), "currency", currency)
 		return 0, "", 0
 	}
-	return rate * (1.0 - a.fxBufferPct), string(p.ID()), a.fxBufferPct
+	return q.SellRate * (1.0 - a.fxBufferPct), string(p.ID()), a.fxBufferPct
 }
 
 // persistEntryRate writes the entry-rate audit fields and the requested
@@ -647,7 +675,7 @@ func (a *LoanServiceAdapter) persistEntryRate(
 	any := false
 	if entryRate > 0 {
 		v := entryRate
-		req.EntryRateUsed = &v
+		req.EntryRateBuffered = &v
 		any = true
 	}
 	if entryRateSource != "" {
@@ -715,12 +743,11 @@ func (a *LoanServiceAdapter) repayVaultAfterInitiate(
 	})
 
 	if a.txnSvc != nil {
-		desc := fmt.Sprintf("Vault repay (trigger: %s)", trigger)
+		desc := "Vault repay"
 		txnResp, txnErr := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
 			UserID:           &userID,
 			LoanID:           &loanID,
 			TxType:           models.TxTypeVaultRepay,
-			TxCategory:       models.TxCategoryOnChain,
 			Amount:           repayResp.AmountRepaid,
 			Asset:            "USDC",
 			StellarTxHash:    &repayResp.TxHash,
@@ -728,6 +755,7 @@ func (a *LoanServiceAdapter) repayVaultAfterInitiate(
 			ContractID:       &repayResp.ContractID,
 			ContractFunction: &repayResp.ContractFunction,
 			Description:      &desc,
+			Metadata:         txMetadata(map[string]any{"trigger": trigger}),
 		})
 		if txnErr == nil && txnResp != nil {
 			submittedStatus := models.TxStatusSubmitted
@@ -737,7 +765,6 @@ func (a *LoanServiceAdapter) repayVaultAfterInitiate(
 			successStatus := models.TxStatusSuccess
 			_, _ = a.txnSvc.Update(ctx, txnResp.ID, transaction.UpdateTransactionRequest{
 				Status:        &successStatus,
-				StellarStatus: &repayResp.Status,
 				StellarLedger: &repayResp.Ledger,
 			})
 		}
@@ -779,8 +806,6 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 	case offramp.PayoutMethodCashPickup:
 		// MG returned the interactive URL; persist what's known and let the
 		// poller backfill amount_out / external_ref / withdraw_memo.
-		mgInitiated := "mg_initiated"
-		updateReq.DisbursementStatus = &mgInitiated
 		var rawURL, shortCode string
 		if mg, ok := result.Provider.(moneygram.CashPickupPayload); ok && mg.InteractiveURL != "" {
 			rawURL = mg.InteractiveURL
@@ -834,19 +859,16 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 			if createResp.LoanReference != nil {
 				notification.LoanReference = *createResp.LoanReference
 			}
-			if smsErr := a.loanNotifier.NotifyLoanCashPickupInitiated(ctx, notification); smsErr != nil {
-				a.logger.Warn("cash-pickup SMS failed",
-					"loan_id", loanID, "error", smsErr)
-			}
+			a.notifyAsync("cash_pickup_initiated", loanID, func(ctx context.Context) error {
+				return a.loanNotifier.NotifyLoanCashPickupInitiated(ctx, notification)
+			})
 		}
 
 	default:
 		// Mobile-money: existing YC path — locked AmountLocal + fees.
 		rampFiatAmount := int64(result.AmountLocal * 100) // cents
-		rampDisbStatus := "processing"
 		updateReq.RampFiatAmount = &rampFiatAmount
 		updateReq.RampFiatCurr = &result.LocalCurrency
-		updateReq.DisbursementStatus = &rampDisbStatus
 
 		// Slippage guard (log-only, no blocking).
 		if req.LocalAmount > 0 {
@@ -863,22 +885,8 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 
 		// Persist conversion data when local currency info is available.
 		if req.ConversionRate > 0 {
-			disbursementRateBps := int64(req.ConversionRate * 10000)
-			updateReq.DisbursementRateBps = &disbursementRateBps
-		}
-		if req.LocalAmount > 0 {
-			totalUSDC := req.PrincipalAmount
-			if createResp.TotalAmount != nil {
-				totalUSDC = *createResp.TotalAmount
-			}
-			// Quote-only: this value is what we show the borrower on the USSD
-			// confirmation screen. The actual amount owed at repayment is
-			// recomputed via loan.Service.GetRepaymentQuote — vault APR + FX
-			// drift mean this number is wrong by the time the user repays.
-			quotedKES := int64(float64(totalUSDC) / 1e7 * req.ConversionRate * 100)
-			now := time.Now()
-			updateReq.QuotedRepaymentAmtKES = &quotedKES
-			updateReq.QuotedAt = &now
+			rate := req.ConversionRate
+			updateReq.DisbursementRate = &rate
 		}
 
 		if _, err := a.loanSvc.Update(ctx, loanID, updateReq); err != nil {
@@ -889,19 +897,22 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 
 		// Record off-ramp transaction.
 		if a.txnSvc != nil {
-			offRampDesc := fmt.Sprintf("Off-ramp via %s (%s)", providerID, result.SettlementMethod)
+			offRampDesc := fmt.Sprintf("Off-ramp via %s", providerID)
 			provName := string(providerID)
 			if _, txnErr := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
 				UserID:           &req.UserID,
 				AccountID:        &req.AccountID,
 				LoanID:           &loanID,
 				TxType:           models.TxTypeOffRamp,
-				TxCategory:       models.TxCategoryOffChain,
 				Amount:           rampFiatAmount,
 				Asset:            result.LocalCurrency,
 				ExternalID:       &result.RequestID,
 				ExternalProvider: &provName,
 				Description:      &offRampDesc,
+				Metadata: txMetadata(map[string]any{
+					"settlement_method": result.SettlementMethod,
+					"sequence_id":       result.SequenceID,
+				}),
 			}); txnErr != nil {
 				a.logger.Warn("failed to record off-ramp transaction", "loan_id", loanID, "error", txnErr)
 			}
@@ -923,15 +934,14 @@ func (a *LoanServiceAdapter) GetUserLoans(ctx context.Context, userID string) ([
 	results := make([]interface{}, len(resp.Data))
 	for i, l := range resp.Data {
 		results[i] = map[string]interface{}{
-			"id":                   l.ID,
-			"loan_reference":       l.LoanReference,
-			"status":               l.Status,
-			"total_amount":         l.TotalAmount,
-			"due_date":             l.DueDate,
-			"delivered_amount_kes": l.DeliveredAmtKES,
-			"borrow_index":         l.BorrowIndex,
-			"service_fee_usd":      l.ServiceFeeUSD,
-			"service_fee_local":    l.ServiceFeeLocal,
+			"id":                     l.ID,
+			"loan_reference":         l.LoanReference,
+			"status":                 l.Status,
+			"due_date":               l.DueDate,
+			"delivered_amount_local": l.DeliveredAmountLocal,
+			"borrow_index":           l.BorrowIndex,
+			"service_fee_usd":        l.ServiceFeeUSD,
+			"service_fee_local":      l.ServiceFeeLocal,
 		}
 	}
 	a.logger.Info("fetched user loans", "user_id", userID, "count", len(results))
@@ -1067,14 +1077,12 @@ func (a *LoanServiceAdapter) fetchFXForQuote(ctx context.Context, currency strin
 	if err != nil {
 		return 0, "", err
 	}
-	rate := q.SellRate
-	if rate == 0 {
-		rate = q.BuyRate
+	// Sell only — see requoteEntryRate. A repayment quoted at the buy rate is
+	// wrong by the spread, and silently so.
+	if q.SellRate <= 0 {
+		return 0, "", fmt.Errorf("quoter returned no sell rate for %s", currency)
 	}
-	if rate <= 0 {
-		return 0, "", fmt.Errorf("quoter returned non-positive rate")
-	}
-	return rate, string(provider.ID()), nil
+	return q.SellRate, string(provider.ID()), nil
 }
 
 // mulDivCeil computes ceil(a * b / c) without overflow on the intermediate

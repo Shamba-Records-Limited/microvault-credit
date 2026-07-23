@@ -36,9 +36,13 @@ func NewInteractiveRedirectHandler(loans ShortCodeResolver, logger *slog.Logger)
 	}
 }
 
-// Handle resolves :code to the loan's interactive URL and redirects. Unknown
-// codes 404; codes on a settled loan 410 so a leaked link can't reopen a
-// completed session.
+// Handle resolves :code and redirects. Unknown codes 404.
+//
+// A loan carries two short-links with opposite lifetimes. The interactive
+// webview must stop working once the withdrawal settles, so a leaked link
+// cannot reopen a completed session — that one 410s when terminal. MoneyGram's
+// support deep-link is the opposite: it only matters after settlement, when
+// the borrower has a problem at the agent, so it never expires.
 func (h *InteractiveRedirectHandler) Handle(c *fiber.Ctx) error {
 	code := c.Params("code")
 	if code == "" {
@@ -54,11 +58,22 @@ func (h *InteractiveRedirectHandler) Handle(c *fiber.Ctx) error {
 		}
 		return c.SendStatus(fiber.StatusNotFound)
 	}
-	if resp == nil || resp.RampInteractiveURL == nil || *resp.RampInteractiveURL == "" {
-		h.logger.Warn("short-code resolved but no interactive URL", "code", code)
+	if resp == nil {
 		return c.SendStatus(fiber.StatusNotFound)
 	}
 
+	if matches(resp.RampMoreInfoShortCode, code) {
+		if resp.RampMoreInfoURL == nil || *resp.RampMoreInfoURL == "" {
+			h.logger.Warn("more-info code resolved but no URL", "code", code)
+			return c.SendStatus(fiber.StatusNotFound)
+		}
+		return c.Redirect(*resp.RampMoreInfoURL, fiber.StatusFound)
+	}
+
+	if resp.RampInteractiveURL == nil || *resp.RampInteractiveURL == "" {
+		h.logger.Warn("short-code resolved but no interactive URL", "code", code)
+		return c.SendStatus(fiber.StatusNotFound)
+	}
 	if isTerminalDisbursement(resp.DisbursementStatus) {
 		return c.SendStatus(fiber.StatusGone)
 	}
@@ -66,6 +81,13 @@ func (h *InteractiveRedirectHandler) Handle(c *fiber.Ctx) error {
 	return c.Redirect(*resp.RampInteractiveURL, fiber.StatusFound)
 }
 
+func matches(stored *string, code string) bool {
+	return stored != nil && *stored == code
+}
+
+// isTerminalDisbursement reports whether the withdrawal has finished, however
+// it finished. DisbursementStatus is derived from the loan rather than stored;
+// see models.Loan.DeriveDisbursementStatus.
 func isTerminalDisbursement(status *string) bool {
 	if status == nil {
 		return false

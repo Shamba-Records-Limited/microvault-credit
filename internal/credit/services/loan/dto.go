@@ -9,7 +9,7 @@ type CreateLoanRequest struct {
 	ProductID         *string `json:"product_id,omitempty"`
 	PrincipalAmount   int64   `json:"principal_amount" validate:"required,gt=0"`
 	PrincipalAsset    string  `json:"principal_asset" validate:"required"`
-	InterestRateBps   int32   `json:"interest_rate_bps" validate:"required,gt=0"`
+	VaultAPRBps       int32   `json:"vault_apr_bps" validate:"required,gt=0"`
 	OriginationFeeBps int32   `json:"origination_fee_bps,omitempty"` // Zero ⇒ no fee.
 	DurationDays      int     `json:"duration_days" validate:"required,gt=0"`
 	RepaymentSchedule string  `json:"repayment_schedule" validate:"required"`
@@ -17,42 +17,42 @@ type CreateLoanRequest struct {
 
 // UpdateLoanRequest represents the request to update loan information
 type UpdateLoanRequest struct {
-	VaultTxHash           *string    `json:"vault_tx_hash,omitempty"`
-	VaultTxStatus         *string    `json:"vault_tx_status,omitempty"`
-	VaultRepayTxHash      *string    `json:"vault_repay_tx_hash,omitempty"`
-	VaultRepayStatus      *string    `json:"vault_repay_status,omitempty"`
-	RampProvider          *string    `json:"ramp_provider,omitempty"`
-	RampRequestID         *string    `json:"ramp_request_id,omitempty"`
-	RampFiatAmount        *int64     `json:"ramp_fiat_amount,omitempty"`
-	RampFiatCurr          *string    `json:"ramp_fiat_currency,omitempty"`
-	MomoProvider          *string    `json:"momo_provider,omitempty"`
-	MomoTxID              *string    `json:"momo_transaction_id,omitempty"`
-	MomoStatus            *string    `json:"momo_status,omitempty"`
-	OriginationFee        *int64     `json:"origination_fee,omitempty"`
-	OriginationFeeBps     *int32     `json:"origination_fee_bps,omitempty"`
-	TotalAmount           *int64     `json:"total_amount,omitempty"`
-	SettlementMethod      *string    `json:"settlement_method,omitempty"`
-	DisbursementStatus    *string    `json:"disbursement_status,omitempty"`
-	RampSequenceID        *string    `json:"ramp_sequence_id,omitempty"`
-	DisbursementRateBps   *int64     `json:"disbursement_rate_bps,omitempty"`
-	DeliveredAmtKES       *int64     `json:"delivered_amount_kes,omitempty"`
-	QuotedRepaymentAmtKES *int64     `json:"quoted_repayment_amount_kes,omitempty"`
-	QuotedAt              *time.Time `json:"quoted_at,omitempty"`
-	ConversionSpreadBps   *int32     `json:"conversion_spread_bps,omitempty"`
-	BorrowIndex           *int64     `json:"borrow_index,omitempty"`
-	ServiceFeeUSD         *int64     `json:"service_fee_usd,omitempty"`
-	ServiceFeeLocal       *int64     `json:"service_fee_local,omitempty"`
-	PartnerFeeUSD         *int64     `json:"partner_fee_usd,omitempty"`
-	PartnerFeeLocal       *int64     `json:"partner_fee_local,omitempty"`
+	VaultTxHash          *string    `json:"vault_tx_hash,omitempty"`
+	VaultTxStatus        *string    `json:"vault_tx_status,omitempty"`
+	VaultRepayTxHash     *string    `json:"vault_repay_tx_hash,omitempty"`
+	VaultRepayStatus     *string    `json:"vault_repay_status,omitempty"`
+	RampProvider         *string    `json:"ramp_provider,omitempty"`
+	RampRequestID        *string    `json:"ramp_request_id,omitempty"`
+	RampFiatAmount       *int64     `json:"ramp_fiat_amount,omitempty"`
+	RampFiatCurr         *string    `json:"ramp_fiat_currency,omitempty"`
+	OriginationFee       *int64     `json:"origination_fee,omitempty"`
+	OriginationFeeBps    *int32     `json:"origination_fee_bps,omitempty"`
+	SettlementMethod     *string    `json:"settlement_method,omitempty"`
+	RampRefundDeclaredAt *time.Time `json:"ramp_refund_declared_at,omitempty"`
+	RampPickupReadyAt    *time.Time `json:"ramp_pickup_ready_at,omitempty"`
+	RampSequenceID       *string    `json:"ramp_sequence_id,omitempty"`
+	DisbursementRate     *float64   `json:"disbursement_rate,omitempty"`
+	DeliveredAmountLocal *int64     `json:"delivered_amount_local,omitempty"`
+	ConversionSpreadBps  *int32     `json:"conversion_spread_bps,omitempty"`
+	BorrowIndex          *int64     `json:"borrow_index,omitempty"`
+	ServiceFeeUSD        *int64     `json:"service_fee_usd,omitempty"`
+	ServiceFeeLocal      *int64     `json:"service_fee_local,omitempty"`
+	PartnerFeeUSD        *int64     `json:"partner_fee_usd,omitempty"`
+	PartnerFeeLocal      *int64     `json:"partner_fee_local,omitempty"`
+	TelcoFeeUSD          *int64     `json:"telco_fee_usd,omitempty"`
+	TelcoFeeLocal        *int64     `json:"telco_fee_local,omitempty"`
+	TaxUSD               *int64     `json:"tax_usd,omitempty"`
+	TaxLocal             *int64     `json:"tax_local,omitempty"`
 
 	// MoneyGram cash-pickup fields.
 	RampInteractiveURL    *string  `json:"ramp_interactive_url,omitempty"`
 	RampShortCode         *string  `json:"ramp_short_code,omitempty"`
+	RampMoreInfoShortCode *string  `json:"ramp_more_info_short_code,omitempty"`
 	RampExternalRef       *string  `json:"ramp_external_ref,omitempty"`
 	RampMoreInfoURL       *string  `json:"ramp_more_info_url,omitempty"`
 	RampChildAccountIndex *int64   `json:"ramp_child_account_index,omitempty"`
 	RampStellarTxHash     *string  `json:"ramp_stellar_tx_hash,omitempty"`
-	EntryRateUsed         *float64 `json:"entry_rate_used,omitempty"`
+	EntryRateBuffered     *float64 `json:"entry_rate_buffered,omitempty"`
 	EntryRateSource       *string  `json:"entry_rate_source,omitempty"`
 	EntryBufferPct        *float64 `json:"entry_buffer_pct,omitempty"`
 	RequestedLocalAmount  *int64   `json:"requested_local_amount,omitempty"`
@@ -72,74 +72,69 @@ type ApproveLoanRequest struct {
 
 // DisburseLoanRequest represents the request to disburse a loan
 type DisburseLoanRequest struct {
-	VaultTxHash        *string `json:"vault_tx_hash,omitempty"`
-	VaultTxStatus      *string `json:"vault_tx_status,omitempty"`
-	RampProvider       *string `json:"ramp_provider,omitempty"`
-	RampRequestID      *string `json:"ramp_request_id,omitempty"`
-	RampFiatAmount     *int64  `json:"ramp_fiat_amount,omitempty"`
-	RampFiatCurr       *string `json:"ramp_fiat_currency,omitempty"`
-	MomoProvider       *string `json:"momo_provider,omitempty"`
-	MomoTxID           *string `json:"momo_transaction_id,omitempty"`
-	SettlementMethod   *string `json:"settlement_method,omitempty"`
-	DisbursementStatus *string `json:"disbursement_status,omitempty"`
-	RampSequenceID     *string `json:"ramp_sequence_id,omitempty"`
+	VaultTxHash      *string `json:"vault_tx_hash,omitempty"`
+	VaultTxStatus    *string `json:"vault_tx_status,omitempty"`
+	RampProvider     *string `json:"ramp_provider,omitempty"`
+	RampRequestID    *string `json:"ramp_request_id,omitempty"`
+	RampFiatAmount   *int64  `json:"ramp_fiat_amount,omitempty"`
+	RampFiatCurr     *string `json:"ramp_fiat_currency,omitempty"`
+	SettlementMethod *string `json:"settlement_method,omitempty"`
+	RampSequenceID   *string `json:"ramp_sequence_id,omitempty"`
 }
 
 // LoanResponse represents the response containing loan information
 type LoanResponse struct {
-	ID                    string     `json:"id"`
-	LoanReference         *string    `json:"loan_reference,omitempty"`
-	UserID                string     `json:"user_id"`
-	AccountID             string     `json:"account_id"`
-	ProductID             *string    `json:"product_id,omitempty"`
-	PrincipalAmount       int64      `json:"principal_amount"`
-	PrincipalAsset        string     `json:"principal_asset"`
-	InterestRateBps       int32      `json:"interest_rate_bps"`
-	InterestAmount        *int64     `json:"interest_amount,omitempty"`
-	OriginationFee        *int64     `json:"origination_fee,omitempty"`
-	OriginationFeeBps     *int32     `json:"origination_fee_bps,omitempty"`
-	TotalAmount           *int64     `json:"total_amount,omitempty"`
-	DurationDays          int        `json:"duration_days"`
-	RepaymentSched        string     `json:"repayment_schedule"`
-	DueDate               *time.Time `json:"due_date,omitempty"`
-	Status                string     `json:"status"`
-	ApprovedAt            *time.Time `json:"approved_at,omitempty"`
-	ApprovedBy            *string    `json:"approved_by,omitempty"`
-	DisbursedAt           *time.Time `json:"disbursed_at,omitempty"`
-	RepaidAt              *time.Time `json:"repaid_at,omitempty"`
-	DefaultedAt           *time.Time `json:"defaulted_at,omitempty"`
-	VaultTxHash           *string    `json:"vault_tx_hash,omitempty"`
-	VaultTxStatus         *string    `json:"vault_tx_status,omitempty"`
-	VaultRepayTxHash      *string    `json:"vault_repay_tx_hash,omitempty"`
-	VaultRepayStatus      *string    `json:"vault_repay_status,omitempty"`
-	RampProvider          *string    `json:"ramp_provider,omitempty"`
-	RampRequestID         *string    `json:"ramp_request_id,omitempty"`
-	RampFiatAmount        *int64     `json:"ramp_fiat_amount,omitempty"`
-	RampFiatCurr          *string    `json:"ramp_fiat_currency,omitempty"`
-	MomoProvider          *string    `json:"momo_provider,omitempty"`
-	MomoTxID              *string    `json:"momo_transaction_id,omitempty"`
-	MomoStatus            *string    `json:"momo_status,omitempty"`
-	SettlementMethod      *string    `json:"settlement_method,omitempty"`
-	DisbursementStatus    *string    `json:"disbursement_status,omitempty"`
-	RampSequenceID        *string    `json:"ramp_sequence_id,omitempty"`
-	DisbursementRateBps   *int64     `json:"disbursement_rate_bps,omitempty"`
-	DeliveredAmtKES       *int64     `json:"delivered_amount_kes,omitempty"`
-	QuotedRepaymentAmtKES *int64     `json:"quoted_repayment_amount_kes,omitempty"`
-	QuotedAt              *time.Time `json:"quoted_at,omitempty"`
-	ConversionSpreadBps   *int32     `json:"conversion_spread_bps,omitempty"`
-	BorrowIndex           *int64     `json:"borrow_index,omitempty"`
-	ServiceFeeUSD         *int64     `json:"service_fee_usd,omitempty"`
-	ServiceFeeLocal       *int64     `json:"service_fee_local,omitempty"`
-	PartnerFeeUSD         *int64     `json:"partner_fee_usd,omitempty"`
-	PartnerFeeLocal       *int64     `json:"partner_fee_local,omitempty"`
+	ID                   string     `json:"id"`
+	LoanReference        *string    `json:"loan_reference,omitempty"`
+	UserID               string     `json:"user_id"`
+	AccountID            string     `json:"account_id"`
+	ProductID            *string    `json:"product_id,omitempty"`
+	PrincipalAmount      int64      `json:"principal_amount"`
+	PrincipalAsset       string     `json:"principal_asset"`
+	VaultAPRBps          int32      `json:"vault_apr_bps"`
+	OriginationFee       *int64     `json:"origination_fee,omitempty"`
+	OriginationFeeBps    *int32     `json:"origination_fee_bps,omitempty"`
+	DurationDays         int        `json:"duration_days"`
+	RepaymentSched       string     `json:"repayment_schedule"`
+	DueDate              *time.Time `json:"due_date,omitempty"`
+	Status               string     `json:"status"`
+	ApprovedAt           *time.Time `json:"approved_at,omitempty"`
+	ApprovedBy           *string    `json:"approved_by,omitempty"`
+	DisbursedAt          *time.Time `json:"disbursed_at,omitempty"`
+	RepaidAt             *time.Time `json:"repaid_at,omitempty"`
+	DefaultedAt          *time.Time `json:"defaulted_at,omitempty"`
+	VaultTxHash          *string    `json:"vault_tx_hash,omitempty"`
+	VaultTxStatus        *string    `json:"vault_tx_status,omitempty"`
+	VaultRepayTxHash     *string    `json:"vault_repay_tx_hash,omitempty"`
+	VaultRepayStatus     *string    `json:"vault_repay_status,omitempty"`
+	RampProvider         *string    `json:"ramp_provider,omitempty"`
+	RampRequestID        *string    `json:"ramp_request_id,omitempty"`
+	RampFiatAmount       *int64     `json:"ramp_fiat_amount,omitempty"`
+	RampFiatCurr         *string    `json:"ramp_fiat_currency,omitempty"`
+	SettlementMethod     *string    `json:"settlement_method,omitempty"`
+	DisbursementStatus   *string    `json:"disbursement_status,omitempty"`
+	RampSequenceID       *string    `json:"ramp_sequence_id,omitempty"`
+	DisbursementRate     *float64   `json:"disbursement_rate,omitempty"`
+	DeliveredAmountLocal *int64     `json:"delivered_amount_local,omitempty"`
+	ConversionSpreadBps  *int32     `json:"conversion_spread_bps,omitempty"`
+	BorrowIndex          *int64     `json:"borrow_index,omitempty"`
+	ServiceFeeUSD        *int64     `json:"service_fee_usd,omitempty"`
+	ServiceFeeLocal      *int64     `json:"service_fee_local,omitempty"`
+	PartnerFeeUSD        *int64     `json:"partner_fee_usd,omitempty"`
+	PartnerFeeLocal      *int64     `json:"partner_fee_local,omitempty"`
+	TelcoFeeUSD          *int64     `json:"telco_fee_usd,omitempty"`
+	TelcoFeeLocal        *int64     `json:"telco_fee_local,omitempty"`
+	TaxUSD               *int64     `json:"tax_usd,omitempty"`
+	TaxLocal             *int64     `json:"tax_local,omitempty"`
 
 	RampInteractiveURL    *string  `json:"ramp_interactive_url,omitempty"`
 	RampShortCode         *string  `json:"ramp_short_code,omitempty"`
+	RampMoreInfoShortCode *string  `json:"ramp_more_info_short_code,omitempty"`
 	RampExternalRef       *string  `json:"ramp_external_ref,omitempty"`
 	RampMoreInfoURL       *string  `json:"ramp_more_info_url,omitempty"`
 	RampChildAccountIndex *int64   `json:"ramp_child_account_index,omitempty"`
 	RampStellarTxHash     *string  `json:"ramp_stellar_tx_hash,omitempty"`
-	EntryRateUsed         *float64 `json:"entry_rate_used,omitempty"`
+	EntryRateBuffered     *float64 `json:"entry_rate_buffered,omitempty"`
 	EntryRateSource       *string  `json:"entry_rate_source,omitempty"`
 	EntryBufferPct        *float64 `json:"entry_buffer_pct,omitempty"`
 	RequestedLocalAmount  *int64   `json:"requested_local_amount,omitempty"`
@@ -193,44 +188,29 @@ func (r UpdateLoanRequest) changedFields() map[string]any {
 	if r.RampFiatCurr != nil {
 		f["ramp_fiat_currency"] = r.RampFiatCurr
 	}
-	if r.MomoProvider != nil {
-		f["momo_provider"] = r.MomoProvider
-	}
-	if r.MomoTxID != nil {
-		f["momo_transaction_id"] = r.MomoTxID
-	}
-	if r.MomoStatus != nil {
-		f["momo_status"] = r.MomoStatus
-	}
 	if r.OriginationFee != nil {
 		f["origination_fee"] = r.OriginationFee
 	}
 	if r.OriginationFeeBps != nil {
 		f["origination_fee_bps"] = r.OriginationFeeBps
 	}
-	if r.TotalAmount != nil {
-		f["total_amount"] = r.TotalAmount
-	}
 	if r.SettlementMethod != nil {
 		f["settlement_method"] = r.SettlementMethod
 	}
-	if r.DisbursementStatus != nil {
-		f["disbursement_status"] = r.DisbursementStatus
+	if r.RampRefundDeclaredAt != nil {
+		f["ramp_refund_declared_at"] = r.RampRefundDeclaredAt
+	}
+	if r.RampPickupReadyAt != nil {
+		f["ramp_pickup_ready_at"] = r.RampPickupReadyAt
 	}
 	if r.RampSequenceID != nil {
 		f["ramp_sequence_id"] = r.RampSequenceID
 	}
-	if r.DisbursementRateBps != nil {
-		f["disbursement_rate_bps"] = r.DisbursementRateBps
+	if r.DisbursementRate != nil {
+		f["disbursement_rate"] = r.DisbursementRate
 	}
-	if r.DeliveredAmtKES != nil {
-		f["delivered_amount_kes"] = r.DeliveredAmtKES
-	}
-	if r.QuotedRepaymentAmtKES != nil {
-		f["quoted_repayment_amount_kes"] = r.QuotedRepaymentAmtKES
-	}
-	if r.QuotedAt != nil {
-		f["quoted_at"] = r.QuotedAt
+	if r.DeliveredAmountLocal != nil {
+		f["delivered_amount_local"] = r.DeliveredAmountLocal
 	}
 	if r.ConversionSpreadBps != nil {
 		f["conversion_spread_bps"] = r.ConversionSpreadBps
@@ -250,11 +230,26 @@ func (r UpdateLoanRequest) changedFields() map[string]any {
 	if r.PartnerFeeLocal != nil {
 		f["partner_fee_local"] = r.PartnerFeeLocal
 	}
+	if r.TelcoFeeUSD != nil {
+		f["telco_fee_usd"] = r.TelcoFeeUSD
+	}
+	if r.TelcoFeeLocal != nil {
+		f["telco_fee_local"] = r.TelcoFeeLocal
+	}
+	if r.TaxUSD != nil {
+		f["tax_usd"] = r.TaxUSD
+	}
+	if r.TaxLocal != nil {
+		f["tax_local"] = r.TaxLocal
+	}
 	if r.RampInteractiveURL != nil {
 		f["ramp_interactive_url"] = r.RampInteractiveURL
 	}
 	if r.RampShortCode != nil {
 		f["ramp_short_code"] = r.RampShortCode
+	}
+	if r.RampMoreInfoShortCode != nil {
+		f["ramp_more_info_short_code"] = r.RampMoreInfoShortCode
 	}
 	if r.RampExternalRef != nil {
 		f["ramp_external_ref"] = r.RampExternalRef
@@ -268,8 +263,8 @@ func (r UpdateLoanRequest) changedFields() map[string]any {
 	if r.RampChildAccountIndex != nil {
 		f["ramp_child_account_index"] = r.RampChildAccountIndex
 	}
-	if r.EntryRateUsed != nil {
-		f["entry_rate_used"] = r.EntryRateUsed
+	if r.EntryRateBuffered != nil {
+		f["entry_rate_buffered"] = r.EntryRateBuffered
 	}
 	if r.EntryRateSource != nil {
 		f["entry_rate_source"] = r.EntryRateSource
