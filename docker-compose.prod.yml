@@ -34,27 +34,6 @@ services:
       retries: 5
       start_period: 5s
 
-  minio:
-    image: minio/minio:latest
-    container_name: microvault-minio
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
-      MINIO_KMS_SECRET_KEY: ${MINIO_KMS_SECRET_KEY:-my-minio-key:h8gBExLSiqmGky62m8lPyBbAmyymT/7Wb4/emV50KEo=}
-    volumes:
-      - minio_data:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 5s
-
   migrate:
     build:
       context: ..
@@ -117,4 +96,3 @@ volumes:
   redis_data:
   credit_data:
   core_data:
-  minio_data:

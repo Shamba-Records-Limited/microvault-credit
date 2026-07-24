@@ -1,4 +1,6 @@
-.PHONY: help migrate-up migrate-down migrate-version migrate-force build build-credit build-migrate run test docs clean
+.PHONY: help migrate-up migrate-down migrate-version migrate-force build build-credit build-migrate run test test-integration test-integration-down docs clean
+
+COMPOSE_TEST := docker compose -f docker-compose.test.yml
 
 help:
 	@echo "Microvault Credit Makefile Commands"
@@ -19,6 +21,8 @@ help:
 	@echo ""
 	@echo "Test Commands:"
 	@echo "  make test                - Run all tests"
+	@echo "  make test-integration    - Run DB-backed tests in an ephemeral Postgres"
+	@echo "  make test-integration-down - Tear down the test stack"
 	@echo ""
 	@echo "Documentation Commands:"
 	@echo "  make docs                - Generate API documentation"
@@ -66,6 +70,20 @@ run:
 test:
 	@echo "Running all tests..."
 	@go test -v ./...
+
+# Spin up an ephemeral Postgres, migrate it, run the DB-backed suite, then tear
+# down. `down` (not `down -v`) keeps the Go mod/build caches for faster reruns;
+# the database is tmpfs-backed and discarded regardless. The runner's exit code
+# is preserved through the teardown so CI sees a real pass/fail.
+test-integration:
+	@echo "Running DB-backed tests against an ephemeral Postgres..."
+	@$(COMPOSE_TEST) up --build --abort-on-container-exit --exit-code-from test; \
+		status=$$?; \
+		$(COMPOSE_TEST) down; \
+		exit $$status
+
+test-integration-down:
+	@$(COMPOSE_TEST) down
 
 # Documentation commands
 docs:

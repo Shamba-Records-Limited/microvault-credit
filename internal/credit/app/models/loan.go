@@ -203,51 +203,6 @@ func (lp *LoanProduct) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-// CreditScore represents a user's credit score
-type CreditScore struct {
-	ID                   string         `json:"id" gorm:"type:uuid;primaryKey"`
-	UserID               string         `json:"user_id" gorm:"type:uuid;not null;uniqueIndex"`
-	Score                int            `json:"score" gorm:"type:int;not null;index"`
-	ScoreVersion         string         `json:"score_version" gorm:"type:varchar(20);not null"`
-	TotalLoans           int            `json:"total_loans" gorm:"type:int;not null;default:0"`
-	SuccessfulRepayments int            `json:"successful_repayments" gorm:"type:int;not null;default:0"`
-	Defaults             int            `json:"defaults" gorm:"type:int;not null;default:0"`
-	CurrentOutstanding   int64          `json:"current_outstanding" gorm:"type:bigint;not null;default:0"`
-	DaysOverdue          int            `json:"days_overdue" gorm:"type:int;not null;default:0"`
-	MaxLoanAmount        *int64         `json:"max_loan_amount,omitempty" gorm:"type:bigint"`
-	MaxConcurrentLoans   int            `json:"max_concurrent_loans" gorm:"type:int;not null;default:1"`
-	CalculatedAt         time.Time      `json:"calculated_at" gorm:"type:timestamp;not null"`
-	ExpiresAt            *time.Time     `json:"expires_at,omitempty" gorm:"type:timestamp;index"`
-	CreatedAt            time.Time      `json:"created_at" gorm:"autoCreateTime;not null"`
-	UpdatedAt            time.Time      `json:"updated_at" gorm:"autoUpdateTime;not null"`
-	DeletedAt            gorm.DeletedAt `json:"deleted_at" gorm:"index"`
-
-	User *users.User `gorm:"foreignKey:UserID"`
-}
-
-// TableName specifies the table name for CreditScore model
-func (CreditScore) TableName() string {
-	return "credit_scores"
-}
-
-// BeforeCreate sets the ID before creating a new credit score
-func (cs *CreditScore) BeforeCreate(tx *gorm.DB) error {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return err
-	}
-	cs.ID = id.String()
-	return nil
-}
-
-// IsExpired checks if the credit score has expired
-func (r *CreditScore) IsExpired() bool {
-	if r.ExpiresAt == nil {
-		return false
-	}
-	return r.ExpiresAt.Before(time.Now())
-}
-
 // Repayment represents a loan repayment schedule item
 type Repayment struct {
 	ID                string         `json:"id" gorm:"type:uuid;primaryKey"`
