@@ -348,8 +348,10 @@ func main() {
 	}
 	loanAdapter.SetPublicBaseURL(cfg.Server.PublicBaseURL)
 	loanAdapter.SetAccountEnsurer(userAdapter)
+	var linkShortener urlshortener.Shortener
 	if cfg.Shortener.Enabled() {
-		loanAdapter.SetShortener(urlshortener.NewDub(cfg.Shortener.APIKey, cfg.Shortener.ImagePreviewURL))
+		linkShortener = urlshortener.NewDub(cfg.Shortener.APIKey, cfg.Shortener.ImagePreviewURL)
+		loanAdapter.SetShortener(linkShortener)
 		log.Printf("WARNING: dub.co link shortener enabled — cash-pickup SMS links are sent to dub.co")
 	}
 
@@ -362,6 +364,9 @@ func main() {
 		logger,
 	)
 	disbursementAdapter.SetPublicBaseURL(cfg.Server.PublicBaseURL)
+	if linkShortener != nil {
+		disbursementAdapter.SetShortener(linkShortener)
+	}
 
 	// ---- 12b. Rate service adapter ----
 	// YC is the canonical Quoter for the USSD pre-loan rate display. MG's

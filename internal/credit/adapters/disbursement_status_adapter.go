@@ -13,6 +13,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
+	"github.com/Shamba-Records-Limited/microvault/pkg/urlshortener"
 	"github.com/Shamba-Records-Limited/microvault/pkg/webhook"
 )
 
@@ -27,12 +28,20 @@ var (
 // webhook.RefundPendingFetcher, and webhook.TransactionRecorder using
 // the credit loan repository and transaction service.
 type DisbursementStatusAdapter struct {
-	publicBaseURL string // origin for SMS short-links; optional
+	publicBaseURL string                 // origin for SMS short-links; optional
+	shortener     urlshortener.Shortener // optional; further shortens the support link
 	repo          repository.LoanRepository
 	loanNotifier  contracts.LoanNotifier
 	txnSvc        transaction.Service
 	stellarSvc    stellar.Service
 	logger        *slog.Logger
+}
+
+// SetShortener injects an external URL shortener applied to the cash-pickup
+// ready SMS support link. It shortens the /r/{code} redirect (no token
+// exposed), mirroring LoanServiceAdapter for the interactive link.
+func (a *DisbursementStatusAdapter) SetShortener(s urlshortener.Shortener) {
+	a.shortener = s
 }
 
 // notifyAsync sends a borrower notification off the caller's thread.
@@ -530,6 +539,19 @@ func (a *DisbursementStatusAdapter) NotifyCashPickupReady(sequenceID string) err
 		CashPickupInfoURL: a.moreInfoLink(loan),
 	}
 	a.notifyAsync("cash_pickup_ready", loan.ID, func(ctx context.Context) error {
+		// Optionally shorten the support link via dub.co (branded domain + rich
+		// preview). Done here, inside the async send, rather than before it: the
+		// caller runs on the poller's serial loop, so a slow dub call must not
+		// block the batch. On failure keep the internal /r/{code} link — SMS
+		// delivery matters more than link length.
+		if a.shortener != nil && note.CashPickupInfoURL != "" {
+			if short, err := a.shortener.Shorten(ctx, note.CashPickupInfoURL); err != nil {
+				a.logger.Warn("dub shorten failed; sending unshortened support link",
+					"loan_id", loan.ID, "error", err)
+			} else {
+				note.CashPickupInfoURL = short
+			}
+		}
 		return a.loanNotifier.NotifyLoanCashPickupReady(ctx, note)
 	})
 	return nil
