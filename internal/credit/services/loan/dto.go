@@ -45,19 +45,20 @@ type UpdateLoanRequest struct {
 	TaxLocal             *int64     `json:"tax_local,omitempty"`
 
 	// MoneyGram cash-pickup fields.
-	RampInteractiveURL    *string  `json:"ramp_interactive_url,omitempty"`
-	RampShortCode         *string  `json:"ramp_short_code,omitempty"`
-	RampMoreInfoShortCode *string  `json:"ramp_more_info_short_code,omitempty"`
-	RampExternalRef       *string  `json:"ramp_external_ref,omitempty"`
-	RampMoreInfoURL       *string  `json:"ramp_more_info_url,omitempty"`
-	RampChildAccountIndex *int64   `json:"ramp_child_account_index,omitempty"`
-	RampStellarTxHash     *string  `json:"ramp_stellar_tx_hash,omitempty"`
-	EntryRateBuffered     *float64 `json:"entry_rate_buffered,omitempty"`
-	EntryRateSource       *string  `json:"entry_rate_source,omitempty"`
-	EntryBufferPct        *float64 `json:"entry_buffer_pct,omitempty"`
-	RequestedLocalAmount  *int64   `json:"requested_local_amount,omitempty"`
-	RampWithdrawMemo      *string  `json:"ramp_withdraw_memo,omitempty"`
-	RampWithdrawMemoType  *string  `json:"ramp_withdraw_memo_type,omitempty"`
+	RampInteractiveURL     *string    `json:"ramp_interactive_url,omitempty"`
+	RampShortCode          *string    `json:"ramp_short_code,omitempty"`
+	RampShortCodeExpiresAt *time.Time `json:"ramp_short_code_expires_at,omitempty"`
+	RampMoreInfoShortCode  *string    `json:"ramp_more_info_short_code,omitempty"`
+	RampExternalRef        *string    `json:"ramp_external_ref,omitempty"`
+	RampMoreInfoURL        *string    `json:"ramp_more_info_url,omitempty"`
+	RampChildAccountIndex  *int64     `json:"ramp_child_account_index,omitempty"`
+	RampStellarTxHash      *string    `json:"ramp_stellar_tx_hash,omitempty"`
+	EntryRateBuffered      *float64   `json:"entry_rate_buffered,omitempty"`
+	EntryRateSource        *string    `json:"entry_rate_source,omitempty"`
+	EntryBufferPct         *float64   `json:"entry_buffer_pct,omitempty"`
+	RequestedLocalAmount   *int64     `json:"requested_local_amount,omitempty"`
+	RampWithdrawMemo       *string    `json:"ramp_withdraw_memo,omitempty"`
+	RampWithdrawMemoType   *string    `json:"ramp_withdraw_memo_type,omitempty"`
 
 	RampRefundTxHash    *string    `json:"ramp_refund_tx_hash,omitempty"`
 	RampRefundAmount    *int64     `json:"ramp_refund_amount,omitempty"`
@@ -127,19 +128,20 @@ type LoanResponse struct {
 	TaxUSD               *int64     `json:"tax_usd,omitempty"`
 	TaxLocal             *int64     `json:"tax_local,omitempty"`
 
-	RampInteractiveURL    *string  `json:"ramp_interactive_url,omitempty"`
-	RampShortCode         *string  `json:"ramp_short_code,omitempty"`
-	RampMoreInfoShortCode *string  `json:"ramp_more_info_short_code,omitempty"`
-	RampExternalRef       *string  `json:"ramp_external_ref,omitempty"`
-	RampMoreInfoURL       *string  `json:"ramp_more_info_url,omitempty"`
-	RampChildAccountIndex *int64   `json:"ramp_child_account_index,omitempty"`
-	RampStellarTxHash     *string  `json:"ramp_stellar_tx_hash,omitempty"`
-	EntryRateBuffered     *float64 `json:"entry_rate_buffered,omitempty"`
-	EntryRateSource       *string  `json:"entry_rate_source,omitempty"`
-	EntryBufferPct        *float64 `json:"entry_buffer_pct,omitempty"`
-	RequestedLocalAmount  *int64   `json:"requested_local_amount,omitempty"`
-	RampWithdrawMemo      *string  `json:"ramp_withdraw_memo,omitempty"`
-	RampWithdrawMemoType  *string  `json:"ramp_withdraw_memo_type,omitempty"`
+	RampInteractiveURL     *string    `json:"ramp_interactive_url,omitempty"`
+	RampShortCode          *string    `json:"ramp_short_code,omitempty"`
+	RampShortCodeExpiresAt *time.Time `json:"ramp_short_code_expires_at,omitempty"`
+	RampMoreInfoShortCode  *string    `json:"ramp_more_info_short_code,omitempty"`
+	RampExternalRef        *string    `json:"ramp_external_ref,omitempty"`
+	RampMoreInfoURL        *string    `json:"ramp_more_info_url,omitempty"`
+	RampChildAccountIndex  *int64     `json:"ramp_child_account_index,omitempty"`
+	RampStellarTxHash      *string    `json:"ramp_stellar_tx_hash,omitempty"`
+	EntryRateBuffered      *float64   `json:"entry_rate_buffered,omitempty"`
+	EntryRateSource        *string    `json:"entry_rate_source,omitempty"`
+	EntryBufferPct         *float64   `json:"entry_buffer_pct,omitempty"`
+	RequestedLocalAmount   *int64     `json:"requested_local_amount,omitempty"`
+	RampWithdrawMemo       *string    `json:"ramp_withdraw_memo,omitempty"`
+	RampWithdrawMemoType   *string    `json:"ramp_withdraw_memo_type,omitempty"`
 
 	RampRefundTxHash    *string    `json:"ramp_refund_tx_hash,omitempty"`
 	RampRefundAmount    *int64     `json:"ramp_refund_amount,omitempty"`
@@ -244,6 +246,9 @@ func (r UpdateLoanRequest) changedFields() map[string]any {
 	}
 	if r.RampInteractiveURL != nil {
 		f["ramp_interactive_url"] = r.RampInteractiveURL
+	}
+	if r.RampShortCodeExpiresAt != nil {
+		f["ramp_short_code_expires_at"] = r.RampShortCodeExpiresAt
 	}
 	if r.RampShortCode != nil {
 		f["ramp_short_code"] = r.RampShortCode

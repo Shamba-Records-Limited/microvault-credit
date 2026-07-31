@@ -9,6 +9,7 @@ replace github.com/Shamba-Records-Limited/microvault => ../microvault
 replace github.com/go-ini/ini => gopkg.in/ini.v1 v1.67.0
 
 require (
+	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/gofiber/fiber/v2 v2.52.14
 	github.com/gofiber/swagger v1.1.1
 	github.com/golang-migrate/migrate/v4 v4.19.1
@@ -77,6 +78,7 @@ require (
 	github.com/tyler-smith/go-bip32 v1.0.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.72.0 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.54.0 // indirect

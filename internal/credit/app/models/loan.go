@@ -80,6 +80,11 @@ type Loan struct {
 	RampChildAccountIndex *int64  `json:"ramp_child_account_index,omitempty" gorm:"type:bigint"`
 	// RampShortCode maps a /r/{code} SMS redirect to RampInteractiveURL.
 	RampShortCode *string `json:"ramp_short_code,omitempty" gorm:"type:varchar(24);uniqueIndex"`
+	// RampShortCodeExpiresAt bounds the interactive code's life. It is an
+	// unauthenticated bearer token, and the disbursement-status gate alone
+	// leaves it valid indefinitely on a loan that never reaches a terminal
+	// state. Nil on rows predating migration 000024: status gate only.
+	RampShortCodeExpiresAt *time.Time `json:"ramp_short_code_expires_at,omitempty" gorm:"type:timestamptz"`
 	// RampMoreInfoShortCode maps a /r/{code} SMS redirect to RampMoreInfoURL.
 	// Separate from RampShortCode because the two links have opposite
 	// lifetimes: the interactive URL must die once the withdrawal settles, and

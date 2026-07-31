@@ -15,6 +15,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/adapters"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/handlers"
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/pkg/ratelimit"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
 	"github.com/Shamba-Records-Limited/microvault/pkg/account"
@@ -46,6 +47,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/platform/cache"
 	"github.com/Shamba-Records-Limited/microvault/platform/database"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/swagger"
 )
 
@@ -503,8 +505,25 @@ func main() {
 	api.Post("/webhooks/yellowcard", webhookCtrl.HandleYellowCardWebhook)
 
 	// Cash-pickup SMS short-link → MoneyGram interactive URL redirect.
+	//
+	// Rate limited: the code is an unauthenticated 40-bit bearer token resolving
+	// to a live KYC session, and finding *any* live code is far cheaper than
+	// finding a given one. A borrower taps their link a handful of times; a
+	// scanner does not.
+	//
+	// Backed by Redis rather than the default in-memory store so the ceiling is
+	// 20/min in total, not 20/min per replica. Sliding rather than fixed window:
+	// a fixed one lets 40 through across a window boundary.
 	redirectHandler := handlers.NewInteractiveRedirectHandler(loanSvc, logger)
-	app.Get("/r/:code", redirectHandler.Handle)
+	app.Get("/r/:code", limiter.New(limiter.Config{
+		Max:               20,
+		Expiration:        time.Minute,
+		LimiterMiddleware: limiter.SlidingWindow{},
+		Storage:           ratelimit.NewRedisStore(redisClient, "microvault:ratelimit:redirect"),
+		LimitReached: func(c *fiber.Ctx) error {
+			return c.SendStatus(fiber.StatusTooManyRequests)
+		},
+	}), redirectHandler.Handle)
 
 	// ---- 17. Start server ----
 	sigChan := make(chan os.Signal, 1)

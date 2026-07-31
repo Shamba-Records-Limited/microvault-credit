@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -75,6 +76,12 @@ func (h *InteractiveRedirectHandler) Handle(c *fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNotFound)
 	}
 	if isTerminalDisbursement(resp.DisbursementStatus) {
+		return c.SendStatus(fiber.StatusGone)
+	}
+	// The status gate alone leaves a code live indefinitely on a loan that never
+	// reaches a terminal state. Nil expiry means a row predating migration
+	// 000024, which keeps the status-only behaviour.
+	if resp.RampShortCodeExpiresAt != nil && time.Now().After(*resp.RampShortCodeExpiresAt) {
 		return c.SendStatus(fiber.StatusGone)
 	}
 

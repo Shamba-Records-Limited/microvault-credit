@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -135,5 +136,72 @@ func TestRedirect_MoreInfoCodeWithoutURL(t *testing.T) {
 	}
 	if resp.StatusCode != fiber.StatusNotFound {
 		t.Fatalf("got %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestRedirect_ExpiredCode410(t *testing.T) {
+	// A loan stuck in processing never trips the status gate, so expiry is the
+	// only thing bounding an unauthenticated bearer code's life.
+	pending := models.DisbursementStatusProcessing
+	expired := time.Now().Add(-time.Minute)
+	app := newTestApp(stubResolver{resp: &loan.LoanResponse{
+		RampInteractiveURL:     strptr("https://stellar.moneygram.com/sep24?token=xyz"),
+		DisbursementStatus:     &pending,
+		RampShortCodeExpiresAt: &expired,
+	}})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/abc123", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusGone {
+		t.Fatalf("got %d, want 410", resp.StatusCode)
+	}
+}
+
+func TestRedirect_UnexpiredAndLegacyCodesStillResolve(t *testing.T) {
+	pending := models.DisbursementStatusProcessing
+	future := time.Now().Add(time.Hour)
+
+	for name, expiresAt := range map[string]*time.Time{
+		"within TTL":                  &future,
+		"nil expiry (pre-000024 row)": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			app := newTestApp(stubResolver{resp: &loan.LoanResponse{
+				RampInteractiveURL:     strptr("https://stellar.moneygram.com/sep24?token=xyz"),
+				DisbursementStatus:     &pending,
+				RampShortCodeExpiresAt: expiresAt,
+			}})
+
+			resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/abc123", nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != fiber.StatusFound {
+				t.Fatalf("got %d, want 302", resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestRedirect_MoreInfoLinkIgnoresInteractiveExpiry(t *testing.T) {
+	// The support link outlives settlement by design; the interactive code's
+	// expiry must not reach it.
+	settled := models.DisbursementStatusCompleted
+	expired := time.Now().Add(-time.Hour)
+	app := newTestApp(stubResolver{resp: &loan.LoanResponse{
+		RampMoreInfoShortCode:  strptr("info99"),
+		RampMoreInfoURL:        strptr("https://moneygram.com/support/abc"),
+		DisbursementStatus:     &settled,
+		RampShortCodeExpiresAt: &expired,
+	}})
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/info99", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusFound {
+		t.Fatalf("got %d, want 302", resp.StatusCode)
 	}
 }

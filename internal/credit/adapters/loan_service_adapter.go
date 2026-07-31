@@ -778,6 +778,37 @@ func (a *LoanServiceAdapter) repayVaultAfterInitiate(
 	)
 }
 
+// shortCodeTTL bounds the life of a /r/{code} interactive redirect. MoneyGram
+// expires the SEP-24 session itself; this only stops an unauthenticated code
+// staying resolvable forever on a loan that never reaches a terminal state.
+const shortCodeTTL = 24 * time.Hour
+
+// mintRedirectLink generates a /r/{code} redirect for rawURL and persists the
+// code with its expiry. Returns rawURL unchanged when either step fails: a long
+// link still resolves, a 404 does not.
+//
+// Called only when the shortener produced nothing, so a pickup carries one
+// unauthenticated bearer code rather than one per shortener.
+func (a *LoanServiceAdapter) mintRedirectLink(ctx context.Context, loanID, rawURL string) string {
+	code, err := newShortCode()
+	if err != nil {
+		a.logger.Warn("short-code generation failed; sending raw URL",
+			"loan_id", loanID, "error", err)
+		return rawURL
+	}
+
+	expiresAt := time.Now().Add(shortCodeTTL)
+	if _, err := a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
+		RampShortCode:          &code,
+		RampShortCodeExpiresAt: &expiresAt,
+	}); err != nil {
+		a.logger.Warn("failed to persist short code; sending raw URL",
+			"loan_id", loanID, "error", err)
+		return rawURL
+	}
+	return a.publicBaseURL + "/r/" + code
+}
+
 // recordSuccessfulInitiate persists the off-ramp results onto the loan,
 // branching on payout method. YellowCard returns a locked AmountLocal +
 // fees that are persisted immediately; MoneyGram returns an interactive
@@ -806,41 +837,35 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 	case offramp.PayoutMethodCashPickup:
 		// MG returned the interactive URL; persist what's known and let the
 		// poller backfill amount_out / external_ref / withdraw_memo.
-		var rawURL, shortCode string
+		var rawURL string
 		if mg, ok := result.Provider.(moneygram.CashPickupPayload); ok && mg.InteractiveURL != "" {
 			rawURL = mg.InteractiveURL
 			updateReq.RampInteractiveURL = &rawURL
-
-			// A short-link redirect keeps the SMS within its width; the raw
-			// URL embeds a ~500-char SEP-24 JWT.
-			if a.publicBaseURL != "" {
-				if code, err := newShortCode(); err != nil {
-					a.logger.Warn("short-code generation failed; sending raw URL",
-						"loan_id", loanID, "error", err)
-				} else {
-					shortCode = code
-					updateReq.RampShortCode = &code
-				}
-			}
 		}
 
-		// The SMS link is the short redirect only when its code was actually
-		// persisted — otherwise the redirect would 404, so fall back to the raw
-		// URL.
-		smsLink := rawURL
+		initiated := true
 		if _, err := a.loanSvc.Update(ctx, loanID, updateReq); err != nil {
 			a.logger.Warn("failed to record cash-pickup initiation",
 				"loan_id", loanID, "error", err)
-		} else if shortCode != "" {
-			smsLink = a.publicBaseURL + "/r/" + shortCode
+			initiated = false
 		}
 
-		// Optionally shorten via dub (branded short domain + rich preview),
-		// pointing it at the MoneyGram URL rather than at /r/{code}.
-		var shortenErr error
-		if smsLink, shortenErr = shortenedLink(ctx, a.shortener, rawURL, smsLink); shortenErr != nil {
-			a.logger.Warn("dub shorten failed; sending unshortened link",
+		// Shorten via dub (branded short domain + rich preview), pointed at the
+		// MoneyGram URL rather than at /r/{code}.
+		smsLink, shortenErr := shortenedLink(ctx, a.shortener, rawURL, "")
+		if shortenErr != nil {
+			a.logger.Warn("dub shorten failed; falling back to the internal redirect",
 				"loan_id", loanID, "error", shortenErr)
+		}
+
+		// A /r/{code} code is minted only when dub produced nothing. It is an
+		// unauthenticated bearer token resolving to a live KYC session, so one
+		// per pickup — not one alongside every dub link.
+		if smsLink == "" && rawURL != "" {
+			smsLink = rawURL
+			if initiated && a.publicBaseURL != "" {
+				smsLink = a.mintRedirectLink(ctx, loanID, rawURL)
+			}
 		}
 
 		// SMS user the interactive URL so they can complete KYC.
