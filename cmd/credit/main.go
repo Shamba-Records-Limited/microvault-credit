@@ -351,10 +351,12 @@ func main() {
 	var linkShortener urlshortener.Shortener
 	if cfg.Shortener.Enabled() {
 		linkShortener = urlshortener.NewDub(urlshortener.DubOptions{
-			APIKey:          cfg.Shortener.APIKey,
-			BaseURL:         cfg.Shortener.BaseURL,
-			Domain:          cfg.Shortener.Domain,
-			ImagePreviewURL: cfg.Shortener.ImagePreviewURL,
+			APIKey:             cfg.Shortener.APIKey,
+			BaseURL:            cfg.Shortener.BaseURL,
+			Domain:             cfg.Shortener.Domain,
+			PreviewTitle:       cfg.Shortener.PreviewTitle,
+			PreviewDescription: cfg.Shortener.PreviewDescription,
+			ImagePreviewURL:    cfg.Shortener.ImagePreviewURL,
 		})
 		loanAdapter.SetShortener(linkShortener)
 		target := cfg.Shortener.BaseURL

@@ -539,18 +539,21 @@ func (a *DisbursementStatusAdapter) NotifyCashPickupReady(sequenceID string) err
 		CashPickupInfoURL: a.moreInfoLink(loan),
 	}
 	a.notifyAsync("cash_pickup_ready", loan.ID, func(ctx context.Context) error {
-		// Optionally shorten the support link via dub.co (branded domain + rich
-		// preview). Done here, inside the async send, rather than before it: the
-		// caller runs on the poller's serial loop, so a slow dub call must not
-		// block the batch. On failure keep the internal /r/{code} link — SMS
-		// delivery matters more than link length.
-		if a.shortener != nil && note.CashPickupInfoURL != "" {
-			if short, err := a.shortener.Shorten(ctx, note.CashPickupInfoURL); err != nil {
-				a.logger.Warn("dub shorten failed; sending unshortened support link",
-					"loan_id", loan.ID, "error", err)
-			} else {
-				note.CashPickupInfoURL = short
-			}
+		// Optionally shorten the support link via dub (branded domain + rich
+		// preview), pointing it at MoneyGram's deep-link rather than at
+		// /r/{code}. Done here, inside the async send, rather than before it:
+		// the caller runs on the poller's serial loop, so a slow dub call must
+		// not block the batch.
+		var rawMoreInfoURL string
+		if loan.RampMoreInfoURL != nil {
+			rawMoreInfoURL = *loan.RampMoreInfoURL
+		}
+		var shortenErr error
+		if note.CashPickupInfoURL, shortenErr = shortenedLink(
+			ctx, a.shortener, rawMoreInfoURL, note.CashPickupInfoURL,
+		); shortenErr != nil {
+			a.logger.Warn("dub shorten failed; sending unshortened support link",
+				"loan_id", loan.ID, "error", shortenErr)
 		}
 		return a.loanNotifier.NotifyLoanCashPickupReady(ctx, note)
 	})

@@ -835,16 +835,12 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 			smsLink = a.publicBaseURL + "/r/" + shortCode
 		}
 
-		// Optionally shorten the final link via dub.co (branded short domain +
-		// rich preview). On failure keep the existing link — SMS delivery is
-		// more important than link length.
-		if a.shortener != nil && smsLink != "" {
-			if short, err := a.shortener.Shorten(ctx, smsLink); err != nil {
-				a.logger.Warn("dub shorten failed; sending unshortened link",
-					"loan_id", loanID, "error", err)
-			} else {
-				smsLink = short
-			}
+		// Optionally shorten via dub (branded short domain + rich preview),
+		// pointing it at the MoneyGram URL rather than at /r/{code}.
+		var shortenErr error
+		if smsLink, shortenErr = shortenedLink(ctx, a.shortener, rawURL, smsLink); shortenErr != nil {
+			a.logger.Warn("dub shorten failed; sending unshortened link",
+				"loan_id", loanID, "error", shortenErr)
 		}
 
 		// SMS user the interactive URL so they can complete KYC.
