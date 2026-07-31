@@ -350,9 +350,18 @@ func main() {
 	loanAdapter.SetAccountEnsurer(userAdapter)
 	var linkShortener urlshortener.Shortener
 	if cfg.Shortener.Enabled() {
-		linkShortener = urlshortener.NewDub(cfg.Shortener.APIKey, cfg.Shortener.ImagePreviewURL)
+		linkShortener = urlshortener.NewDub(urlshortener.DubOptions{
+			APIKey:          cfg.Shortener.APIKey,
+			BaseURL:         cfg.Shortener.BaseURL,
+			Domain:          cfg.Shortener.Domain,
+			ImagePreviewURL: cfg.Shortener.ImagePreviewURL,
+		})
 		loanAdapter.SetShortener(linkShortener)
-		log.Printf("WARNING: dub.co link shortener enabled — cash-pickup SMS links are sent to dub.co")
+		target := cfg.Shortener.BaseURL
+		if target == "" {
+			target = "https://api.dub.co"
+		}
+		log.Printf("Link shortener enabled — cash-pickup SMS links are sent to %s", target)
 	}
 
 	// ---- 12. DisbursementStatusAdapter (webhook callbacks) ----
