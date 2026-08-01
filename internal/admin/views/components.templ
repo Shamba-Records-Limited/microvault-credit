@@ -1,0 +1,78 @@
+package views
+
+// Tone maps a semantic state onto the reserved status palette.
+type Tone string
+
+const (
+	ToneNeutral  Tone = "neutral"
+	ToneGood     Tone = "good"
+	ToneWarning  Tone = "warning"
+	ToneSerious  Tone = "serious"
+	ToneCritical Tone = "critical"
+)
+
+func (t Tone) dotClass() string {
+	switch t {
+	case ToneGood:
+		return "bg-good"
+	case ToneWarning:
+		return "bg-warning"
+	case ToneSerious:
+		return "bg-serious"
+	case ToneCritical:
+		return "bg-critical"
+	default:
+		return "bg-muted-foreground"
+	}
+}
+
+templ Card(title string) {
+	<section class="rounded-xl border bg-card text-card-foreground">
+		if title != "" {
+			<div class="border-b px-5 py-3 text-sm font-medium">{ title }</div>
+		}
+		<div class="p-5">
+			{ children... }
+		</div>
+	</section>
+}
+
+// StatTile is a headline figure with an optional caption. No plot, so no hover layer.
+templ StatTile(label, value, caption string) {
+	<div class="rounded-xl border bg-card p-5 text-card-foreground">
+		<div class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{ label }</div>
+		<div class="mt-2 text-3xl font-semibold tabular-nums">{ value }</div>
+		if caption != "" {
+			<div class="mt-1 text-xs text-muted-foreground">{ caption }</div>
+		}
+	</div>
+}
+
+// Badge pairs a tone with its label; the label always carries the meaning.
+templ Badge(tone Tone, label string) {
+	<span class="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-medium">
+		<span class={ "size-1.5 rounded-full", tone.dotClass() } aria-hidden="true"></span>
+		{ label }
+	</span>
+}
+
+templ EmptyState(message string) {
+	<div class="rounded-xl border border-dashed p-10 text-center text-sm text-muted-foreground">
+		{ message }
+	</div>
+}
+
+templ FieldError(message string) {
+	if message != "" {
+		<p class="mt-1 text-xs text-destructive">{ message }</p>
+	}
+}
+
+templ Alert(tone Tone, message string) {
+	if message != "" {
+		<div class="mb-4 flex items-center gap-2 rounded-lg border px-4 py-3 text-sm">
+			<span class={ "size-2 rounded-full", tone.dotClass() } aria-hidden="true"></span>
+			{ message }
+		</div>
+	}
+}

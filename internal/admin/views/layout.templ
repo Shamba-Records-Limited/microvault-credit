@@ -1,0 +1,94 @@
+package views
+
+// NavItem is a single sidebar entry.
+type NavItem struct {
+	Label string
+	Href  string
+}
+
+// Nav is the sidebar in render order.
+var Nav = []NavItem{
+	{Label: "Dashboard", Href: "/"},
+	{Label: "Loans", Href: "/loans"},
+	{Label: "Transactions", Href: "/transactions"},
+	{Label: "Users", Href: "/users"},
+	{Label: "Loan products", Href: "/loan-products"},
+	{Label: "Limits", Href: "/limits"},
+	{Label: "Config", Href: "/config"},
+}
+
+templ head(title string) {
+	<head>
+		<meta charset="utf-8"/>
+		<meta name="viewport" content="width=device-width, initial-scale=1"/>
+		<meta name="robots" content="noindex, nofollow"/>
+		<title>{ title } · Microvault admin</title>
+		<link rel="stylesheet" href="/static/admin.css"/>
+		<script src="/static/htmx.min.js" defer></script>
+	</head>
+}
+
+// Shell is the authenticated layout: sidebar plus main content region.
+templ Shell(title, current string) {
+	<!DOCTYPE html>
+	<html lang="en" class="h-full">
+		@head(title)
+		<body class="h-full bg-background text-foreground">
+			<div class="flex h-full">
+				<aside class="w-60 shrink-0 border-r border-sidebar-border bg-sidebar">
+					<div class="flex h-14 items-center px-5 text-sm font-semibold tracking-tight">
+						Microvault
+					</div>
+					<nav class="flex flex-col gap-0.5 px-3 py-2">
+						for _, item := range Nav {
+							@navLink(item, current)
+						}
+					</nav>
+				</aside>
+				<div class="flex min-w-0 flex-1 flex-col">
+					<header class="flex h-14 shrink-0 items-center justify-between border-b px-6">
+						<h1 class="text-sm font-medium">{ title }</h1>
+						<form method="post" action="/logout">
+							<button type="submit" class="text-xs text-muted-foreground hover:text-foreground">
+								Sign out
+							</button>
+						</form>
+					</header>
+					<main class="min-w-0 flex-1 overflow-y-auto p-6">
+						{ children... }
+					</main>
+				</div>
+			</div>
+		</body>
+	</html>
+}
+
+templ navLink(item NavItem, current string) {
+	if item.Href == current {
+		<a
+			href={ templ.SafeURL(item.Href) }
+			aria-current="page"
+			class="rounded-md bg-sidebar-accent px-3 py-2 text-sm font-medium text-sidebar-accent-foreground"
+		>
+			{ item.Label }
+		</a>
+	} else {
+		<a
+			href={ templ.SafeURL(item.Href) }
+			class="rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+		>
+			{ item.Label }
+		</a>
+	}
+}
+
+// Bare is the unauthenticated layout, used by the sign-in page.
+templ Bare(title string) {
+	<!DOCTYPE html>
+	<html lang="en" class="h-full">
+		@head(title)
+		<body class="grid h-full place-items-center bg-background text-foreground">
+			{ children... }
+		</body>
+	</html>
+}

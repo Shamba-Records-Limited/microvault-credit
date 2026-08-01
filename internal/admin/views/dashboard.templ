@@ -1,0 +1,77 @@
+package views
+
+import (
+	"fmt"
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/metrics"
+)
+
+// DashboardPage is the state the dashboard renders from.
+type DashboardPage struct {
+	Snapshot   *metrics.Snapshot
+	WindowDays int
+	Error      string
+}
+
+func alertTone(count int64) Tone {
+	if count == 0 {
+		return ToneGood
+	}
+	return ToneSerious
+}
+
+func totalsLabel(totals []metrics.AssetTotal) string {
+	if len(totals) == 0 {
+		return "0"
+	}
+	out := ""
+	for i, total := range totals {
+		if i > 0 {
+			out += "  ·  "
+		}
+		out += Money(total.Amount, total.Asset)
+	}
+	return out
+}
+
+templ Dashboard(p DashboardPage) {
+	@Shell("Dashboard", "/") {
+		@Alert(ToneCritical, p.Error)
+		if p.Snapshot != nil {
+			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+				@StatTile("Outstanding principal", totalsLabel(p.Snapshot.Outstanding), "Disbursed and unrepaid")
+				@StatTile("Active loans", fmt.Sprintf("%d", p.Snapshot.ActiveLoans), "Status: disbursed")
+				@StatTile(
+					fmt.Sprintf("Disbursed (%dd)", p.WindowDays),
+					totalsLabel(p.Snapshot.DisbursedRecent),
+					"By disbursement date",
+				)
+				@StatTile(
+					"Default rate",
+					fmt.Sprintf("%.1f%%", p.Snapshot.DefaultRate),
+					"Defaulted / settled loans",
+				)
+			</div>
+			<div class="mt-6">
+				@Card("Operational health") {
+					<p class="mb-4 text-sm text-muted-foreground">
+						Loans whose money is in an unfinished state. Off-ramp failures are tracked
+						separately from defaults: the borrower never received funds.
+					</p>
+					<ul class="divide-y">
+						for _, alert := range p.Snapshot.Alerts {
+							<li class="flex items-center justify-between py-3">
+								<div class="flex items-center gap-3">
+									@Badge(alertTone(alert.Count), alert.Label)
+									<span class="text-xs text-muted-foreground">{ alert.Note }</span>
+								</div>
+								<span class="text-lg font-semibold tabular-nums">
+									{ fmt.Sprintf("%d", alert.Count) }
+								</span>
+							</li>
+						}
+					</ul>
+				}
+			</div>
+		}
+	}
+}

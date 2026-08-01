@@ -1,4 +1,6 @@
-.PHONY: help migrate-up migrate-down migrate-version migrate-force build build-credit build-migrate run test test-integration test-integration-down docs clean
+.PHONY: help migrate-up migrate-down migrate-version migrate-force build build-credit build-migrate build-admin run run-admin admin-assets admin-generate admin-watch test test-integration test-integration-down docs clean
+
+ADMIN_ASSETS := internal/admin/assets
 
 COMPOSE_TEST := docker compose -f docker-compose.test.yml
 
@@ -12,12 +14,19 @@ help:
 	@echo "  make migrate-force V=N   - Force credit migration to version N"
 	@echo ""
 	@echo "Build Commands:"
-	@echo "  make build               - Build all applications (credit + migrate)"
+	@echo "  make build               - Build all applications (credit + migrate + admin)"
 	@echo "  make build-credit        - Build credit application"
 	@echo "  make build-migrate       - Build migration CLI"
+	@echo "  make build-admin         - Build admin dashboard (regenerates templ + CSS)"
 	@echo ""
 	@echo "Run Commands:"
 	@echo "  make run                 - Run credit application"
+	@echo "  make run-admin           - Run admin dashboard"
+	@echo ""
+	@echo "Admin Asset Commands:"
+	@echo "  make admin-generate      - Regenerate templ Go from .templ files"
+	@echo "  make admin-assets        - Rebuild the admin stylesheet"
+	@echo "  make admin-watch         - Rebuild the stylesheet on change"
 	@echo ""
 	@echo "Test Commands:"
 	@echo "  make test                - Run all tests"
@@ -49,7 +58,7 @@ endif
 	@go run cmd/migrate/main.go force $(V)
 
 # Build commands
-build: build-credit build-migrate
+build: build-credit build-migrate build-admin
 	@echo "All applications built successfully"
 
 build-credit:
@@ -62,9 +71,28 @@ build-migrate:
 	@go build -o bin/migrate cmd/migrate/main.go
 	@echo "Build complete: bin/migrate"
 
+build-admin: admin-generate admin-assets
+	@echo "Building admin dashboard..."
+	@go build -o bin/admin ./cmd/admin
+	@echo "Build complete: bin/admin"
+
+# Admin asset pipeline. templ compiles .templ to _templ.go; Tailwind scans the
+# .templ sources directly, so generate is not a prerequisite of the CSS build.
+admin-generate:
+	@go tool templ generate
+
+admin-assets:
+	@cd $(ADMIN_ASSETS) && npm install --silent && npm run build
+
+admin-watch:
+	@cd $(ADMIN_ASSETS) && npm run watch
+
 # Run commands
 run:
 	@go run cmd/credit/main.go
+
+run-admin: admin-generate admin-assets
+	@go run ./cmd/admin
 
 # Test commands
 test:

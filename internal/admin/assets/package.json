@@ -1,0 +1,13 @@
+{
+  "name": "microvault-admin-assets",
+  "private": true,
+  "description": "Tailwind build for the Go-rendered admin dashboard. No application code lives here.",
+  "scripts": {
+    "build": "tailwindcss -i input.css -o ../static/admin.css --minify",
+    "watch": "tailwindcss -i input.css -o ../static/admin.css --watch"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "tailwindcss": "^4.3.3"
+  }
+}
