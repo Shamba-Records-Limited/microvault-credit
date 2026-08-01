@@ -45,7 +45,7 @@ type LoanServiceAdapter struct {
 	txnSvc         transaction.Service
 	logger         *slog.Logger
 	productConfig  *ussd.LoanProductConfig
-	fxBufferPct    float64
+	fxBuffer       offramp.RateBuffer
 	dedupe         *dedupeGate
 	fxOrch         *moneygram.FXOrchestrator // optional; wired post-construction
 	publicBaseURL  string                    // origin for SMS short-links; optional
@@ -124,12 +124,21 @@ func (a *LoanServiceAdapter) SetFXOrchestrator(orch *moneygram.FXOrchestrator) {
 	a.fxOrch = orch
 }
 
+// FXBufferPct reports the buffer applied on the provider-Quoter path, after
+// defaulting. Zero means entry rates are persisted unbuffered.
+func (a *LoanServiceAdapter) FXBufferPct() float64 { return a.fxBuffer.Pct() }
+
 // FXConfig tunes the entry-rate quoting that happens just before the loan is
 // initiated against a provider. BufferPct is applied multiplicatively to the
 // quoted sell rate (entry_rate_used = sell_rate * (1 - BufferPct)) and recorded
 // on the loan for downstream drift detection.
 type FXConfig struct {
-	BufferPct float64 // 0.02 = 2 %. Falls back to DefaultFXBufferPct when ≤ 0.
+	// BufferPct is a fraction (0.02 = 2 %). Nil defaults to
+	// DefaultFXBufferPct; an explicit 0 persists the quoted rate unbuffered.
+	//
+	// A pointer because zero is a meaningful setting here and has to stay
+	// distinguishable from "not configured".
+	BufferPct *float64
 }
 
 // NewLoanServiceAdapter creates a new [LoanServiceAdapter].
@@ -149,10 +158,6 @@ func NewLoanServiceAdapter(
 ) (*LoanServiceAdapter, error) {
 	if offRamps == nil {
 		return nil, fmt.Errorf("offramp registry is required")
-	}
-	bufferPct := fxCfg.BufferPct
-	if bufferPct <= 0 {
-		bufferPct = DefaultFXBufferPct
 	}
 	// Load the highest-priority active product (ordered by priority_order ASC).
 	products, err := productSvc.GetActive(ctx, services.Pagination{Page: 1, PageSize: 1})
@@ -202,7 +207,7 @@ func NewLoanServiceAdapter(
 		txnSvc:        txnSvc,
 		logger:        logger,
 		productConfig: cfg,
-		fxBufferPct:   bufferPct,
+		fxBuffer:      offramp.NewRateBuffer(fxCfg.BufferPct, DefaultFXBufferPct),
 		dedupe:        newDedupeGate(60 * time.Second),
 	}, nil
 }
@@ -605,7 +610,7 @@ func (a *LoanServiceAdapter) buildProviderOptions(payoutMethod string, req *ussd
 // when wired: it cascades MG primary to YC fallback to stale cache and
 // applies its own buffers (different for primary vs fallback). When the
 // orchestrator isn't set, we fall back to the resolved provider's Quoter
-// and the adapter's flat fxBufferPct. A zero rate signals "no usable
+// and the adapter's flat fxBuffer. A zero rate signals "no usable
 // quote" — callers should skip persistence.
 func (a *LoanServiceAdapter) requoteEntryRate(
 	ctx context.Context,
@@ -618,9 +623,9 @@ func (a *LoanServiceAdapter) requoteEntryRate(
 
 	if a.fxOrch != nil {
 		res, err := a.fxOrch.Quote(ctx, moneygram.FXQuoteRequest{
-			OriginatingCountry: "USA",
+			OriginatingCountry: moneygram.DefaultOriginatingCountry,
 			DestinationCountry: stellaranchor.CountryISO3(countryCode),
-			SendCurrency:       "USD",
+			SendCurrency:       moneygram.DefaultSendCurrency,
 			ReceiveCurrency:    currency,
 		})
 		if err == nil && res != nil && res.Rate > 0 {
@@ -654,7 +659,7 @@ func (a *LoanServiceAdapter) requoteEntryRate(
 			"provider", p.ID(), "currency", currency)
 		return 0, "", 0
 	}
-	return q.SellRate * (1.0 - a.fxBufferPct), string(p.ID()), a.fxBufferPct
+	return a.fxBuffer.Apply(q.SellRate), string(p.ID()), a.fxBuffer.Pct()
 }
 
 // persistEntryRate writes the entry-rate audit fields and the requested
@@ -1072,9 +1077,9 @@ func (a *LoanServiceAdapter) GetRepaymentQuote(ctx context.Context, loanID strin
 func (a *LoanServiceAdapter) fetchFXForQuote(ctx context.Context, currency string) (float64, string, error) {
 	if a.fxOrch != nil {
 		res, err := a.fxOrch.Quote(ctx, moneygram.FXQuoteRequest{
-			OriginatingCountry: "USA",
+			OriginatingCountry: moneygram.DefaultOriginatingCountry,
 			DestinationCountry: stellaranchor.CountryISO3("KE"),
-			SendCurrency:       "USD",
+			SendCurrency:       moneygram.DefaultSendCurrency,
 			ReceiveCurrency:    currency,
 		})
 		if err == nil && res != nil && res.Rate > 0 {

@@ -298,13 +298,18 @@ func main() {
 		}
 		return 0, fmt.Errorf("yellowcard: no rates for %s", currency)
 	})
-	fxOrch, err := mgClient.NewFXOrchestrator(ycFallback, moneygram.FXOrchestratorConfig{})
+	fxOrch, err := mgClient.NewFXOrchestrator(ycFallback, moneygram.FXOrchestratorConfig{
+		EntryBufferPct:         cfg.Payments.MoneyGram.FXEntryBufferPct,
+		EntryBufferPctFallback: cfg.Payments.MoneyGram.FXEntryBufferPctFallback,
+	})
 	if err != nil {
 		log.Fatalf("MoneyGram FX orchestrator init failed: %v", err)
 	}
 	logger.Info("moneygram FX orchestrator wired",
 		"primary_active", mgClient.HasFXRate(),
 		"fallback_active", true,
+		"entry_buffer_pct", fxOrch.EntryBufferPct(),
+		"entry_buffer_pct_fallback", fxOrch.EntryBufferPctFallback(),
 	)
 
 	// ---- 10b. User + Account + Transaction services ----
@@ -340,11 +345,12 @@ func main() {
 	ctx := context.Background()
 	loanAdapter, err := adapters.NewLoanServiceAdapter(
 		ctx, loanSvc, loanProductSvc, stellarSvc, offRampRegistry, loanNotifier, txnSvc,
-		adapters.FXConfig{BufferPct: adapters.DefaultFXBufferPct}, logger,
+		adapters.FXConfig{BufferPct: cfg.Payments.EntryFXBufferPct}, logger,
 	)
 	if err != nil {
 		log.Fatalf("Failed to create loan service adapter: %v", err)
 	}
+	logger.Info("loan entry-rate buffer configured", "buffer_pct", loanAdapter.FXBufferPct())
 	if fxOrch != nil {
 		loanAdapter.SetFXOrchestrator(fxOrch)
 	}
@@ -382,9 +388,11 @@ func main() {
 	}
 
 	// ---- 12b. Rate service adapter ----
-	// YC is the canonical Quoter for the USSD pre-loan rate display. MG's
-	// FX cascade is consumed inside the loan adapter, not here.
-	rateSvc := adapters.NewRateServiceAdapter(ycOffRamp)
+	// The USSD flow quotes from the same MG-primary/YC-fallback cascade the
+	// loan adapter books against, so the rate shown at entry, the USDC the
+	// treasury sends, and MoneyGram's cash-pickup floor are all measured with
+	// one rate.
+	rateSvc := adapters.NewRateServiceAdapter(fxOrch)
 
 	// ---- 12c. Account notifier + PIN service ----
 	accountNotifier := mvnotifications.NewSMSAccountNotifier(notifier, nil)

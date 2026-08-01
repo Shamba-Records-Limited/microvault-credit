@@ -38,9 +38,9 @@ func newRateAdapter(t *testing.T, rate offramp.ExchangeRate) (*LoanServiceAdapte
 	require.NoError(t, reg.Register(&quotingProvider{id: "yc", rate: rate}))
 
 	return &LoanServiceAdapter{
-		offRamps:    reg,
-		fxBufferPct: 0.015,
-		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		offRamps: reg,
+		fxBuffer: offramp.NewRateBuffer(offramp.Fraction(0.015), DefaultFXBufferPct),
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}, providerOptions{id: "yc"}
 }
 
