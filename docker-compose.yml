@@ -105,6 +105,38 @@ services:
     networks:
       - microvault-credit
 
+  admin-with-air:
+    build:
+      context: ..
+      dockerfile: microvault-credit/Dockerfile.dev
+    container_name: microvault-admin
+    working_dir: /app/microvault-credit
+    # Tailwind watches the .templ sources and writes admin.css; air watches that
+    # css and rebuilds the binary, which re-embeds it. Without the watcher a new
+    # utility class simply would not exist in the stylesheet.
+    command: >
+      sh -c "cd internal/admin/assets && npm install --silent &&
+             npx tailwindcss -i input.css -o ../static/admin.css --watch &
+             cd /app/microvault-credit && mkdir -p tmp/admin && air -c .air-admin.toml"
+    ports:
+      - "8090:8090"
+    env_file: .env
+    environment:
+      ADMIN_HOST: 0.0.0.0
+      ADMIN_PORT: 8090
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ../:/app
+      - ../microvault:/microvault
+      - go-mod-cache:/go/pkg/mod
+      # Shadows the host's node_modules: Tailwind ships native binaries and the
+      # host is glibc while this image is musl, so they cannot be shared.
+      - admin-node-modules:/app/microvault-credit/internal/admin/assets/node_modules
+    networks:
+      - microvault-credit
+
 networks:
   microvault-credit:
     driver: bridge
@@ -116,3 +148,4 @@ volumes:
   postgres_data:
   redis_data:
   go-mod-cache:
+  admin-node-modules:

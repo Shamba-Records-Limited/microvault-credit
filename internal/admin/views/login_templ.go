@@ -41,7 +41,15 @@ func Login(networkPassphrase, flash string) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"w-full max-w-sm\"><div class=\"mb-6 text-center\"><h1 class=\"text-lg font-semibold tracking-tight\">Microvault admin</h1><p class=\"mt-1 text-sm text-muted-foreground\">Sign a challenge with the admin wallet.</p></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"w-full max-w-sm\"><div class=\"mb-6 text-center\"><div class=\"mb-4 flex justify-center text-foreground\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = Logo("size-12").Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</div><h1 class=\"text-lg font-semibold tracking-tight\">Microvault admin</h1><p class=\"mt-1 text-sm text-muted-foreground\">Sign a challenge with the admin wallet.</p></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -49,20 +57,20 @@ func Login(networkPassphrase, flash string) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<div class=\"rounded-xl border bg-card p-6 text-card-foreground\"><button id=\"signin\" type=\"button\" data-network=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div class=\"rounded-xl border bg-card p-6 text-card-foreground\"><button id=\"signin\" type=\"button\" data-network=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.ResolveAttributeValue(networkPassphrase)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/login.templ`, Line: 15, Col: 37}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/login.templ`, Line: 18, Col: 37}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var3)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "\" class=\"w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50\">Sign in with Freighter</button><p id=\"signin-error\" class=\"mt-3 text-xs text-destructive\" role=\"alert\"></p><p class=\"mt-4 text-xs text-muted-foreground\">Requires the Freighter extension holding the configured admin key.</p></div></div><script src=\"/static/login.js\" defer></script>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\" class=\"w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50\">Sign in with Freighter</button><p id=\"signin-error\" class=\"mt-3 text-xs text-destructive\" role=\"alert\"></p><p class=\"mt-4 text-xs text-muted-foreground\">Requires the Freighter extension holding the configured admin key.</p></div></div><script src=\"/static/freighter-api.min.js\" defer></script> <script src=\"/static/login.js\" defer></script>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

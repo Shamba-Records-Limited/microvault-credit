@@ -204,6 +204,10 @@ func parseInt64(s, field string) (int64, error) {
 	return parsed, nil
 }
 
+func parseFloat(s string) (float64, error) {
+	return strconv.ParseFloat(strings.TrimSpace(s), 64)
+}
+
 func parseInt(s, field string) (int, error) {
 	parsed, err := strconv.Atoi(strings.TrimSpace(s))
 	if err != nil {

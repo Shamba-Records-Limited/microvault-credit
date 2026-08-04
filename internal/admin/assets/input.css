@@ -1,6 +1,15 @@
 @import "tailwindcss";
+@import "@phosphor-icons/web/regular";
 
 @source "../views";
+
+@font-face {
+    font-family: "Phosphor";
+    src: url("/static/fonts/phosphor/Phosphor.woff2") format("woff2");
+    font-weight: normal;
+    font-style: normal;
+    font-display: block;
+}
 
 @custom-variant dark (&:is(.dark *));
 

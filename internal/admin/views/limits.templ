@@ -1,0 +1,132 @@
+package views
+
+import loanlimitconfig "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_limit_config"
+
+// LimitsPage is the state the risk-tier limits screen renders from.
+type LimitsPage struct {
+	Configs  []loanlimitconfig.LoanLimitConfigResponse
+	Page     int
+	PageSize int
+	Flash    string
+	Error    string
+	Form     LimitForm
+	ShowForm bool
+}
+
+// LimitForm carries submitted values back so a rejected form redisplays them.
+type LimitForm struct {
+	RiskTier            string
+	MinLoanAmount       string
+	MaxLoanAmount       string
+	IncomeMultiplierBps string
+	MaxConcurrentLoans  string
+	MaxLoanDurationDays string
+	InterestRateBps     string
+	LateFeeBps          string
+	DefaultPenaltyBps   string
+	IsActive            bool
+}
+
+func DefaultLimitForm() LimitForm {
+	return LimitForm{MaxConcurrentLoans: "1", IsActive: true}
+}
+
+templ Limits(p LimitsPage) {
+	@Shell("Limits", "/limits") {
+		@Alert(ToneGood, p.Flash)
+		@Alert(ToneCritical, p.Error)
+		<div class="mb-4 flex items-center justify-between">
+			<p class="text-sm text-muted-foreground">
+				Per-risk-tier borrowing limits. Amounts are fiat minor units; rates are basis points.
+			</p>
+			<a
+				href="/limits?new=1"
+				class="flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+			>
+				<i class="ph ph-plus text-base" aria-hidden="true"></i>
+				New risk tier
+			</a>
+		</div>
+		if p.ShowForm {
+			<div class="mb-6">
+				@limitForm(p.Form)
+			</div>
+		}
+		if len(p.Configs) == 0 {
+			@EmptyState("No risk-tier limits configured yet.")
+		} else {
+			@limitsTable(p.Configs)
+		}
+	}
+}
+
+templ limitsTable(configs []loanlimitconfig.LoanLimitConfigResponse) {
+	<div class="overflow-hidden rounded-xl border bg-card">
+		<table class="w-full text-sm">
+			<thead class="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
+				<tr>
+					<th class="px-4 py-3 font-medium">Risk tier</th>
+					<th class="px-4 py-3 text-right font-medium">Min</th>
+					<th class="px-4 py-3 text-right font-medium">Max</th>
+					<th class="px-4 py-3 font-medium">Rate</th>
+					<th class="px-4 py-3 font-medium">Income ×</th>
+					<th class="px-4 py-3 text-right font-medium">Concurrent</th>
+					<th class="px-4 py-3 font-medium">Max term</th>
+					<th class="px-4 py-3 font-medium">Late fee</th>
+					<th class="px-4 py-3 font-medium">Penalty</th>
+					<th class="px-4 py-3 font-medium">Status</th>
+				</tr>
+			</thead>
+			<tbody>
+				for _, config := range configs {
+					<tr class="border-b last:border-0 hover:bg-muted/30">
+						<td class="px-4 py-3 font-medium">{ config.RiskTier }</td>
+						<td class="px-4 py-3 text-right tabular-nums">{ Minor(config.MinLoanAmount) }</td>
+						<td class="px-4 py-3 text-right tabular-nums">{ Minor(config.MaxLoanAmount) }</td>
+						<td class="px-4 py-3 tabular-nums">{ Bps(config.InterestRateBps) }</td>
+						<td class="px-4 py-3 tabular-nums">{ Bps(config.IncomeMultiplierBps) }</td>
+						<td class="px-4 py-3 text-right tabular-nums">{ Count(config.MaxConcurrentLoans) }</td>
+						<td class="px-4 py-3">{ Count(config.MaxLoanDurationDays) } days</td>
+						<td class="px-4 py-3 tabular-nums">{ BpsPtr(config.LateFeeBps) }</td>
+						<td class="px-4 py-3 tabular-nums">{ BpsPtr(config.DefaultPenaltyBps) }</td>
+						<td class="px-4 py-3">
+							if config.IsActive {
+								@Badge(ToneGood, "Active")
+							} else {
+								@Badge(ToneNeutral, "Inactive")
+							}
+						</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</div>
+}
+
+templ limitForm(f LimitForm) {
+	@Card("New risk-tier limit") {
+		<form method="post" action="/limits" class="grid grid-cols-2 gap-4">
+			@textField("risk_tier", "Risk tier", f.RiskTier, "standard", true)
+			@numberField("interest_rate_bps", "Interest rate (bps)", f.InterestRateBps, true)
+			@numberField("min_loan_amount", "Min loan amount (minor units)", f.MinLoanAmount, true)
+			@numberField("max_loan_amount", "Max loan amount (minor units)", f.MaxLoanAmount, true)
+			@numberField("income_multiplier_bps", "Income multiplier (bps)", f.IncomeMultiplierBps, true)
+			@numberField("max_concurrent_loans", "Max concurrent loans", f.MaxConcurrentLoans, true)
+			@numberField("max_loan_duration_days", "Max loan duration (days)", f.MaxLoanDurationDays, true)
+			@numberField("late_fee_bps", "Late fee (bps)", f.LateFeeBps, false)
+			@numberField("default_penalty_bps", "Default penalty (bps)", f.DefaultPenaltyBps, false)
+			<div class="col-span-2 flex items-center gap-2">
+				<input
+					id="is_active"
+					name="is_active"
+					type="checkbox"
+					value="true"
+					checked?={ f.IsActive }
+					class="size-4 rounded border-input"
+				/>
+				<label for="is_active" class="text-sm">Active</label>
+			</div>
+			@formActions("Create risk tier", "/limits")
+		</form>
+	}
+}

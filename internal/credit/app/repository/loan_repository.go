@@ -32,6 +32,8 @@ var (
 	ErrFailedToGetLoanByShortCode     = errors.New("failed to get loan by ramp short code")
 	ErrFailedToGetActiveMGLoans       = errors.New("failed to get active MoneyGram loans")
 	ErrFailedToGetActiveByProvider    = errors.New("failed to get active loans by provider")
+	ErrFailedToListLoans              = errors.New("failed to list loans")
+	ErrFailedToCountLoans             = errors.New("failed to count loans")
 )
 
 // LoanRepository defines the interface for loanRespository data access.
@@ -63,6 +65,13 @@ type LoanRepository interface {
 	// Used as the dedupe gate: a non-empty result means the user already has
 	// an in-flight off-ramp for that provider and a new request should fail.
 	GetActiveByUserAndProvider(ctx context.Context, userID, provider string) ([]*models.Loan, error)
+
+	// List returns loans newest first, optionally filtered by status. An empty
+	// status returns every non-deleted loan.
+	List(ctx context.Context, status string, limit, offset int) ([]*models.Loan, error)
+
+	// Count returns the number of loans matching the same filter List applies.
+	Count(ctx context.Context, status string) (int64, error)
 
 	// Update operations
 	Update(ctx context.Context, loan *models.Loan) error
@@ -154,6 +163,39 @@ func (r *loanRepository) GetActiveLoans(ctx context.Context, limit, offset int) 
 		return nil, ErrFailedToGetActiveLoans
 	}
 	return loans, nil
+}
+
+// List returns loans newest first, filtered by status when one is given.
+func (r *loanRepository) List(ctx context.Context, status string, limit, offset int) ([]*models.Loan, error) {
+	var loans []*models.Loan
+	query := r.db.WithContext(ctx).Where("deleted_at IS NULL")
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	result := query.
+		Order("created_at DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&loans)
+	if result.Error != nil {
+		log.Printf("List: database error: %v", result.Error)
+		return nil, ErrFailedToListLoans
+	}
+	return loans, nil
+}
+
+// Count returns the number of loans matching List's filter.
+func (r *loanRepository) Count(ctx context.Context, status string) (int64, error) {
+	var count int64
+	query := r.db.WithContext(ctx).Model(&models.Loan{}).Where("deleted_at IS NULL")
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	if err := query.Count(&count).Error; err != nil {
+		log.Printf("Count: database error: %v", err)
+		return 0, ErrFailedToCountLoans
+	}
+	return count, nil
 }
 
 // GetActiveLoansByStatus returns a list of active loans by status.

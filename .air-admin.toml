@@ -1,0 +1,13 @@
+root = "."
+tmp_dir = "tmp/admin"
+
+[build]
+  bin = "./tmp/admin/main"
+  # templ must regenerate _templ.go before go build, otherwise edits to views
+  # compile against stale generated code. Uses the pinned `tool` directive, so
+  # no templ install is needed in the image.
+  cmd = "go tool templ generate && go build -o ./tmp/admin/main ./cmd/admin"
+  exclude_dir = ["tmp", "vendor", "core", "cmd/credit/docs"]
+  include_dir = ["internal", "cmd/admin", "platform", "/microvault/pkg"]
+  include_ext = ["go", "templ", "toml", "yaml", "yml", "json", "js", "css", "woff2"]
+  delay = 1000

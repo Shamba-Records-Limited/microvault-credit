@@ -1,0 +1,97 @@
+package views
+
+import "fmt"
+
+// FilterOption is one choice in a filter dropdown. Value "" means unfiltered.
+type FilterOption struct {
+	Value string
+	Label string
+}
+
+// FilterSpec describes one dropdown in a page's filter bar.
+type FilterSpec struct {
+	Name    string
+	Label   string
+	Options []FilterOption
+	Current string
+}
+
+// Pager carries everything the pagination control needs to build its links.
+type Pager struct {
+	Path       string
+	Page       int
+	PageSize   int
+	TotalCount int64
+	Query      string
+}
+
+func (p Pager) totalPages() int64 {
+	if p.TotalCount <= 0 {
+		return 1
+	}
+	pages := p.TotalCount / int64(p.PageSize)
+	if p.TotalCount%int64(p.PageSize) != 0 {
+		pages++
+	}
+	return pages
+}
+
+func (p Pager) href(page int) string {
+	sep := "?"
+	if p.Query == "" {
+		sep = "?"
+	} else {
+		sep = "?" + p.Query + "&"
+	}
+	return fmt.Sprintf("%s%spage=%d", p.Path, sep, page)
+}
+
+templ filterBar(path string, filters []FilterSpec) {
+	<form method="get" action={ templ.SafeURL(path) } class="mb-4 flex items-end gap-3">
+		for _, f := range filters {
+			<div>
+				<label for={ f.Name } class="text-xs font-medium text-muted-foreground">{ f.Label }</label>
+				<select
+					id={ f.Name }
+					name={ f.Name }
+					class="mt-1 rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				>
+					for _, option := range f.Options {
+						<option value={ option.Value } selected?={ option.Value == f.Current }>{ option.Label }</option>
+					}
+				</select>
+			</div>
+		}
+		<button
+			type="submit"
+			class="rounded-md border border-input px-3 py-2 text-sm hover:bg-muted/50"
+		>
+			Filter
+		</button>
+	</form>
+}
+
+templ pager(p Pager) {
+	if p.TotalCount > 0 {
+		<div class="mt-4 flex items-center justify-between text-sm text-muted-foreground">
+			<span class="tabular-nums">
+				{ fmt.Sprintf("%d results", p.TotalCount) }
+			</span>
+			<div class="flex items-center gap-2">
+				if p.Page > 1 {
+					<a href={ templ.SafeURL(p.href(p.Page - 1)) } class="rounded-md border border-input px-3 py-1.5 hover:bg-muted/50">
+						Previous
+					</a>
+				}
+				<span class="tabular-nums">
+					{ fmt.Sprintf("Page %d of %d", p.Page, p.totalPages()) }
+				</span>
+				if int64(p.Page) < p.totalPages() {
+					<a href={ templ.SafeURL(p.href(p.Page + 1)) } class="rounded-md border border-input px-3 py-1.5 hover:bg-muted/50">
+						Next
+					</a>
+				}
+			</div>
+		</div>
+	}
+}

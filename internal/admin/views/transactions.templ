@@ -1,0 +1,119 @@
+package views
+
+import (
+	coremodels "github.com/Shamba-Records-Limited/microvault/pkg/models"
+)
+
+// TransactionsPage is the state the transactions screen renders from.
+type TransactionsPage struct {
+	Transactions []*coremodels.Transaction
+	Status       string
+	Type         string
+	Page         int
+	PageSize     int
+	TotalCount   int64
+	Flash        string
+	Error        string
+}
+
+var TxStatusFilters = []FilterOption{
+	{Value: "", Label: "All statuses"},
+	{Value: coremodels.TxStatusPending, Label: "Pending"},
+	{Value: coremodels.TxStatusSubmitted, Label: "Submitted"},
+	{Value: coremodels.TxStatusSuccess, Label: "Success"},
+	{Value: coremodels.TxStatusFailed, Label: "Failed"},
+	{Value: coremodels.TxStatusCancelled, Label: "Cancelled"},
+}
+
+var TxTypeFilters = []FilterOption{
+	{Value: "", Label: "All types"},
+	{Value: coremodels.TxTypeVaultBorrow, Label: "Vault borrow"},
+	{Value: coremodels.TxTypeOffRamp, Label: "Off-ramp"},
+	{Value: coremodels.TxTypeFiatFailover, Label: "Fiat failover"},
+	{Value: coremodels.TxTypeVaultRepay, Label: "Vault repay"},
+	{Value: coremodels.TxTypeRefund, Label: "Refund"},
+	{Value: coremodels.TxTypeAnchorTransfer, Label: "Anchor transfer"},
+}
+
+func txStatusTone(status string) Tone {
+	switch status {
+	case coremodels.TxStatusSuccess:
+		return ToneGood
+	case coremodels.TxStatusPending, coremodels.TxStatusSubmitted:
+		return ToneWarning
+	case coremodels.TxStatusFailed:
+		return ToneCritical
+	case coremodels.TxStatusCancelled:
+		return ToneSerious
+	default:
+		return ToneNeutral
+	}
+}
+
+func txQuery(status, txType string) string {
+	q := queryString("status", status)
+	if txType != "" {
+		if q != "" {
+			q += "&"
+		}
+		q += "type=" + txType
+	}
+	return q
+}
+
+templ Transactions(p TransactionsPage) {
+	@Shell("Transactions", "/transactions") {
+		@Alert(ToneGood, p.Flash)
+		@Alert(ToneCritical, p.Error)
+		@filterBar("/transactions", []FilterSpec{
+			{Name: "status", Label: "Status", Options: TxStatusFilters, Current: p.Status},
+			{Name: "type", Label: "Type", Options: TxTypeFilters, Current: p.Type},
+		})
+		if len(p.Transactions) == 0 {
+			@EmptyState("No transactions match this filter.")
+		} else {
+			@transactionTable(p.Transactions)
+			@pager(Pager{
+				Path:       "/transactions",
+				Page:       p.Page,
+				PageSize:   p.PageSize,
+				TotalCount: p.TotalCount,
+				Query:      txQuery(p.Status, p.Type),
+			})
+		}
+	}
+}
+
+templ transactionTable(transactions []*coremodels.Transaction) {
+	<div class="overflow-hidden rounded-xl border bg-card">
+		<table class="w-full text-sm">
+			<thead class="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
+				<tr>
+					<th class="px-4 py-3 font-medium">ID</th>
+					<th class="px-4 py-3 font-medium">Type</th>
+					<th class="px-4 py-3 text-right font-medium">Amount</th>
+					<th class="px-4 py-3 font-medium">Status</th>
+					<th class="px-4 py-3 font-medium">Created</th>
+				</tr>
+			</thead>
+			<tbody>
+				for _, tx := range transactions {
+					<tr class="border-b last:border-0 hover:bg-muted/30">
+						<td class="px-4 py-3">
+							<div class="font-medium">{ tx.ID }</div>
+							if tx.StellarTxHash != nil {
+								<div class="text-xs text-muted-foreground">{ deref(tx.StellarTxHash) }</div>
+							}
+						</td>
+						<td class="px-4 py-3">{ tx.TxType }</td>
+						<td class="px-4 py-3 text-right tabular-nums">{ Money(tx.Amount, tx.Asset) }</td>
+						<td class="px-4 py-3">
+							@Badge(txStatusTone(tx.Status), tx.Status)
+						</td>
+						<td class="px-4 py-3 tabular-nums text-muted-foreground">{ Date(tx.CreatedAt) }</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</div>
+}

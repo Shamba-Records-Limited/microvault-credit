@@ -5,5 +5,5 @@ import "embed"
 
 // FS carries the assets served under /static.
 //
-//go:embed *.css *.js
+//go:embed *.css *.js *.ico fonts img
 var FS embed.FS

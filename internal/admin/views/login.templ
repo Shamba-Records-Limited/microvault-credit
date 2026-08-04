@@ -4,6 +4,9 @@ templ Login(networkPassphrase, flash string) {
 	@Bare("Sign in") {
 		<div class="w-full max-w-sm">
 			<div class="mb-6 text-center">
+				<div class="mb-4 flex justify-center text-foreground">
+					@Logo("size-12")
+				</div>
 				<h1 class="text-lg font-semibold tracking-tight">Microvault admin</h1>
 				<p class="mt-1 text-sm text-muted-foreground">Sign a challenge with the admin wallet.</p>
 			</div>
@@ -23,6 +26,7 @@ templ Login(networkPassphrase, flash string) {
 				</p>
 			</div>
 		</div>
+		<script src="/static/freighter-api.min.js" defer></script>
 		<script src="/static/login.js" defer></script>
 	}
 }

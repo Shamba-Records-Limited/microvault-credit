@@ -34,14 +34,19 @@
 
 		const api = window.freighterApi;
 		if (!api) {
-			fail("Freighter was not detected. Install the extension and reload.");
+			fail("Freighter API failed to load. Reload the page.");
 			return;
 		}
 
 		try {
-			const address = unwrapAddress(await api.requestAccess());
+			const access = await api.requestAccess();
+			const address = unwrapAddress(access);
 			if (!address) {
-				fail("Freighter did not return an address.");
+				fail(
+					access && access.error
+						? access.error
+						: "Freighter was not detected. Install the extension and reload.",
+				);
 				return;
 			}
 
@@ -52,14 +57,17 @@
 			}
 			const challenge = await challengeRes.json();
 
-			const signed = unwrapSigned(
-				await api.signTransaction(challenge.transaction, {
-					networkPassphrase: button.dataset.network,
-					address: address,
-				}),
-			);
+			const signResult = await api.signTransaction(challenge.transaction, {
+				networkPassphrase: button.dataset.network,
+				address: address,
+			});
+			const signed = unwrapSigned(signResult);
 			if (!signed) {
-				fail("Freighter did not return a signed transaction.");
+				fail(
+					signResult && signResult.error
+						? signResult.error
+						: "Freighter did not return a signed transaction.",
+				);
 				return;
 			}
 

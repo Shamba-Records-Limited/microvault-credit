@@ -68,6 +68,21 @@ templ FieldError(message string) {
 	}
 }
 
+// formActions is the submit/cancel pair closing a create form.
+templ formActions(submitLabel, cancelHref string) {
+	<div class="col-span-2 flex items-center gap-2 border-t pt-4">
+		<button
+			type="submit"
+			class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+		>
+			{ submitLabel }
+		</button>
+		<a href={ templ.SafeURL(cancelHref) } class="px-3 py-2 text-sm text-muted-foreground hover:text-foreground">
+			Cancel
+		</a>
+	</div>
+}
+
 templ Alert(tone Tone, message string) {
 	if message != "" {
 		<div class="mb-4 flex items-center gap-2 rounded-lg border px-4 py-3 text-sm">

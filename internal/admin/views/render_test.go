@@ -7,6 +7,8 @@ import (
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/metrics"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/views"
+	globallendinglimit "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/global_lending_limit"
+	loanlimitconfig "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_limit_config"
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
 	"github.com/a-h/templ"
 )
@@ -60,7 +62,7 @@ func TestDashboardRendersMetrics(t *testing.T) {
 	html := render(t, views.Dashboard(views.DashboardPage{
 		WindowDays: 30,
 		Snapshot: &metrics.Snapshot{
-			Outstanding: []metrics.AssetTotal{{Asset: "USDC", Amount: 1234567}},
+			Outstanding: []metrics.AssetTotal{{Asset: "USDC", Amount: 123456700000}},
 			ActiveLoans: 42,
 			DefaultRate: 3.5,
 			Alerts: []metrics.Alert{
@@ -144,20 +146,108 @@ func TestLoanProductFormRedisplaysSubmittedValues(t *testing.T) {
 
 func TestMoneyFormatting(t *testing.T) {
 	cases := []struct {
-		cents    int64
-		currency string
-		want     string
+		amount int64
+		asset  string
+		want   string
 	}{
 		{0, "KES", "KES 0.00"},
 		{5, "KES", "KES 0.05"},
 		{50000, "KES", "KES 500.00"},
 		{300000, "KES", "KES 3,000.00"},
-		{123456789, "USDC", "USDC 1,234,567.89"},
+		{123456789, "USDC", "USDC 12.34"},
+		{123456700000, "USDC", "USDC 12,345.67"},
+		{15000000, "USDC", "USDC 1.50"},
+		{123456789, "KES", "KES 1,234,567.89"},
 		{-50000, "KES", "-KES 500.00"},
 	}
 	for _, tc := range cases {
-		if got := views.Money(tc.cents, tc.currency); got != tc.want {
-			t.Errorf("Money(%d, %q) = %q, want %q", tc.cents, tc.currency, got, tc.want)
+		if got := views.Money(tc.amount, tc.asset); got != tc.want {
+			t.Errorf("Money(%d, %q) = %q, want %q", tc.amount, tc.asset, got, tc.want)
 		}
 	}
+}
+
+func TestLimitsRendersTableAndCreateAffordance(t *testing.T) {
+	lateFee := int32(150)
+	html := render(t, views.Limits(views.LimitsPage{
+		Configs: []loanlimitconfig.LoanLimitConfigResponse{{
+			RiskTier:            "standard",
+			MinLoanAmount:       50000,
+			MaxLoanAmount:       300000,
+			IncomeMultiplierBps: 10000,
+			MaxConcurrentLoans:  1,
+			MaxLoanDurationDays: 30,
+			InterestRateBps:     500,
+			LateFeeBps:          &lateFee,
+			IsActive:            true,
+		}},
+	}))
+
+	mustContain(t, html, "standard", "50,000", "300,000", "5.00%", "1.50%", "30 days", "Active", `href="/limits?new=1"`)
+}
+
+func TestLimitsEmptyStateStillOffersCreate(t *testing.T) {
+	html := render(t, views.Limits(views.LimitsPage{}))
+	mustContain(t, html, "No risk-tier limits configured yet.", `href="/limits?new=1"`)
+}
+
+func TestLimitsFormPostsToLimits(t *testing.T) {
+	html := render(t, views.Limits(views.LimitsPage{ShowForm: true, Form: views.DefaultLimitForm()}))
+	mustContain(t, html, `action="/limits"`, `name="risk_tier"`, `name="max_concurrent_loans"`, "Create risk tier")
+}
+
+func TestConfigRendersTableAndCreateAffordance(t *testing.T) {
+	category := "limits"
+	description := "Ceiling on total outstanding principal"
+	html := render(t, views.Config(views.ConfigPage{
+		Limits: []globallendinglimit.GlobalLendingLimitResponse{{
+			ConfigKey:   "max_total_exposure",
+			ConfigValue: "1000000",
+			ValueType:   "integer",
+			Category:    &category,
+			Description: &description,
+			IsActive:    true,
+		}},
+	}))
+
+	mustContain(t, html, "max_total_exposure", "1000000", "integer", "limits", description, "Active", `href="/config?new=1"`)
+}
+
+func TestConfigEmptyStateStillOffersCreate(t *testing.T) {
+	html := render(t, views.Config(views.ConfigPage{}))
+	mustContain(t, html, "No global lending limits configured yet.", `href="/config?new=1"`)
+}
+
+func TestConfigFormOffersEveryValueType(t *testing.T) {
+	html := render(t, views.Config(views.ConfigPage{ShowForm: true, Form: views.DefaultConfigForm()}))
+	mustContain(t, html, `action="/config"`, `name="config_key"`, "Create setting")
+	for _, vt := range views.ConfigValueTypes {
+		mustContain(t, html, `<option value="`+vt+`"`)
+	}
+	for _, cat := range views.ConfigCategories {
+		mustContain(t, html, `<option value="`+cat+`"`)
+	}
+}
+
+func TestLogoInlinesSVGWithCurrentColor(t *testing.T) {
+	html := render(t, views.Logo("size-6"))
+	mustContain(t, html, "<svg", `class="size-6"`, `fill="currentColor"`, `aria-hidden="true"`)
+	if strings.Contains(html, `fill="black"`) {
+		t.Error("logo still carries hardcoded black fills; it will vanish in dark mode")
+	}
+}
+
+func TestShellRendersBrandingAndFavicon(t *testing.T) {
+	html := render(t, views.Placeholder("Loans", "/loans", "not yet"))
+	mustContain(t, html,
+		`href="/static/favicon.ico"`,
+		`href="/static/img/apple-touch-icon.png"`,
+		`aria-label="Microvault admin home"`,
+		`fill="currentColor"`,
+	)
+}
+
+func TestLoginRendersLogo(t *testing.T) {
+	html := render(t, views.Login("passphrase", ""))
+	mustContain(t, html, `class="size-12"`, `href="/static/favicon.ico"`)
 }

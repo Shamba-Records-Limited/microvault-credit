@@ -20,16 +20,19 @@ import (
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/handlers"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/metrics"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/static"
-	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/views"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
+	globallendinglimit "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/global_lending_limit"
+	loanlimitconfig "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_limit_config"
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
 	"github.com/Shamba-Records-Limited/microvault/pkg/auth"
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
 	"github.com/Shamba-Records-Limited/microvault/pkg/middleware"
+	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
 	"github.com/Shamba-Records-Limited/microvault/platform/cache"
 	"github.com/Shamba-Records-Limited/microvault/platform/database"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
+	fiberlog "github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
@@ -65,12 +68,35 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize loan product repository: %v", err)
 	}
+	limitConfigRepo, err := repository.NewLoanLimitConfigRepository(db)
+	if err != nil {
+		log.Fatalf("Failed to initialize loan limit config repository: %v", err)
+	}
+	globalLimitRepo, err := repository.NewGlobalLendingLimitRepository(db)
+	if err != nil {
+		log.Fatalf("Failed to initialize global lending limit repository: %v", err)
+	}
+	loanRepo, err := repository.NewLoanRepository(db)
+	if err != nil {
+		log.Fatalf("Failed to initialize loan repository: %v", err)
+	}
+	userRepo, err := corerepository.NewUserRepository(db)
+	if err != nil {
+		log.Fatalf("Failed to initialize user repository: %v", err)
+	}
+	txRepo, err := corerepository.NewTransactionRepository(db)
+	if err != nil {
+		log.Fatalf("Failed to initialize transaction repository: %v", err)
+	}
 
-	secureCookies := cfg.Server.ServerEnvironment != "development"
+	isDev := cfg.Server.ServerEnvironment == "development"
+	secureCookies := !isDev
 
 	authHandler := handlers.NewAuth(challengeService, jwtService, &cfg.Stellar, secureCookies)
 	dashboardHandler := handlers.NewDashboard(metrics.NewService(db))
 	loanProductHandler := handlers.NewLoanProducts(loanproduct.NewService(loanProductRepo))
+	limitsHandler := handlers.NewLimits(loanlimitconfig.NewService(limitConfigRepo))
+	configHandler := handlers.NewConfig(globallendinglimit.NewService(globalLimitRepo))
 	guard := middleware.NewAuthMiddleware(jwtService, &cfg.Stellar)
 
 	app := fiber.New(fiber.Config{
@@ -78,14 +104,27 @@ func main() {
 		DisableStartupMessage: true,
 	})
 	app.Use(recover.New())
+	app.Use(fiberlog.New(fiberlog.Config{
+		Format: "${time} ${status} ${latency} ${method} ${path}\n",
+	}))
 
 	assets, err := fs.Sub(static.FS, ".")
 	if err != nil {
 		log.Fatalf("Failed to mount static assets: %v", err)
 	}
+	// Assets are embedded, so a rebuilt binary always carries fresh bytes. In
+	// development the browser must not hold the previous ones.
+	staticMaxAge := 3600
+	if isDev {
+		staticMaxAge = 0
+		app.Use("/static", func(c *fiber.Ctx) error {
+			c.Set(fiber.HeaderCacheControl, "no-store, must-revalidate")
+			return c.Next()
+		})
+	}
 	app.Use("/static", filesystem.New(filesystem.Config{
 		Root:   http.FS(assets),
-		MaxAge: 3600,
+		MaxAge: staticMaxAge,
 	}))
 
 	app.Get("/login", authHandler.ShowLogin)
@@ -95,19 +134,21 @@ func main() {
 	app.Use(redirectUnauthenticated, guard.RequireAuth())
 
 	app.Post("/logout", authHandler.Logout)
+	loansHandler := handlers.NewLoans(loanRepo)
+	usersHandler := handlers.NewUsers(userRepo)
+	transactionsHandler := handlers.NewTransactions(txRepo)
+
 	app.Get("/", dashboardHandler.Show)
 	app.Get("/loan-products", loanProductHandler.List)
 	app.Post("/loan-products", loanProductHandler.Create)
+	app.Get("/loans", loansHandler.List)
+	app.Get("/users", usersHandler.List)
+	app.Get("/transactions", transactionsHandler.List)
 
-	for _, pending := range []struct{ path, title, note string }{
-		{"/loans", "Loans", "The loans table needs filtered list and count queries first."},
-		{"/transactions", "Transactions", "The transactions table needs filtered list and count queries first."},
-		{"/users", "Users", "The users table needs filtered list and count queries first."},
-		{"/limits", "Limits", "Risk-tier loan limits are not wired up yet."},
-		{"/config", "Config", "Global lending limits are not wired up yet."},
-	} {
-		app.Get(pending.path, placeholder(pending.title, pending.path, pending.note))
-	}
+	app.Get("/limits", limitsHandler.List)
+	app.Post("/limits", limitsHandler.Create)
+	app.Get("/config", configHandler.List)
+	app.Post("/config", configHandler.Create)
 
 	addr := listenAddr()
 	go func() {
@@ -136,13 +177,6 @@ func redirectUnauthenticated(c *fiber.Ctx) error {
 		return c.Redirect("/login", fiber.StatusSeeOther)
 	}
 	return c.Next()
-}
-
-func placeholder(title, current, note string) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
-		return views.Placeholder(title, current, note).Render(c.UserContext(), c.Response().BodyWriter())
-	}
 }
 
 func listenAddr() string {

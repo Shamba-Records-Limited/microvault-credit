@@ -53,7 +53,7 @@ func (s *Service) Snapshot(ctx context.Context, window time.Duration) (*Snapshot
 	db := s.db.WithContext(ctx)
 
 	if err := db.Model(&models.Loan{}).
-		Select("principal_asset AS asset, COALESCE(SUM(principal_amount), 0) AS amount").
+		Select("principal_asset AS asset, COALESCE(SUM(principal_amount), 0)::bigint AS amount").
 		Where("status = ?", models.LoanStatusDisbursed).
 		Group("principal_asset").
 		Scan(&snap.Outstanding).Error; err != nil {
@@ -67,7 +67,7 @@ func (s *Service) Snapshot(ctx context.Context, window time.Duration) (*Snapshot
 	}
 
 	if err := db.Model(&models.Loan{}).
-		Select("principal_asset AS asset, COALESCE(SUM(principal_amount), 0) AS amount").
+		Select("principal_asset AS asset, COALESCE(SUM(principal_amount), 0)::bigint AS amount").
 		Where("disbursed_at > ?", time.Now().Add(-window)).
 		Group("principal_asset").
 		Scan(&snap.DisbursedRecent).Error; err != nil {
@@ -75,7 +75,7 @@ func (s *Service) Snapshot(ctx context.Context, window time.Duration) (*Snapshot
 	}
 
 	if err := db.Model(&models.Loan{}).
-		Select("COALESCE(AVG(principal_amount), 0)").
+		Select("COALESCE(AVG(principal_amount), 0)::bigint").
 		Where("disbursed_at IS NOT NULL").
 		Scan(&snap.AverageLoan).Error; err != nil {
 		return nil, err
