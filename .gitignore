@@ -35,3 +35,6 @@ tmp/
 
 # Docs
 docs/*.md
+
+# Node dependencies, at any depth
+node_modules/
