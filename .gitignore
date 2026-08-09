@@ -36,5 +36,7 @@ tmp/
 # Docs
 docs/*.md
 
-# Compiled binaries from `make build`
 bin/
+
+# Node dependencies, at any depth
+node_modules/
