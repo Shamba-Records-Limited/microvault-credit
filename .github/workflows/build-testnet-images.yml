@@ -3,6 +3,15 @@ name: Build & Deploy Testnet
 on:
   push:
     branches: ["testnet"]
+    paths-ignore:
+      - "web/**"
+      - "docs/**"
+      - "**.md"
+      - "LICENSE"
+      - "cliff.toml"
+      - ".gitleaks.toml"
+      - ".pre-commit-config.yaml"
+      - ".github/dependabot.yml"
   workflow_dispatch:
   schedule:
     - cron: "0 2 * * *"
