@@ -23,12 +23,10 @@ COPY microvault/ ./microvault/
 COPY microvault-credit/ ./microvault-credit/
 
 # Generate documentation
-WORKDIR /build/microvault-credit/internal/credit
-RUN swag init && \
-    redocly build-docs ./docs/swagger.yaml --output ./docs/redoc-static.html 2>/dev/null || true
+WORKDIR /build/microvault-credit
+RUN sh scripts/generate-credit-docs.sh
 
 # Build the application
-WORKDIR /build/microvault-credit
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 RUN go build -ldflags="-s -w" -o credit ./cmd/credit/main.go
 
@@ -44,7 +42,7 @@ WORKDIR /app
 
 # Copy binary and necessary files from builder
 COPY --from=builder /build/microvault-credit/credit ./credit
-COPY --from=builder /build/microvault-credit/internal/credit/docs/redoc-static.html ./cmd/credit/docs/redoc-static.html
+COPY --from=builder /build/microvault-credit/cmd/credit/docs/redoc-static.html ./cmd/credit/docs/redoc-static.html
 COPY --from=builder /build/microvault/static ./static
 COPY --from=builder /build/microvault-credit/internal/credit/entrypoint.sh ./entrypoint.sh
 
