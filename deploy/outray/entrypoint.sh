@@ -6,8 +6,6 @@ if [ -z "$OUTRAY_TOKEN" ]; then
 	exit 1
 fi
 
-# outray exits "Not logged in" when ~/.outray/config.json is absent, and that
-# check runs before --key is parsed.
 mkdir -p "$HOME/.outray"
 printf '{"authType":"user","userToken":"%s"}' "$OUTRAY_TOKEN" > "$HOME/.outray/config.json"
 chmod 600 "$HOME/.outray/config.json"

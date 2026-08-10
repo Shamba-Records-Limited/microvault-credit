@@ -1,8 +1,4 @@
 # Canonical testnet stack. Paste into the Coolify empty-compose resource.
-#
-# Images are prebuilt by .github/workflows/build-testnet-images.yml and pinned by
-# CI through CREDIT_IMAGE / MIGRATE_IMAGE. Nothing here builds. Nothing here
-# publishes a host port: OutRay is the only ingress.
 
 services:
   postgres:
@@ -53,8 +49,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Applies core migrations then credit migrations. Must share a build with
-  # credit — a newer schema under an older binary fails at query time, not here.
   migrate:
     image: ${MIGRATE_IMAGE:-ghcr.io/shamba-records-limited/microvault-credit/migrate:testnet-latest}
     pull_policy: always
@@ -108,8 +102,7 @@ services:
     pull_policy: always
     restart: unless-stopped
     environment:
-      # Must be the literal "development" — config.go selects the testnet network
-      # passphrase only on that value and falls through to mainnet otherwise.
+      # Must be "development" — any other value selects the mainnet passphrase.
       SERVER_ENVIRONMENT: ${SERVER_ENVIRONMENT:?}
       SERVER_HOST: 0.0.0.0
       CORE_SERVER_PORT: "8080"
@@ -138,8 +131,6 @@ services:
       SERVER_SECRET_KEY: ${SERVER_SECRET_KEY:?}
       JWT_SECRET: ${JWT_SECRET:?}
 
-      # Empty values fail ParseBool/Atoi and abort boot, despite not appearing in
-      # config.New's required map.
       ENABLE_MULTI_SIG: ${ENABLE_MULTI_SIG:?}
       MULTI_SIG_LOW_THRESHOLD: ${MULTI_SIG_LOW_THRESHOLD:?}
       MULTI_SIG_MEDIUM_THRESHOLD: ${MULTI_SIG_MEDIUM_THRESHOLD:?}
@@ -212,8 +203,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Shares credit's network namespace so localhost:8081 is credit, which avoids
-  # needing a config.toml on a host that has no repo checkout.
   outray:
     image: ${OUTRAY_IMAGE:-ghcr.io/shamba-records-limited/microvault-credit/outray:0.1.3}
     pull_policy: always

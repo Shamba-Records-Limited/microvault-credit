@@ -4,10 +4,8 @@ on:
   push:
     branches: ["testnet"]
   workflow_dispatch:
-  # Fired by microvault when core changes on its own; without this a core-only
-  # commit never produces a new image.
-  repository_dispatch:
-    types: [core-updated]
+  schedule:
+    - cron: "0 2 * * *"
 
 env:
   REGISTRY: ghcr.io
@@ -38,7 +36,6 @@ jobs:
         with:
           repository: Shamba-Records-Limited/microvault
           ref: testnet
-          token: ${{ secrets.MICROVAULT_CORE_TOKEN }}
           path: microvault
 
       - name: Set up Go
@@ -124,7 +121,7 @@ jobs:
 
   deploy:
     needs: build
-    if: ${{ vars.COOLIFY_RESOURCE_UUID != '' }}
+    if: ${{ vars.COOLIFY_SERVICE_UUID != '' }}
     runs-on: ubuntu-latest
     permissions: {}
     environment: testnet
@@ -133,36 +130,32 @@ jobs:
       cancel-in-progress: false
 
     steps:
-      # credit and migrate must be pinned together — a migrate image ahead of its
-      # credit image applies a schema the running binary does not expect.
       - name: Pin Coolify to these images
         env:
           CREDIT_IMAGE: ${{ needs.build.outputs.credit_image }}
           MIGRATE_IMAGE: ${{ needs.build.outputs.migrate_image }}
           COOLIFY_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
           COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
-          COOLIFY_RESOURCE_UUID: ${{ vars.COOLIFY_RESOURCE_UUID }}
-          COOLIFY_RESOURCE_KIND: ${{ vars.COOLIFY_RESOURCE_KIND }}
+          COOLIFY_SERVICE_UUID: ${{ vars.COOLIFY_SERVICE_UUID }}
         run: |
-          kind="${COOLIFY_RESOURCE_KIND:-applications}"
           for pair in "CREDIT_IMAGE:$CREDIT_IMAGE" "MIGRATE_IMAGE:$MIGRATE_IMAGE"; do
             key="${pair%%:*}"
             value="${pair#*:}"
             curl --fail --silent --show-error -X PATCH \
               -H "Authorization: Bearer $COOLIFY_TOKEN" \
               --json "$(jq -nc --arg k "$key" --arg v "$value" '{key:$k,value:$v}')" \
-              "$COOLIFY_BASE_URL/api/v1/$kind/$COOLIFY_RESOURCE_UUID/envs"
+              "$COOLIFY_BASE_URL/api/v1/services/$COOLIFY_SERVICE_UUID/envs"
           done
 
       - name: Trigger Coolify deploy
         env:
           COOLIFY_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
           COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
-          COOLIFY_RESOURCE_UUID: ${{ vars.COOLIFY_RESOURCE_UUID }}
+          COOLIFY_SERVICE_UUID: ${{ vars.COOLIFY_SERVICE_UUID }}
         run: |
           curl --fail --silent --show-error -X POST \
             -H "Authorization: Bearer $COOLIFY_TOKEN" \
-            "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_RESOURCE_UUID"
+            "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_SERVICE_UUID"
 
       - name: Summary
         run: |

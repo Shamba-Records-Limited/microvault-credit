@@ -1,6 +1,4 @@
-# Copied to the workspace root as .dockerignore before docker build.
-# Unlike microvault-credit/.dockerignore this must NOT exclude go.work — both
-# Dockerfiles copy it to build in workspace mode.
+# Workspace-root .dockerignore. Must not exclude go.work.
 
 **/.env
 **/.env.*

@@ -1,7 +1,5 @@
 name: Build OutRay Image
 
-# Tracks the outray CLI release, not application commits, so this is versioned
-# and deployed independently of credit and migrate.
 on:
   workflow_dispatch:
     inputs:
