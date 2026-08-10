@@ -9,7 +9,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build:
@@ -26,6 +25,9 @@ jobs:
       core_sha: ${{ steps.vars.outputs.core_sha }}
 
     steps:
+      - name: Resolve image namespace
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
       - name: Checkout microvault-credit
         uses: actions/checkout@v7
         with:
