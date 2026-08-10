@@ -1,0 +1,240 @@
+# Canonical testnet stack. Paste into the Coolify empty-compose resource.
+#
+# Images are prebuilt by .github/workflows/build-testnet-images.yml and pinned by
+# CI through CREDIT_IMAGE / MIGRATE_IMAGE. Nothing here builds. Nothing here
+# publishes a host port: OutRay is the only ingress.
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:?}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?}
+      POSTGRES_DB: ${DB_NAME:?}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:?} --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 320M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Applies core migrations then credit migrations. Must share a build with
+  # credit — a newer schema under an older binary fails at query time, not here.
+  migrate:
+    image: ${MIGRATE_IMAGE:-ghcr.io/shamba-records-limited/microvault-credit/migrate:testnet-latest}
+    pull_policy: always
+    restart: "no"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:?}
+      DB_PASSWORD: ${DB_PASSWORD:?}
+      DB_NAME: ${DB_NAME:?}
+      DB_SSL_MODE: ${DB_SSL_MODE:-disable}
+      DB_TIMEZONE: ${DB_TIMEZONE:-UTC}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+      SERVER_ENVIRONMENT: ${SERVER_ENVIRONMENT:?}
+      SERVER_HOST: 0.0.0.0
+      CORE_SERVER_PORT: "8080"
+      CREDIT_SERVER_PORT: "8081"
+      STELLAR_RPC_URL: ${STELLAR_RPC_URL:?}
+      YELLOW_CARD_PUBLIC_KEY: ${YELLOW_CARD_PUBLIC_KEY:?}
+      YELLOW_CARD_SECRET_KEY: ${YELLOW_CARD_SECRET_KEY:?}
+      YELLOW_CARD_BUSINESS_ID: ${YELLOW_CARD_BUSINESS_ID:?}
+      YELLOW_CARD_BUSINESS_NAME: ${YELLOW_CARD_BUSINESS_NAME:?}
+      FONBNK_CLIENT_ID: ${FONBNK_CLIENT_ID:?}
+      FONBNK_CLIENT_SECRET: ${FONBNK_CLIENT_SECRET:?}
+      TREASURY_SECRET_KEY: ${TREASURY_SECRET_KEY:?}
+      ADMIN_SECRET_KEY: ${ADMIN_SECRET_KEY:?}
+      SERVER_SECRET_KEY: ${SERVER_SECRET_KEY:?}
+      JWT_SECRET: ${JWT_SECRET:?}
+      USDC_ISSUER: ${USDC_ISSUER:?}
+      CONTRACT_ID: ${CONTRACT_ID:?}
+      AT_SANDBOX_MODE: ${AT_SANDBOX_MODE:?}
+      ENABLE_MULTI_SIG: ${ENABLE_MULTI_SIG:?}
+      MULTI_SIG_LOW_THRESHOLD: ${MULTI_SIG_LOW_THRESHOLD:?}
+      MULTI_SIG_MEDIUM_THRESHOLD: ${MULTI_SIG_MEDIUM_THRESHOLD:?}
+      MULTI_SIG_HIGH_THRESHOLD: ${MULTI_SIG_HIGH_THRESHOLD:?}
+      MONEYGRAM_HOME_DOMAIN: ${MONEYGRAM_HOME_DOMAIN:?}
+      MONEYGRAM_SERVER_SIGNING_KEY: ${MONEYGRAM_SERVER_SIGNING_KEY:?}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  credit:
+    image: ${CREDIT_IMAGE:-ghcr.io/shamba-records-limited/microvault-credit/credit:testnet-latest}
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      # Must be the literal "development" — config.go selects the testnet network
+      # passphrase only on that value and falls through to mainnet otherwise.
+      SERVER_ENVIRONMENT: ${SERVER_ENVIRONMENT:?}
+      SERVER_HOST: 0.0.0.0
+      CORE_SERVER_PORT: "8080"
+      CREDIT_SERVER_PORT: "8081"
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?}
+
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:?}
+      DB_PASSWORD: ${DB_PASSWORD:?}
+      DB_NAME: ${DB_NAME:?}
+      DB_SSL_MODE: ${DB_SSL_MODE:-disable}
+      DB_TIMEZONE: ${DB_TIMEZONE:-UTC}
+
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+      REDIS_DB_NUMBER: ${REDIS_DB_NUMBER:-0}
+      REDIS_IDEMPOTENCY_TTL: ${REDIS_IDEMPOTENCY_TTL:-86400}
+
+      STELLAR_RPC_URL: ${STELLAR_RPC_URL:?}
+      USDC_ISSUER: ${USDC_ISSUER:?}
+      CONTRACT_ID: ${CONTRACT_ID:?}
+      TREASURY_SECRET_KEY: ${TREASURY_SECRET_KEY:?}
+      ADMIN_SECRET_KEY: ${ADMIN_SECRET_KEY:?}
+      SERVER_SECRET_KEY: ${SERVER_SECRET_KEY:?}
+      JWT_SECRET: ${JWT_SECRET:?}
+
+      # Empty values fail ParseBool/Atoi and abort boot, despite not appearing in
+      # config.New's required map.
+      ENABLE_MULTI_SIG: ${ENABLE_MULTI_SIG:?}
+      MULTI_SIG_LOW_THRESHOLD: ${MULTI_SIG_LOW_THRESHOLD:?}
+      MULTI_SIG_MEDIUM_THRESHOLD: ${MULTI_SIG_MEDIUM_THRESHOLD:?}
+      MULTI_SIG_HIGH_THRESHOLD: ${MULTI_SIG_HIGH_THRESHOLD:?}
+
+      YELLOW_CARD_PUBLIC_KEY: ${YELLOW_CARD_PUBLIC_KEY:?}
+      YELLOW_CARD_SECRET_KEY: ${YELLOW_CARD_SECRET_KEY:?}
+      YELLOW_CARD_BUSINESS_ID: ${YELLOW_CARD_BUSINESS_ID:?}
+      YELLOW_CARD_BUSINESS_NAME: ${YELLOW_CARD_BUSINESS_NAME:?}
+      YELLOWCARD_BASE_URL: ${YELLOWCARD_BASE_URL:-}
+      YELLOW_CARD_WEBHOOK_SECRET: ${YELLOW_CARD_WEBHOOK_SECRET:-}
+
+      FONBNK_CLIENT_ID: ${FONBNK_CLIENT_ID:?}
+      FONBNK_CLIENT_SECRET: ${FONBNK_CLIENT_SECRET:?}
+      FONBNK_BASE_URL: ${FONBNK_BASE_URL:-}
+
+      MONEYGRAM_HOME_DOMAIN: ${MONEYGRAM_HOME_DOMAIN:?}
+      MONEYGRAM_SERVER_SIGNING_KEY: ${MONEYGRAM_SERVER_SIGNING_KEY:?}
+      MONEYGRAM_USDC_ISSUER: ${MONEYGRAM_USDC_ISSUER:-}
+      MONEYGRAM_TRANSFER_SERVER_URL: ${MONEYGRAM_TRANSFER_SERVER_URL:-}
+      MONEYGRAM_CLIENT_ID: ${MONEYGRAM_CLIENT_ID:-}
+      MONEYGRAM_CLIENT_SECRET: ${MONEYGRAM_CLIENT_SECRET:-}
+      MONEYGRAM_OAUTH_URL: ${MONEYGRAM_OAUTH_URL:-}
+      MONEYGRAM_FX_RATE_URL: ${MONEYGRAM_FX_RATE_URL:-}
+      MONEYGRAM_AUTH_SECRET: ${MONEYGRAM_AUTH_SECRET:-}
+      MONEYGRAM_FUNDS_SECRET: ${MONEYGRAM_FUNDS_SECRET:-}
+      MONEYGRAM_POLL_INTERVAL: ${MONEYGRAM_POLL_INTERVAL:-}
+      MONEYGRAM_POLL_MAX_BATCH: ${MONEYGRAM_POLL_MAX_BATCH:-}
+      MONEYGRAM_REFUND_MAX_ATTEMPTS: ${MONEYGRAM_REFUND_MAX_ATTEMPTS:-}
+      MONEYGRAM_FX_ENTRY_BUFFER_PCT: ${MONEYGRAM_FX_ENTRY_BUFFER_PCT:-}
+      MONEYGRAM_FX_ENTRY_BUFFER_PCT_FALLBACK: ${MONEYGRAM_FX_ENTRY_BUFFER_PCT_FALLBACK:-}
+      LOAN_ENTRY_FX_BUFFER_PCT: ${LOAN_ENTRY_FX_BUFFER_PCT:-}
+
+      AT_USERNAME: ${AT_USERNAME:-}
+      AT_API_KEY: ${AT_API_KEY:-}
+      AT_SANDBOX_MODE: ${AT_SANDBOX_MODE:?}
+      AT_BASE_URL: ${AT_BASE_URL:-}
+      AT_SENDER_ID: ${AT_SENDER_ID:-}
+      AT_SHORTCODE: ${AT_SHORTCODE:-}
+      AT_HTTP_TIMEOUT: ${AT_HTTP_TIMEOUT:-}
+      USSD_SESSION_TIMEOUT: ${USSD_SESSION_TIMEOUT:-}
+      PIN_LOCKOUT_SECONDS: ${PIN_LOCKOUT_SECONDS:-}
+
+      DUB_API_KEY: ${DUB_API_KEY:-}
+      DUB_API_URL: ${DUB_API_URL:-}
+      DUB_DOMAIN: ${DUB_DOMAIN:-}
+      DUB_PREVIEW_TITLE: ${DUB_PREVIEW_TITLE:-}
+      DUB_PREVIEW_DESCRIPTION: ${DUB_PREVIEW_DESCRIPTION:-}
+      DUB_IMAGE_PREVIEW_URL: ${DUB_IMAGE_PREVIEW_URL:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8081/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Shares credit's network namespace so localhost:8081 is credit, which avoids
+  # needing a config.toml on a host that has no repo checkout.
+  outray:
+    image: ${OUTRAY_IMAGE:-ghcr.io/shamba-records-limited/microvault-credit/outray:0.1.3}
+    pull_policy: always
+    restart: unless-stopped
+    network_mode: "service:credit"
+    command: ["http", "8081", "--subdomain", "${OUTRAY_SUBDOMAIN:?}"]
+    environment:
+      OUTRAY_TOKEN: ${OUTRAY_TOKEN:?}
+    depends_on:
+      credit:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
+  redis_data:

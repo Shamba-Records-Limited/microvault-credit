@@ -1,5 +1,5 @@
 # --- Builder stage ---
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache npm git ca-certificates tzdata && \
@@ -44,7 +44,7 @@ WORKDIR /app
 
 # Copy binary and necessary files from builder
 COPY --from=builder /build/microvault-credit/credit ./credit
-COPY --from=builder /build/microvault-credit/internal/credit/docs/redoc-static.html ./docs/redoc-static.html
+COPY --from=builder /build/microvault-credit/internal/credit/docs/redoc-static.html ./cmd/credit/docs/redoc-static.html
 COPY --from=builder /build/microvault/static ./static
 COPY --from=builder /build/microvault-credit/internal/credit/entrypoint.sh ./entrypoint.sh
 

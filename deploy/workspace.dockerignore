@@ -1,0 +1,27 @@
+# Copied to the workspace root as .dockerignore before docker build.
+# Unlike microvault-credit/.dockerignore this must NOT exclude go.work — both
+# Dockerfiles copy it to build in workspace mode.
+
+**/.env
+**/.env.*
+**/.git
+**/.github
+**/node_modules
+**/tmp
+**/bin
+**/vendor
+
+**/*.exe
+**/*.dll
+**/*.so
+**/*.dylib
+**/*.test
+**/*.out
+**/*.log
+**/coverage.*
+**/*.coverprofile
+**/profile.cov
+
+microvault/soroban/target
+microvault/web/dist
+microvault/web/.turbo
