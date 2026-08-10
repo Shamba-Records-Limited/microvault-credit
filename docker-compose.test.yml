@@ -1,0 +1,99 @@
+# Ephemeral database for tests that touch Postgres. Isolated from the dev stack
+# in docker-compose.yml: its own container names, host port (5435), network and
+# tmpfs-backed storage, so it starts clean every run and can run alongside dev.
+#
+# Non-DB config (MoneyGram, YellowCard, Stellar, Redis) still comes from .env
+# because config.New() reads it; only the DB_* vars are overridden here to point
+# at postgres-test. The test DB credentials default to microvault_test and are
+# overridable via TEST_DB_USER / TEST_DB_PASSWORD / TEST_DB_NAME.
+#
+# Run the credit suite against a freshly-migrated DB:
+#   docker compose -f docker-compose.test.yml up --build \
+#     --abort-on-container-exit --exit-code-from test
+# Tear down (the tmpfs data is discarded automatically):
+#   docker compose -f docker-compose.test.yml down
+#
+# To run the core (microvault) suite instead, override the runner command:
+#   docker compose -f docker-compose.test.yml run --rm \
+#     -w /app/microvault test go test ./...
+
+services:
+  postgres-test:
+    image: postgres:18-alpine
+    container_name: microvault-postgres-test
+    environment:
+      POSTGRES_USER: ${TEST_DB_USER:-microvault_test}
+      POSTGRES_PASSWORD: ${TEST_DB_PASSWORD:-microvault_test}
+      POSTGRES_DB: ${TEST_DB_NAME:-microvault_test}
+    ports:
+      - "5435:5432"
+    # tmpfs instead of a named volume: the data is thrown away on teardown and
+    # lives in memory, which keeps each test run isolated and fast.
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TEST_DB_USER:-microvault_test} -d ${TEST_DB_NAME:-microvault_test}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - microvault-test
+
+  migrate-test:
+    build:
+      context: ..
+      dockerfile: microvault-credit/Dockerfile.dev
+    container_name: microvault-migrate-test
+    working_dir: /app/microvault-credit
+    command: go run cmd/migrate/main.go up
+    env_file: .env
+    environment: &test-db-env
+      DB_HOST: postgres-test
+      DB_PORT: "5432"
+      DB_USER: ${TEST_DB_USER:-microvault_test}
+      DB_PASSWORD: ${TEST_DB_PASSWORD:-microvault_test}
+      DB_NAME: ${TEST_DB_NAME:-microvault_test}
+      DB_SSL_MODE: disable
+      DB_TIMEZONE: ${DB_TIMEZONE:-UTC}
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    volumes:
+      - ../:/app
+      - test-go-mod-cache:/go/pkg/mod
+      - test-go-build-cache:/root/.cache/go-build
+    restart: "no"
+    networks:
+      - microvault-test
+
+  test:
+    build:
+      context: ..
+      dockerfile: microvault-credit/Dockerfile.dev
+    container_name: microvault-test
+    working_dir: /app/microvault-credit
+    command: go test ./...
+    env_file: .env
+    # Reuse the same DB overrides as migrate-test.
+    environment: *test-db-env
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      migrate-test:
+        condition: service_completed_successfully
+    volumes:
+      - ../:/app
+      - test-go-mod-cache:/go/pkg/mod
+      - test-go-build-cache:/root/.cache/go-build
+    restart: "no"
+    networks:
+      - microvault-test
+
+networks:
+  microvault-test:
+    driver: bridge
+
+volumes:
+  test-go-mod-cache:
+  test-go-build-cache:

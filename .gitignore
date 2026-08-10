@@ -36,5 +36,7 @@ tmp/
 # Docs
 docs/*.md
 
+bin/
+
 # Node dependencies, at any depth
 node_modules/

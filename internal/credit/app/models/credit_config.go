@@ -7,68 +7,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// CreditScoringFactor represents a configurable credit scoring factor
-// Weight stored in basis points
-type CreditScoringFactor struct {
-	ID                string    `json:"id" gorm:"type:uuid;primaryKey"`
-	FactorName        string    `json:"factor_name" gorm:"type:varchar(100);uniqueIndex;not null"`
-	FactorDescription *string   `json:"factor_description,omitempty" gorm:"type:text"`
-	WeightBps         int32     `json:"weight_bps" gorm:"type:int;not null"`
-	IsActive          bool      `json:"is_active" gorm:"type:boolean;not null;default:true;index"`
-	CalculationMethod *string   `json:"calculation_method,omitempty" gorm:"type:varchar(100)"`
-	MinDataRequired   int       `json:"min_data_required" gorm:"type:int;not null;default:1"`
-	CreatedAt         time.Time `json:"created_at" gorm:"autoCreateTime;not null"`
-	UpdatedAt         time.Time `json:"updated_at" gorm:"autoUpdateTime;not null"`
-	CreatedBy         *string   `json:"created_by,omitempty" gorm:"type:uuid"`
-	UpdatedBy         *string   `json:"updated_by,omitempty" gorm:"type:uuid"`
-}
-
-// TableName specifies the table name for CreditScoringFactor model
-func (CreditScoringFactor) TableName() string {
-	return "credit_scoring_factors"
-}
-
-// BeforeCreate sets the ID before creating a new credit scoring factor
-func (csf *CreditScoringFactor) BeforeCreate(tx *gorm.DB) error {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return err
-	}
-	csf.ID = id.String()
-	return nil
-}
-
-// RiskTierConfig represents a risk tier configuration
-type RiskTierConfig struct {
-	ID          string    `json:"id" gorm:"type:uuid;primaryKey"`
-	TierName    string    `json:"tier_name" gorm:"type:varchar(50);uniqueIndex;not null"`
-	MinScore    int       `json:"min_score" gorm:"type:int;not null"`
-	MaxScore    int       `json:"max_score" gorm:"type:int;not null"`
-	TierOrder   int       `json:"tier_order" gorm:"type:int;not null;uniqueIndex"`
-	Description *string   `json:"description,omitempty" gorm:"type:text"`
-	ColorCode   *string   `json:"color_code,omitempty" gorm:"type:varchar(20)"`
-	IsActive    bool      `json:"is_active" gorm:"type:boolean;not null;default:true;index"`
-	CreatedAt   time.Time `json:"created_at" gorm:"autoCreateTime;not null"`
-	UpdatedAt   time.Time `json:"updated_at" gorm:"autoUpdateTime;not null"`
-	CreatedBy   *string   `json:"created_by,omitempty" gorm:"type:uuid"`
-	UpdatedBy   *string   `json:"updated_by,omitempty" gorm:"type:uuid"`
-}
-
-// TableName specifies the table name for RiskTierConfig model
-func (RiskTierConfig) TableName() string {
-	return "risk_tier_configs"
-}
-
-// BeforeCreate sets the ID before creating a new risk tier config
-func (rtc *RiskTierConfig) BeforeCreate(tx *gorm.DB) error {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return err
-	}
-	rtc.ID = id.String()
-	return nil
-}
-
 // LoanLimitConfig represents loan limits for a risk tier
 // Amounts stored in smallest unit, rates in basis points
 type LoanLimitConfig struct {
@@ -134,34 +72,6 @@ func (gll *GlobalLendingLimit) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-// CreditConfigAuditLog represents an audit log entry
-type CreditConfigAuditLog struct {
-	ID           string         `json:"id" gorm:"type:uuid;primaryKey"`
-	ConfigTable  string         `json:"config_table" gorm:"type:varchar(100);not null;index"`
-	ConfigID     string         `json:"config_id" gorm:"type:uuid;not null;index"`
-	Action       string         `json:"action" gorm:"type:varchar(20);not null;index"`
-	OldValues    map[string]any `json:"old_values,omitempty" gorm:"type:jsonb"`
-	NewValues    map[string]any `json:"new_values,omitempty" gorm:"type:jsonb"`
-	ChangedBy    *string        `json:"changed_by,omitempty" gorm:"type:uuid"`
-	ChangeReason *string        `json:"change_reason,omitempty" gorm:"type:text"`
-	CreatedAt    time.Time      `json:"created_at" gorm:"autoCreateTime;not null;index"`
-}
-
-// TableName specifies the table name for CreditConfigAuditLog model
-func (CreditConfigAuditLog) TableName() string {
-	return "credit_config_audit_logs"
-}
-
-// BeforeCreate sets the ID before creating a new credit config audit log
-func (ccal *CreditConfigAuditLog) BeforeCreate(tx *gorm.DB) error {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return err
-	}
-	ccal.ID = id.String()
-	return nil
-}
-
 // Config value type constants
 const (
 	ConfigValueTypeInteger = "integer"
@@ -174,15 +84,5 @@ const (
 const (
 	ConfigCategoryLimits      = "limits"
 	ConfigCategoryFees        = "fees"
-	ConfigCategoryScoring     = "scoring"
 	ConfigCategoryOperational = "operational"
-)
-
-// Audit action constants
-const (
-	AuditActionCreate     = "create"
-	AuditActionUpdate     = "update"
-	AuditActionDelete     = "delete"
-	AuditActionActivate   = "activate"
-	AuditActionDeactivate = "deactivate"
 )

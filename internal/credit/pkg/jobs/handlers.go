@@ -126,12 +126,12 @@ func (h *JobHandlers) HandleRepaymentReminder(task *asynq.Task) error {
 		// 	continue
 		// }
 
-		// if user.MobileNumber == "" || loan.LoanNumber == nil {
+		// if user.MobileNumber == "" || loan.LoanReference == nil {
 		// 	continue
 		// }
 
 		// Placeholder values - replace with actual data
-		loanNumber := "LOAN-001"
+		loanRef := "LOAN-001"
 		phoneNumber := "+254712345678"
 
 		// Calculate amount due in KES
@@ -141,7 +141,7 @@ func (h *JobHandlers) HandleRepaymentReminder(task *asynq.Task) error {
 		// phoneNumber := user.MobileCountryCode + user.MobileNumber
 		dueDate := repayment.DueDate
 		if err := h.loanNotifier.NotifyRepaymentReminder(ctx, contracts.LoanNotification{
-			LoanNumber:      loanNumber,
+			LoanReference:   loanRef,
 			PhoneNumber:     phoneNumber,
 			DisplayAmount:   amountDueKES,
 			DisplayCurrency: "KES",
@@ -157,7 +157,7 @@ func (h *JobHandlers) HandleRepaymentReminder(task *asynq.Task) error {
 		}
 
 		remindersSent++
-		log.Printf("Sent %d-day reminder for loan %s (repayment %s)", daysUntilDue, loanNumber, repayment.ID)
+		log.Printf("Sent %d-day reminder for loan %s (repayment %s)", daysUntilDue, loanRef, repayment.ID)
 	}
 
 	// Also send overdue reminders (once per day for overdue loans)
@@ -193,12 +193,12 @@ func (h *JobHandlers) HandleRepaymentReminder(task *asynq.Task) error {
 		// 	continue
 		// }
 
-		// if user.MobileNumber == "" || loan.LoanNumber == nil {
+		// if user.MobileNumber == "" || loan.LoanReference == nil {
 		// 	continue
 		// }
 
 		// Placeholder values
-		loanNumber := "LOAN-001"
+		loanRef := "LOAN-001"
 		phoneNumber := "+254712345678"
 
 		// Calculate amount due in KES
@@ -208,7 +208,7 @@ func (h *JobHandlers) HandleRepaymentReminder(task *asynq.Task) error {
 		// phoneNumber := user.MobileCountryCode + user.MobileNumber
 		overdueDueDate := repayment.DueDate
 		if err := h.loanNotifier.NotifyRepaymentReminder(ctx, contracts.LoanNotification{
-			LoanNumber:      loanNumber,
+			LoanReference:   loanRef,
 			PhoneNumber:     phoneNumber,
 			DisplayAmount:   amountDueKES,
 			DisplayCurrency: "KES",
@@ -224,7 +224,7 @@ func (h *JobHandlers) HandleRepaymentReminder(task *asynq.Task) error {
 		}
 
 		remindersSent++
-		log.Printf("Sent overdue reminder for loan %s (repayment %s)", loanNumber, repayment.ID)
+		log.Printf("Sent overdue reminder for loan %s (repayment %s)", loanRef, repayment.ID)
 	}
 
 	log.Printf("Repayment reminder job complete: %d reminders sent", remindersSent)

@@ -2,16 +2,20 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	_ "github.com/Shamba-Records-Limited/microvault-credit/cmd/credit/docs"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/adapters"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/handlers"
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/pkg/ratelimit"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
 	"github.com/Shamba-Records-Limited/microvault/pkg/account"
@@ -30,17 +34,20 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/stellaranchor"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
-	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/pin"
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
+	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
+	stellarrpc "github.com/Shamba-Records-Limited/microvault/pkg/stellar/rpc"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
+	"github.com/Shamba-Records-Limited/microvault/pkg/urlshortener"
 	"github.com/Shamba-Records-Limited/microvault/pkg/user"
 	"github.com/Shamba-Records-Limited/microvault/pkg/validation"
 	"github.com/Shamba-Records-Limited/microvault/pkg/webhook"
 	"github.com/Shamba-Records-Limited/microvault/platform/cache"
 	"github.com/Shamba-Records-Limited/microvault/platform/database"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/swagger"
 )
 
@@ -122,6 +129,7 @@ func main() {
 		cfg.Mobile.AfricasTalking.Username,
 		cfg.Mobile.AfricasTalking.APIKey,
 		cfg.Mobile.AfricasTalking.BaseURL,
+		cfg.Mobile.AfricasTalking.HTTPTimeout,
 	)
 	smsService.RegisterProvider("africastalking", atSMSAdapter)
 
@@ -140,19 +148,43 @@ func main() {
 	// ---- 9. Treasury transfer bridge ----
 	treasuryTransfer := ussdadapters.NewStellarTreasuryTransfer(stellarSvc, logger)
 
-	// ---- 10. Off-ramp registry ----
-	// YellowCard is wired as the mobile-money default. MoneyGram is added
-	// alongside in the cash-pickup wiring block below when REST + SEP-1
-	// config is present.
-	offRampSvc := ussdadapters.NewYellowCardOffRampAdapter(ussdadapters.YellowCardOffRampConfig{
-		Adapter:      ycAdapter,
-		Treasury:     treasuryTransfer,
-		BusinessID:   cfg.Payments.YellowCard.BusinessID,
-		BusinessName: cfg.Payments.YellowCard.BusinessName,
-		Logger:       logger,
+	// ---- 10. Off-ramp adapters ----
+	// Both YellowCard (mobile money) and MoneyGram (cash pickup) are
+	// platform defaults — no env-gate. Each provider is built and
+	// registered once; the registry drives per-request dispatch inside
+	// LoanServiceAdapter, the YC adapter is passed directly to the YC-
+	// specific refund poller and rate service, and the FXOrchestrator
+	// cascades MG to YC for rate quoting inside the loan adapter.
+
+	// 10a. YellowCard off-ramp adapter
+	//
+	// YELLOWCARD_TEST_DESTINATION_PHONE_OVERRIDE: test-only knob. When set,
+	// every YC payment uses this number instead of the real recipient — used
+	// for hitting YC sandbox simulation phones (e.g. +2341111111111 for a
+	// guaranteed-success momo transaction). Hard-disabled in production:
+	// even if the env var is set, the override is dropped when
+	// SERVER_ENVIRONMENT=production.
+	ycTestPhoneOverride := os.Getenv("YELLOWCARD_TEST_DESTINATION_PHONE_OVERRIDE")
+	if ycTestPhoneOverride != "" && os.Getenv("SERVER_ENVIRONMENT") == "production" {
+		logger.Error("YELLOWCARD_TEST_DESTINATION_PHONE_OVERRIDE is set but SERVER_ENVIRONMENT=production — override ignored")
+		ycTestPhoneOverride = ""
+	}
+	ycTestAddressOverride := os.Getenv("YELLOWCARD_TEST_DESTINATION_ADDRESS_OVERRIDE")
+	if ycTestAddressOverride != "" && os.Getenv("SERVER_ENVIRONMENT") == "production" {
+		logger.Error("YELLOWCARD_TEST_DESTINATION_ADDRESS_OVERRIDE is set but SERVER_ENVIRONMENT=production — override ignored")
+		ycTestAddressOverride = ""
+	}
+	ycOffRamp := ussdadapters.NewYellowCardOffRampAdapter(ussdadapters.YellowCardOffRampConfig{
+		Adapter:                        ycAdapter,
+		Treasury:                       treasuryTransfer,
+		BusinessID:                     cfg.Payments.YellowCard.BusinessID,
+		BusinessName:                   cfg.Payments.YellowCard.BusinessName,
+		Logger:                         logger,
+		TestDestinationPhoneOverride:   ycTestPhoneOverride,
+		TestDestinationAddressOverride: ycTestAddressOverride,
 	})
 	offRampRegistry := offramp.NewRegistry()
-	if err := offRampRegistry.Register(offRampSvc); err != nil {
+	if err := offRampRegistry.Register(ycOffRamp); err != nil {
 		log.Fatalf("Failed to register YellowCard off-ramp: %v", err)
 	}
 	if err := offRampRegistry.Alias(offramp.PayoutMethodMobileMoney, offramp.ProviderYellowCard); err != nil {
@@ -195,7 +227,7 @@ func main() {
 		ServerSigningKey:  cfg.Payments.MoneyGram.ServerSigningKey,
 		NetworkPassphrase: cfg.Payments.MoneyGram.NetworkPassphrase,
 		USDCIssuer:        cfg.Payments.MoneyGram.USDCIssuer,
-		TreasurySecret:    cfg.Stellar.TreasurySecretKey,
+		TreasurySecret:    cfg.Payments.MoneyGram.AuthSecret,
 		Logger:            logger,
 	}
 	if cfg.Payments.MoneyGram.HasRESTCredentials() {
@@ -204,15 +236,36 @@ func main() {
 			OAuthTokenURL: cfg.Payments.MoneyGram.OAuthURL,
 			ClientID:      cfg.Payments.MoneyGram.ClientID,
 			ClientSecret:  cfg.Payments.MoneyGram.ClientSecret,
+			Scope:         "fx_rate",
 		}
 	}
 	mgClient, err := moneygram.New(mgCfg)
 	if err != nil {
 		log.Fatalf("MoneyGram client construction failed: %v", err)
 	}
+
+	// Funds wallet: SEP-24 account + USDC send source. Distinct from the auth
+	// wallet in prod; both default to TREASURY_SECRET_KEY.
+	mgFundsAddr, err := cfg.Payments.MoneyGram.FundsAddress()
+	if err != nil {
+		log.Fatalf("MoneyGram funds address derivation failed: %v", err)
+	}
+	mgFundsSvc := stellar.NewService(
+		rpcClient,
+		cfg.Stellar.NetworkPassphrase,
+		cfg.Payments.MoneyGram.FundsSecret,
+		cfg.Stellar.AdminSecretKey,
+		cfg.Stellar.ContractID,
+		cfg.Stellar.USDCIssuer,
+	)
+	mgFundsTransfer := ussdadapters.NewStellarTreasuryTransfer(mgFundsSvc, logger)
+	mgAuthAddr, _ := cfg.Payments.MoneyGram.AuthAddress()
+	logger.Info("moneygram wallets resolved", "auth_address", mgAuthAddr, "funds_address", mgFundsAddr)
+
 	mgAdapter, err := ussdadapters.NewMoneyGramOffRampAdapter(ussdadapters.MoneyGramOffRampConfig{
-		Client: mgClient,
-		Logger: logger,
+		Client:      mgClient,
+		FundsPubkey: mgFundsAddr,
+		Logger:      logger,
 	})
 	if err != nil {
 		log.Fatalf("MoneyGram off-ramp adapter construction failed: %v", err)
@@ -225,6 +278,39 @@ func main() {
 	}
 	log.Printf("MoneyGram cash-pickup registered (home: %s, REST: %t)",
 		cfg.Payments.MoneyGram.HomeDomain, cfg.Payments.MoneyGram.HasRESTCredentials())
+
+	// 10d. FX orchestrator: MG primary, YC fallback, stale cache last resort.
+	ycFallback := moneygram.FallbackRateFunc(func(ctx context.Context, currency string) (float64, error) {
+		rates, err := ycAdapter.GetRates(ctx, currency)
+		if err != nil {
+			return 0, err
+		}
+		// Match on Code rather than trusting position. The ?currency= filter is
+		// honoured today, so rates[0] is right — but quoting a loan at another
+		// market's rate is not a failure worth risking on that assumption.
+		for _, r := range rates {
+			if strings.EqualFold(r.Code, currency) {
+				if r.Sell <= 0 {
+					return 0, fmt.Errorf("yellowcard: no sell rate for %s", currency)
+				}
+				return r.Sell, nil
+			}
+		}
+		return 0, fmt.Errorf("yellowcard: no rates for %s", currency)
+	})
+	fxOrch, err := mgClient.NewFXOrchestrator(ycFallback, moneygram.FXOrchestratorConfig{
+		EntryBufferPct:         cfg.Payments.MoneyGram.FXEntryBufferPct,
+		EntryBufferPctFallback: cfg.Payments.MoneyGram.FXEntryBufferPctFallback,
+	})
+	if err != nil {
+		log.Fatalf("MoneyGram FX orchestrator init failed: %v", err)
+	}
+	logger.Info("moneygram FX orchestrator wired",
+		"primary_active", mgClient.HasFXRate(),
+		"fallback_active", true,
+		"entry_buffer_pct", fxOrch.EntryBufferPct(),
+		"entry_buffer_pct_fallback", fxOrch.EntryBufferPctFallback(),
+	)
 
 	// ---- 10b. User + Account + Transaction services ----
 	userSvc := user.NewService(coreRepos.User)
@@ -245,6 +331,8 @@ func main() {
 			MediumThreshold:    cfg.Stellar.MultiSigMediumThreshold,
 			HighThreshold:      cfg.Stellar.MultiSigHighThreshold,
 		},
+		logger,
+		nil, // AlertService — chain-status failures log-only for now
 	)
 	if err != nil {
 		log.Fatalf("Failed to create user service adapter: %v", err)
@@ -257,10 +345,33 @@ func main() {
 	ctx := context.Background()
 	loanAdapter, err := adapters.NewLoanServiceAdapter(
 		ctx, loanSvc, loanProductSvc, stellarSvc, offRampRegistry, loanNotifier, txnSvc,
-		adapters.FXConfig{BufferPct: adapters.DefaultFXBufferPct}, logger,
+		adapters.FXConfig{BufferPct: cfg.Payments.EntryFXBufferPct}, logger,
 	)
 	if err != nil {
 		log.Fatalf("Failed to create loan service adapter: %v", err)
+	}
+	logger.Info("loan entry-rate buffer configured", "buffer_pct", loanAdapter.FXBufferPct())
+	if fxOrch != nil {
+		loanAdapter.SetFXOrchestrator(fxOrch)
+	}
+	loanAdapter.SetPublicBaseURL(cfg.Server.PublicBaseURL)
+	loanAdapter.SetAccountEnsurer(userAdapter)
+	var linkShortener urlshortener.Shortener
+	if cfg.Shortener.Enabled() {
+		linkShortener = urlshortener.NewDub(urlshortener.DubOptions{
+			APIKey:             cfg.Shortener.APIKey,
+			BaseURL:            cfg.Shortener.BaseURL,
+			Domain:             cfg.Shortener.Domain,
+			PreviewTitle:       cfg.Shortener.PreviewTitle,
+			PreviewDescription: cfg.Shortener.PreviewDescription,
+			ImagePreviewURL:    cfg.Shortener.ImagePreviewURL,
+		})
+		loanAdapter.SetShortener(linkShortener)
+		target := cfg.Shortener.BaseURL
+		if target == "" {
+			target = "https://api.dub.co"
+		}
+		log.Printf("Link shortener enabled — cash-pickup SMS links are sent to %s", target)
 	}
 
 	// ---- 12. DisbursementStatusAdapter (webhook callbacks) ----
@@ -271,9 +382,17 @@ func main() {
 		stellarSvc,
 		logger,
 	)
+	disbursementAdapter.SetPublicBaseURL(cfg.Server.PublicBaseURL)
+	if linkShortener != nil {
+		disbursementAdapter.SetShortener(linkShortener)
+	}
 
 	// ---- 12b. Rate service adapter ----
-	rateSvc := adapters.NewRateServiceAdapter(offRampSvc)
+	// The USSD flow quotes from the same MG-primary/YC-fallback cascade the
+	// loan adapter books against, so the rate shown at entry, the USDC the
+	// treasury sends, and MoneyGram's cash-pickup floor are all measured with
+	// one rate.
+	rateSvc := adapters.NewRateServiceAdapter(fxOrch)
 
 	// ---- 12c. Account notifier + PIN service ----
 	accountNotifier := mvnotifications.NewSMSAccountNotifier(notifier, nil)
@@ -281,8 +400,20 @@ func main() {
 	pinService := pin.NewService(coreRepos.User, pinRepo, accountNotifier, cfg.Auth.PINLockoutDuration)
 	log.Println("PIN service initialized")
 
+	// Resolve SMS language from the recipient's stored preference so every
+	// notification (including background poller/job sends) is localized.
+	langResolver := func(ctx context.Context, phone string) string {
+		u, err := userSvc.GetByMobileNumber(ctx, phone)
+		if err != nil || u == nil {
+			return ""
+		}
+		return u.PreferredLanguage
+	}
+	loanNotifier.SetLanguageResolver(langResolver)
+	accountNotifier.SetLanguageResolver(langResolver)
+
 	// ---- 13. USSD stack ----
-	sessionManager := ussd.NewSessionManager(redisClient, 0) // default 5min TTL
+	sessionManager := ussd.NewSessionManager(redisClient, cfg.Mobile.SessionTimeout)
 	menuRegistry := ussd.NewMenuRegistry()
 
 	// Register standard loan menus
@@ -303,14 +434,14 @@ func main() {
 	ussdCtrl := controllers.NewUSSDController(ussdService)
 
 	// ---- 14. Webhook service + controller ----
-	webhookSvc := webhook.NewService(disbursementAdapter, nil, disbursementAdapter)
+	webhookSvc := webhook.NewService(disbursementAdapter, nil, disbursementAdapter, ycAdapter)
 	webhookCtrl := controllers.NewWebhookController(webhookSvc, cfg.Payments.YellowCard.WebhookSecret)
 
 	// ---- 15. Pollers ----
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())
 	refundPoller := webhook.NewRefundPoller(
 		ycAdapter,
-		offRampSvc,
+		ycOffRamp,
 		disbursementAdapter,
 		disbursementAdapter,
 		nil, // AlertService — ops alerts via logging for now
@@ -320,20 +451,21 @@ func main() {
 	go refundPoller.Start(pollerCtx)
 
 	// MoneyGram SEP-24 lifecycle poller.
-	// Drives pending_user_transfer_start → SendUSDC, pending_user_transfer_complete
-	// → backfill amount_out + cash-pickup reference, terminal → finalise.
-	mgPollerAdapter, err := adapters.NewMoneyGramPollerAdapter(repos.Loan, loanSvc, logger)
+	// Drives pending_user_transfer_start to SendUSDC, pending_user_transfer_complete
+	// to backfill amount_out + cash-pickup reference, terminal to finalise.
+	mgPollerAdapter, err := adapters.NewMoneyGramPollerAdapter(repos.Loan, loanSvc, txnSvc, logger)
 	if err != nil {
 		log.Fatalf("MoneyGram poller adapter construction failed: %v", err)
 	}
 	mgP, err := mgpoller.NewPoller(
 		mgClient,
-		mgPollerAdapter,     // LoanFetcher + LoanRecorder
-		mgPollerAdapter,     // LoanRecorder (same impl)
-		disbursementAdapter, // DisbursementUpdater (reused from YC flow)
-		treasuryTransfer,    // TreasuryTransfer for USDC → MG anchor
-		nil,                 // AlertService — log-only for now
-		mgpoller.DefaultConfig(),
+		mgPollerAdapter,                   // LoanFetcher + LoanRecorder
+		mgPollerAdapter,                   // LoanRecorder (same impl)
+		disbursementAdapter,               // DisbursementUpdater (reused from YC flow)
+		mgFundsTransfer,                   // funds-wallet sender for USDC to MG anchor
+		stellarrpc.NewVerifier(rpcClient), // confirms MG's refunds landed on-ledger
+		nil,                               // AlertService — log-only for now
+		mgPollerConfig(cfg),
 		logger,
 	)
 	if err != nil {
@@ -380,6 +512,27 @@ func main() {
 	// Webhook routes
 	api.Post("/webhooks/yellowcard", webhookCtrl.HandleYellowCardWebhook)
 
+	// Cash-pickup SMS short-link → MoneyGram interactive URL redirect.
+	//
+	// Rate limited: the code is an unauthenticated 40-bit bearer token resolving
+	// to a live KYC session, and finding *any* live code is far cheaper than
+	// finding a given one. A borrower taps their link a handful of times; a
+	// scanner does not.
+	//
+	// Backed by Redis rather than the default in-memory store so the ceiling is
+	// 20/min in total, not 20/min per replica. Sliding rather than fixed window:
+	// a fixed one lets 40 through across a window boundary.
+	redirectHandler := handlers.NewInteractiveRedirectHandler(loanSvc, logger)
+	app.Get("/r/:code", limiter.New(limiter.Config{
+		Max:               20,
+		Expiration:        time.Minute,
+		LimiterMiddleware: limiter.SlidingWindow{},
+		Storage:           ratelimit.NewRedisStore(redisClient, "microvault:ratelimit:redirect"),
+		LimitReached: func(c *fiber.Ctx) error {
+			return c.SendStatus(fiber.StatusTooManyRequests)
+		},
+	}), redirectHandler.Handle)
+
 	// ---- 17. Start server ----
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -415,4 +568,31 @@ func main() {
 	}
 
 	log.Println("Application shutdown complete.")
+}
+
+// mgPollerConfig overlays the MoneyGram poller settings from the environment
+// onto the package defaults. Unset values stay zero and NewPoller keeps its
+// own default, so config never duplicates the defaults.
+func mgPollerConfig(cfg *config.Config) mgpoller.PollerConfig {
+	c := mgpoller.DefaultConfig()
+	mg := cfg.Payments.MoneyGram
+	if mg.PollInterval > 0 {
+		c.PollInterval = mg.PollInterval
+	}
+	if mg.PollMaxBatch > 0 {
+		c.MaxBatch = mg.PollMaxBatch
+	}
+	if mg.RefundSettleMaxAttempts > 0 {
+		c.RefundSettleMaxAttempts = mg.RefundSettleMaxAttempts
+	}
+	// MoneyGram refunds return to the SEP-24 funds wallet, which is a different
+	// account from the SEP-10 auth wallet outside development. Left unset, the
+	// poller would watch the auth account and no refund would ever settle.
+	if addr, err := mg.FundsAddress(); err == nil {
+		c.RefundDestination = addr
+	} else {
+		log.Printf("MoneyGram funds address unresolved, refund destination falls back to the SEP-10 account: %v", err)
+	}
+	c.RefundAssetIssuer = cfg.Stellar.USDCIssuer
+	return c
 }

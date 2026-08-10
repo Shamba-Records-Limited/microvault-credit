@@ -1,0 +1,25 @@
+# Workspace-root .dockerignore. Must not exclude go.work.
+
+**/.env
+**/.env.*
+**/.git
+**/.github
+**/node_modules
+**/tmp
+**/bin
+**/vendor
+
+**/*.exe
+**/*.dll
+**/*.so
+**/*.dylib
+**/*.test
+**/*.out
+**/*.log
+**/coverage.*
+**/*.coverprofile
+**/profile.cov
+
+microvault/soroban/target
+microvault/web/dist
+microvault/web/.turbo

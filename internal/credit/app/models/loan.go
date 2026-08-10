@@ -14,47 +14,59 @@ import (
 // Loan represents a loan record
 // Amounts stored in smallest unit, rates in basis points
 type Loan struct {
-	ID                  string         `json:"id" gorm:"type:uuid;primaryKey"`
-	LoanNumber          *string        `json:"loan_number,omitempty" gorm:"type:varchar(50);uniqueIndex"`
-	UserID              string         `json:"user_id" gorm:"type:uuid;not null;index"`
-	AccountID           string         `json:"account_id" gorm:"type:uuid;not null;index"`
-	ProductID           *string        `json:"product_id,omitempty" gorm:"type:uuid;index"`
-	PrincipalAmount     int64          `json:"principal_amount" gorm:"type:bigint;not null"`
-	PrincipalAsset      string         `json:"principal_asset" gorm:"type:varchar(20);not null;index"`
-	InterestRateBps     int32          `json:"interest_rate_bps" gorm:"type:int;not null"`
-	InterestAmount      *int64         `json:"interest_amount,omitempty" gorm:"type:bigint"`
-	OriginationFee      *int64         `json:"origination_fee,omitempty" gorm:"type:bigint"`
-	OriginationFeeBps   *int32         `json:"origination_fee_bps,omitempty" gorm:"type:int"`
-	TotalAmount         *int64         `json:"total_amount,omitempty" gorm:"type:bigint"`
-	DurationDays        int            `json:"duration_days" gorm:"type:int;not null"`
-	RepaymentSchedule   string         `json:"repayment_schedule" gorm:"type:varchar(20);not null"`
-	DueDate             *time.Time     `json:"due_date,omitempty" gorm:"type:timestamp;index"`
-	Status              string         `json:"status" gorm:"type:varchar(20);not null;default:'pending';index"`
-	ApprovedAt          *time.Time     `json:"approved_at,omitempty" gorm:"type:timestamp"`
-	ApprovedBy          *string        `json:"approved_by,omitempty" gorm:"type:uuid"`
-	DisbursedAt         *time.Time     `json:"disbursed_at,omitempty" gorm:"type:timestamp;index"`
-	RepaidAt            *time.Time     `json:"repaid_at,omitempty" gorm:"type:timestamp"`
-	DefaultedAt         *time.Time     `json:"defaulted_at,omitempty" gorm:"type:timestamp"`
-	VaultTxHash         *string        `json:"vault_tx_hash,omitempty" gorm:"type:varchar(64);index"`
-	VaultTxStatus       *string        `json:"vault_tx_status,omitempty" gorm:"type:varchar(20)"`
-	VaultRepayTxHash    *string        `json:"vault_repay_tx_hash,omitempty" gorm:"type:varchar(64);index"`
-	RampProvider        *string        `json:"ramp_provider,omitempty" gorm:"type:varchar(50)"`
-	RampRequestID       *string        `json:"ramp_request_id,omitempty" gorm:"type:varchar(100);index"`
-	RampFiatAmount      *int64         `json:"ramp_fiat_amount,omitempty" gorm:"type:bigint"`
-	RampFiatCurr        *string        `json:"ramp_fiat_currency,omitempty" gorm:"column:ramp_fiat_currency;type:varchar(10)"`
-	MomoProvider        *string        `json:"momo_provider,omitempty" gorm:"type:varchar(50)"`
-	MomoTxID            *string        `json:"momo_transaction_id,omitempty" gorm:"column:momo_transaction_id;type:varchar(100);index"`
-	MomoStatus          *string        `json:"momo_status,omitempty" gorm:"type:varchar(20)"`
-	SettlementMethod    *string        `json:"settlement_method,omitempty" gorm:"type:varchar(20)"`
-	DisbursementStatus  *string        `json:"disbursement_status,omitempty" gorm:"type:varchar(30);index"`
-	RampSequenceID      *string        `json:"ramp_sequence_id,omitempty" gorm:"type:varchar(200);index"`
-	DisbursementRateBps *int64         `json:"disbursement_rate_bps,omitempty" gorm:"type:bigint"`
-	DisbursementAmtKES  *int64         `json:"disbursement_amount_kes,omitempty" gorm:"column:disbursement_amount_kes;type:bigint"`
-	RepaymentAmtKES     *int64         `json:"repayment_amount_kes,omitempty" gorm:"column:repayment_amount_kes;type:bigint"`
-	ConversionSpreadBps *int32         `json:"conversion_spread_bps,omitempty" gorm:"type:int"`
-	BorrowIndex         *int64         `json:"borrow_index,omitempty" gorm:"type:bigint"`
-	RampFeeUSD          *int64         `json:"ramp_fee_usd,omitempty" gorm:"type:bigint"`
-	RampFeeLocal        *int64         `json:"ramp_fee_local,omitempty" gorm:"type:bigint"`
+	ID              string  `json:"id" gorm:"type:uuid;primaryKey"`
+	LoanReference   *string `json:"loan_reference,omitempty" gorm:"column:loan_reference;type:varchar(50);uniqueIndex"`
+	UserID          string  `json:"user_id" gorm:"type:uuid;not null;index"`
+	AccountID       string  `json:"account_id" gorm:"type:uuid;not null;index"`
+	ProductID       *string `json:"product_id,omitempty" gorm:"type:uuid;index"`
+	PrincipalAmount int64   `json:"principal_amount" gorm:"type:bigint;not null"`
+	PrincipalAsset  string  `json:"principal_asset" gorm:"type:varchar(20);not null;index"`
+	// VaultAPRBps is the annual rate that applied when the loan opened, read
+	// from the vault at borrow time. It is an audit record of the rate, not a
+	// fixed obligation: real accrual is derived from BorrowIndex, and the
+	// borrower is told to check their balance rather than quoted a total.
+	VaultAPRBps       int32      `json:"vault_apr_bps" gorm:"column:vault_apr_bps;type:int;not null"`
+	OriginationFee    *int64     `json:"origination_fee,omitempty" gorm:"type:bigint"`
+	OriginationFeeBps *int32     `json:"origination_fee_bps,omitempty" gorm:"type:int"`
+	DurationDays      int        `json:"duration_days" gorm:"type:int;not null"`
+	RepaymentSchedule string     `json:"repayment_schedule" gorm:"type:varchar(20);not null"`
+	DueDate           *time.Time `json:"due_date,omitempty" gorm:"type:timestamp;index"`
+	Status            string     `json:"status" gorm:"type:varchar(20);not null;default:'pending';index"`
+	ApprovedAt        *time.Time `json:"approved_at,omitempty" gorm:"type:timestamp"`
+	ApprovedBy        *string    `json:"approved_by,omitempty" gorm:"type:uuid"`
+	DisbursedAt       *time.Time `json:"disbursed_at,omitempty" gorm:"type:timestamp;index"`
+	RepaidAt          *time.Time `json:"repaid_at,omitempty" gorm:"type:timestamp"`
+	DefaultedAt       *time.Time `json:"defaulted_at,omitempty" gorm:"type:timestamp"`
+	VaultTxHash       *string    `json:"vault_tx_hash,omitempty" gorm:"type:varchar(64);index"`
+	VaultTxStatus     *string    `json:"vault_tx_status,omitempty" gorm:"type:varchar(20)"`
+	VaultRepayTxHash  *string    `json:"vault_repay_tx_hash,omitempty" gorm:"type:varchar(64);index"`
+	VaultRepayStatus  *string    `json:"vault_repay_status,omitempty" gorm:"type:varchar(20);index"`
+	RampProvider      *string    `json:"ramp_provider,omitempty" gorm:"type:varchar(50)"`
+	RampRequestID     *string    `json:"ramp_request_id,omitempty" gorm:"type:varchar(100);index"`
+	RampFiatAmount    *int64     `json:"ramp_fiat_amount,omitempty" gorm:"type:bigint"`
+	RampFiatCurr      *string    `json:"ramp_fiat_currency,omitempty" gorm:"column:ramp_fiat_currency;type:varchar(10)"`
+	SettlementMethod  *string    `json:"settlement_method,omitempty" gorm:"type:varchar(20)"`
+	RampSequenceID    *string    `json:"ramp_sequence_id,omitempty" gorm:"type:varchar(200);index"`
+	// DisbursementRate is the FX rate actually executed at disbursement, the
+	// counterpart to EntryRateBuffered at quote time. Stored as a rate, not
+	// basis points — the old disbursement_rate_bps held rate x 10^4.
+	DisbursementRate     *float64 `json:"disbursement_rate,omitempty" gorm:"column:disbursement_rate;type:numeric(20,8)"`
+	DeliveredAmountLocal *int64   `json:"delivered_amount_local,omitempty" gorm:"column:delivered_amount_local;type:bigint"`
+	ConversionSpreadBps  *int32   `json:"conversion_spread_bps,omitempty" gorm:"type:int"`
+	BorrowIndex          *int64   `json:"borrow_index,omitempty" gorm:"type:bigint"`
+	ServiceFeeUSD        *int64   `json:"service_fee_usd,omitempty" gorm:"type:bigint"`
+	ServiceFeeLocal      *int64   `json:"service_fee_local,omitempty" gorm:"type:bigint"`
+	PartnerFeeUSD        *int64   `json:"partner_fee_usd,omitempty" gorm:"type:bigint"`
+	PartnerFeeLocal      *int64   `json:"partner_fee_local,omitempty" gorm:"type:bigint"`
+
+	// Disclosed fees: fixed at creation and never rewritten, unlike the
+	// ServiceFee/PartnerFee pair above, which the ramp reports after
+	// settlement. Keeping the two families apart preserves what the borrower
+	// was told even after the provider reports what it actually charged.
+	TelcoFeeUSD   *int64 `json:"telco_fee_usd,omitempty" gorm:"type:bigint"`
+	TelcoFeeLocal *int64 `json:"telco_fee_local,omitempty" gorm:"type:bigint"`
+	TaxUSD        *int64 `json:"tax_usd,omitempty" gorm:"type:bigint"`
+	TaxLocal      *int64 `json:"tax_local,omitempty" gorm:"type:bigint"`
 
 	// MoneyGram cash-pickup fields (see migration 000008).
 	// RampInteractiveURL is the SEP-24 webview URL sent to the user via SMS.
@@ -66,23 +78,63 @@ type Loan struct {
 	RampExternalRef       *string `json:"ramp_external_ref,omitempty" gorm:"type:varchar(100);index"`
 	RampMoreInfoURL       *string `json:"ramp_more_info_url,omitempty" gorm:"type:text"`
 	RampChildAccountIndex *int64  `json:"ramp_child_account_index,omitempty" gorm:"type:bigint"`
+	// RampShortCode maps a /r/{code} SMS redirect to RampInteractiveURL.
+	RampShortCode *string `json:"ramp_short_code,omitempty" gorm:"type:varchar(24);uniqueIndex"`
+	// RampShortCodeExpiresAt bounds the interactive code's life. It is an
+	// unauthenticated bearer token, and the disbursement-status gate alone
+	// leaves it valid indefinitely on a loan that never reaches a terminal
+	// state. Nil on rows predating migration 000024: status gate only.
+	RampShortCodeExpiresAt *time.Time `json:"ramp_short_code_expires_at,omitempty" gorm:"type:timestamptz"`
+	// RampMoreInfoShortCode maps a /r/{code} SMS redirect to RampMoreInfoURL.
+	// Separate from RampShortCode because the two links have opposite
+	// lifetimes: the interactive URL must die once the withdrawal settles, and
+	// the support link only becomes useful then.
+	RampMoreInfoShortCode *string `json:"ramp_more_info_short_code,omitempty" gorm:"type:varchar(24);uniqueIndex"`
+	// RampStellarTxHash is the treasury -> MG USDC payment hash. Set once the
+	// send succeeds and used as the poller's local idempotency marker, so a
+	// slow MG stellar_transaction_id echo can't trigger a duplicate payment.
+	RampStellarTxHash *string `json:"ramp_stellar_tx_hash,omitempty" gorm:"type:varchar(64)"`
 
 	// FX audit fields capture the rate the loan was quoted at, the source
 	// label, the entry buffer percentage applied, and the user's originally
 	// requested local amount — used by the poller's drift detection.
-	EntryRateUsed        *float64 `json:"entry_rate_used,omitempty" gorm:"type:numeric(20,8)"`
+	// EntryRateBuffered already has EntryBufferPct deducted; it is not the raw
+	// provider rate, and will not match a live quote from EntryRateSource.
+	EntryRateBuffered    *float64 `json:"entry_rate_buffered,omitempty" gorm:"column:entry_rate_buffered;type:numeric(20,8)"`
 	EntryRateSource      *string  `json:"entry_rate_source,omitempty" gorm:"type:varchar(40)"`
 	EntryBufferPct       *float64 `json:"entry_buffer_pct,omitempty" gorm:"type:numeric(6,4)"`
 	RequestedLocalAmount *int64   `json:"requested_local_amount,omitempty" gorm:"type:bigint"`
 
-	// SEP-24 withdraw memo returned on MG's transaction object; used by the
-	// Stellar ingest worker to match refund inbound USDC back to the loan.
+	// SEP-24 withdraw memo returned on MG's transaction object; used to match
+	// refund inbound USDC back to the loan.
 	RampWithdrawMemo     *string `json:"ramp_withdraw_memo,omitempty" gorm:"type:varchar(64);index"`
 	RampWithdrawMemoType *string `json:"ramp_withdraw_memo_type,omitempty" gorm:"type:varchar(10)"`
 
-	CreatedAt           time.Time      `json:"created_at" gorm:"autoCreateTime;not null"`
-	UpdatedAt           time.Time      `json:"updated_at" gorm:"autoUpdateTime;not null"`
-	DeletedAt           gorm.DeletedAt `json:"deleted_at" gorm:"index"`
+	// RampRefundDeclaredAt is set when the anchor first reports a refund, and
+	// stands until the inbound USDC is verified on-ledger. No transaction row
+	// exists during that window by design — the refund row is written only
+	// after the payment is confirmed — so this is the only durable record that
+	// a refund is outstanding.
+	RampRefundDeclaredAt *time.Time `json:"ramp_refund_declared_at,omitempty" gorm:"type:timestamptz"`
+
+	// RampPickupReadyAt marks that the cash became collectable and the borrower
+	// was told. Written before the SMS, so a failed send is not retried on
+	// every poll tick. Not derivable from anything on-chain: it records a
+	// notification, not a movement of money.
+	RampPickupReadyAt *time.Time `json:"ramp_pickup_ready_at,omitempty" gorm:"type:timestamptz"`
+
+	// Refund settlement, written when MoneyGram returns the USDC — usually
+	// because the borrower cancelled in MG's UI. RampRefundShortfall is what MG
+	// kept back (its refund fee included); non-zero means the treasury absorbed
+	// the difference and the loan needs manual settlement.
+	RampRefundTxHash    *string    `json:"ramp_refund_tx_hash,omitempty" gorm:"type:varchar(64)"`
+	RampRefundAmount    *int64     `json:"ramp_refund_amount,omitempty" gorm:"type:bigint"`
+	RampRefundShortfall *int64     `json:"ramp_refund_shortfall,omitempty" gorm:"type:bigint"`
+	RampRefundedAt      *time.Time `json:"ramp_refunded_at,omitempty"`
+
+	CreatedAt time.Time      `json:"created_at" gorm:"autoCreateTime;not null"`
+	UpdatedAt time.Time      `json:"updated_at" gorm:"autoUpdateTime;not null"`
+	DeletedAt gorm.DeletedAt `json:"deleted_at" gorm:"index"`
 
 	User       *users.User    `gorm:"foreignKey:UserID"`
 	Account    *users.Account `gorm:"foreignKey:AccountID"`
@@ -103,13 +155,14 @@ func (loan *Loan) BeforeCreate(tx *gorm.DB) error {
 	}
 	loan.ID = id.String()
 
-	// Generate a human-readable loan number from the UUIDv7 timestamp + random suffix.
-	// Format: LN-<unix_ms_hex>-<4_random_hex> e.g. "LN-018F3A2B1C-A7F2"
-	if loan.LoanNumber == nil {
+	// Generate a human-readable loan reference from the UUIDv7 timestamp +
+	// random suffix.
+	// Format: LR-unix_ms_hex-4_random_hex e.g. "LR-018F3A2B1C-A7F2"
+	if loan.LoanReference == nil {
 		ts := time.Now().UnixMilli()
 		short := id.String()[24:28] // 4 hex chars from the random portion
-		num := fmt.Sprintf("LN-%X-%s", ts, short)
-		loan.LoanNumber = &num
+		ref := fmt.Sprintf("LR-%X-%s", ts, short)
+		loan.LoanReference = &ref
 	}
 	return nil
 }
@@ -118,26 +171,26 @@ func (loan *Loan) BeforeCreate(tx *gorm.DB) error {
 // MinAmount and MaxAmount are denominated in the fiat Currency (stored as cents).
 // Rates are in basis points (1 bps = 0.01 %).
 type LoanProduct struct {
-	ID                        string         `json:"id" gorm:"type:uuid;primaryKey"`
-	Name                      string         `json:"name" gorm:"type:varchar(100);uniqueIndex;not null"`
-	Description               *string        `json:"description,omitempty" gorm:"type:text"`
-	InterestRateBps           int32          `json:"interest_rate_bps" gorm:"type:int;not null"`
-	InterestType              string         `json:"interest_type" gorm:"type:varchar(20);not null;default:'simple'"`
-	OriginationFeeBps         *int32         `json:"origination_fee_bps,omitempty" gorm:"type:int"`
-	MinAmount                 int64          `json:"min_amount" gorm:"type:bigint;not null"`
-	MaxAmount                 int64          `json:"max_amount" gorm:"type:bigint;not null"`
-	Currency                  string         `json:"currency" gorm:"type:varchar(10);not null;default:'KES'"`
-	MinDurationDays           int            `json:"min_duration_days" gorm:"type:int;not null"`
-	MaxDurationDays           int            `json:"max_duration_days" gorm:"type:int;not null"`
+	ID                        string                      `json:"id" gorm:"type:uuid;primaryKey"`
+	Name                      string                      `json:"name" gorm:"type:varchar(100);uniqueIndex;not null"`
+	Description               *string                     `json:"description,omitempty" gorm:"type:text"`
+	InterestRateBps           int32                       `json:"interest_rate_bps" gorm:"type:int;not null"`
+	InterestType              string                      `json:"interest_type" gorm:"type:varchar(20);not null;default:'simple'"`
+	OriginationFeeBps         *int32                      `json:"origination_fee_bps,omitempty" gorm:"type:int"`
+	MinAmount                 int64                       `json:"min_amount" gorm:"type:bigint;not null"`
+	MaxAmount                 int64                       `json:"max_amount" gorm:"type:bigint;not null"`
+	Currency                  string                      `json:"currency" gorm:"type:varchar(10);not null;default:'KES'"`
+	MinDurationDays           int                         `json:"min_duration_days" gorm:"type:int;not null"`
+	MaxDurationDays           int                         `json:"max_duration_days" gorm:"type:int;not null"`
 	AllowedRepaymentSchedules datatypes.JSONSlice[string] `json:"allowed_repayment_schedules" gorm:"type:jsonb"`
-	MaxCreditMultiplierBps    int32          `json:"max_credit_multiplier_bps" gorm:"type:int;not null"`
-	RequiresCollateral        bool           `json:"requires_collateral" gorm:"type:boolean;not null;default:false"`
-	CollateralBps             *int32         `json:"collateral_bps,omitempty" gorm:"type:int"`
-	PriorityOrder             int            `json:"priority_order" gorm:"type:int;not null;default:0"`
-	IsActive                  bool           `json:"is_active" gorm:"type:boolean;not null;default:true;index"`
-	CreatedAt                 time.Time      `json:"created_at" gorm:"autoCreateTime;not null"`
-	UpdatedAt                 time.Time      `json:"updated_at" gorm:"autoUpdateTime;not null"`
-	DeletedAt                 gorm.DeletedAt `json:"deleted_at" gorm:"index"`
+	MaxCreditMultiplierBps    int32                       `json:"max_credit_multiplier_bps" gorm:"type:int;not null"`
+	RequiresCollateral        bool                        `json:"requires_collateral" gorm:"type:boolean;not null;default:false"`
+	CollateralBps             *int32                      `json:"collateral_bps,omitempty" gorm:"type:int"`
+	PriorityOrder             int                         `json:"priority_order" gorm:"type:int;not null;default:0"`
+	IsActive                  bool                        `json:"is_active" gorm:"type:boolean;not null;default:true;index"`
+	CreatedAt                 time.Time                   `json:"created_at" gorm:"autoCreateTime;not null"`
+	UpdatedAt                 time.Time                   `json:"updated_at" gorm:"autoUpdateTime;not null"`
+	DeletedAt                 gorm.DeletedAt              `json:"deleted_at" gorm:"index"`
 }
 
 // TableName specifies the table name for LoanProduct model
@@ -153,51 +206,6 @@ func (lp *LoanProduct) BeforeCreate(tx *gorm.DB) error {
 	}
 	lp.ID = id.String()
 	return nil
-}
-
-// CreditScore represents a user's credit score
-type CreditScore struct {
-	ID                   string         `json:"id" gorm:"type:uuid;primaryKey"`
-	UserID               string         `json:"user_id" gorm:"type:uuid;not null;uniqueIndex"`
-	Score                int            `json:"score" gorm:"type:int;not null;index"`
-	ScoreVersion         string         `json:"score_version" gorm:"type:varchar(20);not null"`
-	TotalLoans           int            `json:"total_loans" gorm:"type:int;not null;default:0"`
-	SuccessfulRepayments int            `json:"successful_repayments" gorm:"type:int;not null;default:0"`
-	Defaults             int            `json:"defaults" gorm:"type:int;not null;default:0"`
-	CurrentOutstanding   int64          `json:"current_outstanding" gorm:"type:bigint;not null;default:0"`
-	DaysOverdue          int            `json:"days_overdue" gorm:"type:int;not null;default:0"`
-	MaxLoanAmount        *int64         `json:"max_loan_amount,omitempty" gorm:"type:bigint"`
-	MaxConcurrentLoans   int            `json:"max_concurrent_loans" gorm:"type:int;not null;default:1"`
-	CalculatedAt         time.Time      `json:"calculated_at" gorm:"type:timestamp;not null"`
-	ExpiresAt            *time.Time     `json:"expires_at,omitempty" gorm:"type:timestamp;index"`
-	CreatedAt            time.Time      `json:"created_at" gorm:"autoCreateTime;not null"`
-	UpdatedAt            time.Time      `json:"updated_at" gorm:"autoUpdateTime;not null"`
-	DeletedAt            gorm.DeletedAt `json:"deleted_at" gorm:"index"`
-
-	User *users.User `gorm:"foreignKey:UserID"`
-}
-
-// TableName specifies the table name for CreditScore model
-func (CreditScore) TableName() string {
-	return "credit_scores"
-}
-
-// BeforeCreate sets the ID before creating a new credit score
-func (cs *CreditScore) BeforeCreate(tx *gorm.DB) error {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return err
-	}
-	cs.ID = id.String()
-	return nil
-}
-
-// IsExpired checks if the credit score has expired
-func (r *CreditScore) IsExpired() bool {
-	if r.ExpiresAt == nil {
-		return false
-	}
-	return r.ExpiresAt.Before(time.Now())
 }
 
 // Repayment represents a loan repayment schedule item
@@ -244,12 +252,19 @@ const (
 	InterestTypeCompound = "compound"
 
 	// Loan Status
-	LoanStatusPending   = "pending"
-	LoanStatusApproved  = "approved"
-	LoanStatusDisbursed = "disbursed"
-	LoanStatusRepaid    = "repaid"
-	LoanStatusDefaulted = "defaulted"
-	LoanStatusCancelled = "cancelled"
+	LoanStatusPending    = "pending"
+	LoanStatusApproved   = "approved"
+	LoanStatusDisbursing = "disbursing"
+	LoanStatusDisbursed  = "disbursed"
+	LoanStatusRepaid     = "repaid"
+	LoanStatusDefaulted  = "defaulted"
+	LoanStatusCancelled  = "cancelled"
+	// LoanStatusOffRampFailed marks a loan whose vault borrow succeeded but
+	// whose fiat disbursement could not be completed. The borrowed USDC has
+	// been (or will be) repaid to the vault; the borrower owes nothing and
+	// did not default. Distinct from LoanStatusDefaulted, which is a
+	// borrower-side credit event.
+	LoanStatusOffRampFailed = "offramp_failed"
 
 	// Repayment Status
 	RepaymentStatusPending = "pending"
@@ -257,4 +272,71 @@ const (
 	RepaymentStatusOverdue = "overdue"
 	RepaymentStatusPartial = "partial"
 	RepaymentStatusWaived  = "waived"
+
+	// Disbursement status vocabulary. No longer a column: these are derived
+	// from loans.status, ramp_refund_declared_at and ramp_pickup_ready_at, and
+	// exist so the MoneyGram poller's state machine has stable names to
+	// compare against. See DeriveDisbursementStatus.
+	//
+	// The refund and MoneyGram states were written by the poller long before
+	// they appeared here, so queries built against this enum silently missed
+	// them. They are declared now so there is one vocabulary.
+	//
+	// Note YellowCard's own wire value for completion is "complete"; it is
+	// canonicalised to "completed" on the way in, so nothing downstream has to
+	// know which provider produced a row.
+	DisbursementStatusPending        = "pending"
+	DisbursementStatusMGInitiated    = "mg_initiated"
+	DisbursementStatusProcessing     = "processing"
+	DisbursementStatusCompleted      = "completed"
+	DisbursementStatusFailed         = "failed"
+	DisbursementStatusRefundPending  = "refund_pending"
+	DisbursementStatusRefundReceived = "refund_received"
+
+	// Vault Repay Status — tracks treasury→vault USDC return. NULL when no
+	// repay has been attempted (e.g. direct settlement still in flight, or
+	// completed direct where USDC went to YC and no repay is owed).
+	VaultRepayStatusSuccess = "success"
+	VaultRepayStatusFailed  = "failed"
 )
+
+// DeriveDisbursementStatus reports where a loan's payout stands.
+//
+// This replaced a stored column. Every terminal value restates the loan's own
+// status, so keeping a second copy only created a way for the two to disagree —
+// which they did: MoneyGram wrote "completed" while the reader compared against
+// YellowCard's "complete", and no cash-pickup loan ever left disbursing.
+//
+// The two non-derivable states have their own markers. A declared-but-
+// unverified refund has no transaction row by design, and pickup-ready records
+// an SMS rather than a movement of money.
+func (l *Loan) DeriveDisbursementStatus() string {
+	switch {
+	case l.Status == LoanStatusCancelled:
+		return DisbursementStatusRefundReceived
+	case l.Status == LoanStatusOffRampFailed:
+		return DisbursementStatusFailed
+	case l.Status == LoanStatusDisbursed:
+		return DisbursementStatusCompleted
+	case l.RampRefundDeclaredAt != nil:
+		return DisbursementStatusRefundPending
+	case l.RampPickupReadyAt != nil:
+		return DisbursementStatusProcessing
+	case l.RampProvider != nil && *l.RampProvider == "moneygram":
+		return DisbursementStatusMGInitiated
+	default:
+		return DisbursementStatusPending
+	}
+}
+
+// IsDisbursementTerminal reports whether a loan's payout has finished, however
+// it finished. Terminal loans are not polled and hold no claim on the borrower.
+func (l *Loan) IsDisbursementTerminal() bool {
+	switch l.Status {
+	case LoanStatusDisbursed, LoanStatusOffRampFailed, LoanStatusCancelled,
+		LoanStatusRepaid, LoanStatusDefaulted:
+		return true
+	default:
+		return false
+	}
+}
