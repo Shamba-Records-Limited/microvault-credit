@@ -149,13 +149,20 @@ jobs:
           COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
           COOLIFY_SERVICE_UUID: ${{ vars.COOLIFY_SERVICE_UUID }}
         run: |
+          url="$COOLIFY_BASE_URL/api/v1/services/$COOLIFY_SERVICE_UUID/envs"
           for pair in "CREDIT_IMAGE:$CREDIT_IMAGE" "MIGRATE_IMAGE:$MIGRATE_IMAGE"; do
             key="${pair%%:*}"
             value="${pair#*:}"
-            curl --fail --silent --show-error -X PATCH \
-              -H "Authorization: Bearer $COOLIFY_TOKEN" \
-              --json "$(jq -nc --arg k "$key" --arg v "$value" '{key:$k,value:$v}')" \
-              "$COOLIFY_BASE_URL/api/v1/services/$COOLIFY_SERVICE_UUID/envs"
+            payload="$(jq -nc --arg k "$key" --arg v "$value" '{key:$k,value:$v}')"
+            code="$(curl --silent --output /dev/null --write-out '%{http_code}' -X PATCH \
+              -H "Authorization: Bearer $COOLIFY_TOKEN" --json "$payload" "$url")"
+            if [ "$code" = "404" ]; then
+              curl --fail --silent --show-error -X POST \
+                -H "Authorization: Bearer $COOLIFY_TOKEN" --json "$payload" "$url"
+            elif [ "$code" -ge 400 ]; then
+              echo "PATCH $key failed with HTTP $code" >&2
+              exit 1
+            fi
           done
 
       - name: Trigger Coolify deploy
