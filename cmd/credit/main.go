@@ -435,7 +435,7 @@ func main() {
 
 	// ---- 14. Webhook service + controller ----
 	webhookSvc := webhook.NewService(disbursementAdapter, nil, disbursementAdapter, ycAdapter)
-	webhookCtrl := controllers.NewWebhookController(webhookSvc, cfg.Payments.YellowCard.WebhookSecret)
+	webhookCtrl := controllers.NewWebhookController(webhookSvc, cfg.Payments.YellowCard.PublicKey, cfg.Payments.YellowCard.SecretKey)
 
 	// ---- 15. Pollers ----
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())
