@@ -1,5 +1,6 @@
-.PHONY: help migrate-up migrate-down migrate-version migrate-force build build-credit build-migrate run test test-integration test-integration-down docs clean
+.PHONY: help migrate-up migrate-down migrate-version migrate-force build build-credit build-migrate run up up-build down test test-integration test-integration-down docs clean
 
+COMPOSE := docker compose
 COMPOSE_TEST := docker compose -f docker-compose.test.yml
 
 help:
@@ -18,6 +19,11 @@ help:
 	@echo ""
 	@echo "Run Commands:"
 	@echo "  make run                 - Run credit application"
+	@echo ""
+	@echo "Docker Commands:"
+	@echo "  make up                  - Start the dev stack in the background"
+	@echo "  make up-build            - Rebuild images, then start the dev stack"
+	@echo "  make down                - Stop the dev stack"
 	@echo ""
 	@echo "Test Commands:"
 	@echo "  make test                - Run all tests"
@@ -65,6 +71,17 @@ build-migrate:
 # Run commands
 run:
 	@go run cmd/credit/main.go
+
+# Docker commands. The build context is the workspace root, so the sibling
+# microvault checkout must be present.
+up:
+	@$(COMPOSE) up -d
+
+up-build:
+	@$(COMPOSE) up -d --build
+
+down:
+	@$(COMPOSE) down
 
 # Test commands
 test:

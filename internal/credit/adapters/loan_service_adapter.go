@@ -28,6 +28,26 @@ import (
 // inherited from the integration plan; override via FXConfig if needed.
 const DefaultFXBufferPct = 0.02
 
+// centStroops is one USDC cent in stroops. Cash-out anchors (MoneyGram,
+// mobile-money partners) quote and reconcile amounts at 2 decimal places, so
+// every cash-out principal is rounded to a whole cent before it is stored,
+// borrowed, or sent on-chain.
+const centStroops int64 = 100_000
+
+// roundToCentStroops rounds a stroop amount to the nearest whole USDC cent
+// (round-half-up), using integer math only. A positive sub-cent amount never
+// rounds down to zero.
+func roundToCentStroops(stroops int64) int64 {
+	if stroops <= 0 {
+		return stroops
+	}
+	rounded := (stroops + centStroops/2) / centStroops * centStroops
+	if rounded == 0 {
+		return centStroops
+	}
+	return rounded
+}
+
 // Compile-time check.
 var _ ussd.LoanService = (*LoanServiceAdapter)(nil)
 
@@ -226,6 +246,21 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 
 	// Amount validation is handled by the USSD handler against the loan product
 	// config (fiat-denominated limits). By this point the request is pre-approved.
+
+	// Round the principal to whole USDC cents. Anchors quote and expect 2
+	// decimal places; sending the raw 7-decimal FX conversion on-chain (e.g.
+	// 23.430178 when the anchor expects 23.43) leaves the withdrawal stuck.
+	// Rounding here — before Create, BorrowFromVault, and Initiate — keeps the
+	// stored principal, the vault borrow, and the anchor's expected amount
+	// identical.
+	if rounded := roundToCentStroops(req.PrincipalAmount); rounded != req.PrincipalAmount {
+		a.logger.Info("principal rounded to whole cents",
+			"user_id", req.UserID,
+			"original_stroops", req.PrincipalAmount,
+			"rounded_stroops", rounded,
+		)
+		req.PrincipalAmount = rounded
+	}
 
 	payoutMethod := req.PayoutMethod
 	if payoutMethod == "" {
