@@ -109,6 +109,15 @@ func main() {
 		log.Fatalf("Failed to initialize core repositories: %v", err)
 	}
 
+	// On testnet the DB may be rebuilt while on-chain child accounts persist;
+	// floor the derivation-index sequence so fresh rows never collide with them.
+	if cfg.Stellar.AccountIndexBase > 0 {
+		if err := coreRepos.Account.EnsureAccountIndexFloor(context.Background(), cfg.Stellar.AccountIndexBase); err != nil {
+			log.Fatalf("Failed to floor account index sequence: %v", err)
+		}
+		log.Printf("Account index sequence floored at %d", cfg.Stellar.AccountIndexBase)
+	}
+
 	// ---- 5. Loan service ----
 	loanSvc := loan.NewService(repos.Loan)
 
