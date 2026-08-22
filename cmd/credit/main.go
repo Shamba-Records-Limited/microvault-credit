@@ -15,6 +15,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/adapters"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/handlers"
+	creditnotifications "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/pkg/notifications"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/pkg/ratelimit"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
@@ -142,10 +143,11 @@ func main() {
 	)
 	smsService.RegisterProvider("africastalking", atSMSAdapter)
 
-	// Resolve SMS provider and create notifier + loan notifier.
+	// Resolve SMS provider and create the transport. The loan and account
+	// notifiers are built later, once userSvc exists to back the language
+	// resolver they take at construction.
 	atProvider, _ := smsService.GetProvider("africastalking")
 	notifier := mvnotifications.NewSMSNotifier(atProvider, cfg.Mobile.AfricasTalking.ResolveSenderID())
-	loanNotifier := mvnotifications.NewSMSLoanNotifier(notifier, nil)
 
 	// ---- 8. YellowCard adapter ----
 	ycAdapter := yellowcard.NewYellowcardAdapter(
@@ -347,6 +349,25 @@ func main() {
 		log.Fatalf("Failed to create user service adapter: %v", err)
 	}
 
+	// ---- 10c2. SMS language resolver + loan notifier ----
+	// Resolve SMS language from the recipient's stored preference so every
+	// notification (including background poller/job sends) is localized.
+	langResolver := func(ctx context.Context, phone string) string {
+		u, err := userSvc.GetByMobileNumber(ctx, phone)
+		if err != nil || u == nil {
+			return ""
+		}
+		return u.PreferredLanguage
+	}
+
+	loanNotifier, err := mvnotifications.NewSMSLoanNotifier(notifier,
+		mvnotifications.WithLoanLanguageResolver(langResolver),
+		mvnotifications.WithLoanTemplateSet(creditnotifications.LoanOverrides(cfg.Mobile.USSDDialString)),
+	)
+	if err != nil {
+		log.Fatalf("Failed to create loan notifier: %v", err)
+	}
+
 	// ---- 10d. Loan product service ----
 	loanProductSvc := loanproduct.NewService(repos.LoanProduct)
 
@@ -404,22 +425,16 @@ func main() {
 	rateSvc := adapters.NewRateServiceAdapter(fxOrch)
 
 	// ---- 12c. Account notifier + PIN service ----
-	accountNotifier := mvnotifications.NewSMSAccountNotifier(notifier, nil)
+	accountNotifier, err := mvnotifications.NewSMSAccountNotifier(notifier,
+		mvnotifications.WithAccountLanguageResolver(langResolver),
+		mvnotifications.WithAccountTemplateSet(creditnotifications.AccountOverrides(cfg.Mobile.USSDDialString)),
+	)
+	if err != nil {
+		log.Fatalf("Failed to create account notifier: %v", err)
+	}
 	pinRepo := pin.NewSecurityQuestionRepository(db)
 	pinService := pin.NewService(coreRepos.User, pinRepo, accountNotifier, cfg.Auth.PINLockoutDuration)
 	log.Println("PIN service initialized")
-
-	// Resolve SMS language from the recipient's stored preference so every
-	// notification (including background poller/job sends) is localized.
-	langResolver := func(ctx context.Context, phone string) string {
-		u, err := userSvc.GetByMobileNumber(ctx, phone)
-		if err != nil || u == nil {
-			return ""
-		}
-		return u.PreferredLanguage
-	}
-	loanNotifier.SetLanguageResolver(langResolver)
-	accountNotifier.SetLanguageResolver(langResolver)
 
 	// ---- 13. USSD stack ----
 	sessionManager := ussd.NewSessionManager(redisClient, cfg.Mobile.SessionTimeout)
