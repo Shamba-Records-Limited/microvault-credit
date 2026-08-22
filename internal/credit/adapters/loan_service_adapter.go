@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"time"
 
+	creditmodels "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
@@ -713,9 +714,8 @@ func (a *LoanServiceAdapter) persistEntryRate(
 ) {
 	req := loan.UpdateLoanRequest{}
 	any := false
-	if entryRate > 0 {
-		v := entryRate
-		req.EntryRateBuffered = &v
+	if e8 := creditmodels.RateE8(entryRate); e8 != nil {
+		req.EntryRateBuffered = e8
 		any = true
 	}
 	if entryRateSource != "" {
@@ -723,9 +723,8 @@ func (a *LoanServiceAdapter) persistEntryRate(
 		req.EntryRateSource = &v
 		any = true
 	}
-	if entryBufferPct > 0 {
-		v := entryBufferPct
-		req.EntryBufferPct = &v
+	if bps := creditmodels.BufferBps(entryBufferPct); bps != nil {
+		req.EntryBufferBps = bps
 		any = true
 	}
 	if localAmountCents > 0 {
@@ -945,9 +944,8 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 		}
 
 		// Persist conversion data when local currency info is available.
-		if req.ConversionRate > 0 {
-			rate := req.ConversionRate
-			updateReq.DisbursementRate = &rate
+		if e8 := creditmodels.RateE8(req.ConversionRate); e8 != nil {
+			updateReq.DisbursementRate = e8
 		}
 
 		if _, err := a.loanSvc.Update(ctx, loanID, updateReq); err != nil {

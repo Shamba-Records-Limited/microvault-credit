@@ -444,7 +444,7 @@ func main() {
 	standardPreset := &ussd.StandardLoanMenuPreset{}
 	standardPreset.Initialize(menuRegistry)
 
-	ussdHandler := ussd.NewUSSDHandler(sessionManager, menuRegistry, userAdapter, loanAdapter, rateSvc, pinService, accountNotifier)
+	ussdHandler := ussd.NewUSSDHandler(sessionManager, menuRegistry, userAdapter, loanAdapter, rateSvc, pinService, accountNotifier, loanNotifier)
 	ussdService := ussd.NewUSSDService(ussdHandler)
 
 	// Register Africa's Talking USSD provider

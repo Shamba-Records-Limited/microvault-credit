@@ -31,7 +31,7 @@ type UpdateLoanRequest struct {
 	RampRefundDeclaredAt *time.Time `json:"ramp_refund_declared_at,omitempty"`
 	RampPickupReadyAt    *time.Time `json:"ramp_pickup_ready_at,omitempty"`
 	RampSequenceID       *string    `json:"ramp_sequence_id,omitempty"`
-	DisbursementRate     *float64   `json:"disbursement_rate,omitempty"`
+	DisbursementRate     *int64     `json:"disbursement_rate,omitempty"`
 	DeliveredAmountLocal *int64     `json:"delivered_amount_local,omitempty"`
 	ConversionSpreadBps  *int32     `json:"conversion_spread_bps,omitempty"`
 	BorrowIndex          *int64     `json:"borrow_index,omitempty"`
@@ -53,9 +53,9 @@ type UpdateLoanRequest struct {
 	RampMoreInfoURL        *string    `json:"ramp_more_info_url,omitempty"`
 	RampChildAccountIndex  *int64     `json:"ramp_child_account_index,omitempty"`
 	RampStellarTxHash      *string    `json:"ramp_stellar_tx_hash,omitempty"`
-	EntryRateBuffered      *float64   `json:"entry_rate_buffered,omitempty"`
+	EntryRateBuffered      *int64     `json:"entry_rate_buffered,omitempty"`
 	EntryRateSource        *string    `json:"entry_rate_source,omitempty"`
-	EntryBufferPct         *float64   `json:"entry_buffer_pct,omitempty"`
+	EntryBufferBps         *int32     `json:"entry_buffer_bps,omitempty"`
 	RequestedLocalAmount   *int64     `json:"requested_local_amount,omitempty"`
 	RampWithdrawMemo       *string    `json:"ramp_withdraw_memo,omitempty"`
 	RampWithdrawMemoType   *string    `json:"ramp_withdraw_memo_type,omitempty"`
@@ -115,7 +115,7 @@ type LoanResponse struct {
 	SettlementMethod     *string    `json:"settlement_method,omitempty"`
 	DisbursementStatus   *string    `json:"disbursement_status,omitempty"`
 	RampSequenceID       *string    `json:"ramp_sequence_id,omitempty"`
-	DisbursementRate     *float64   `json:"disbursement_rate,omitempty"`
+	DisbursementRate     *int64     `json:"disbursement_rate,omitempty"`
 	DeliveredAmountLocal *int64     `json:"delivered_amount_local,omitempty"`
 	ConversionSpreadBps  *int32     `json:"conversion_spread_bps,omitempty"`
 	BorrowIndex          *int64     `json:"borrow_index,omitempty"`
@@ -136,9 +136,9 @@ type LoanResponse struct {
 	RampMoreInfoURL        *string    `json:"ramp_more_info_url,omitempty"`
 	RampChildAccountIndex  *int64     `json:"ramp_child_account_index,omitempty"`
 	RampStellarTxHash      *string    `json:"ramp_stellar_tx_hash,omitempty"`
-	EntryRateBuffered      *float64   `json:"entry_rate_buffered,omitempty"`
+	EntryRateBuffered      *int64     `json:"entry_rate_buffered,omitempty"`
 	EntryRateSource        *string    `json:"entry_rate_source,omitempty"`
-	EntryBufferPct         *float64   `json:"entry_buffer_pct,omitempty"`
+	EntryBufferBps         *int32     `json:"entry_buffer_bps,omitempty"`
 	RequestedLocalAmount   *int64     `json:"requested_local_amount,omitempty"`
 	RampWithdrawMemo       *string    `json:"ramp_withdraw_memo,omitempty"`
 	RampWithdrawMemoType   *string    `json:"ramp_withdraw_memo_type,omitempty"`
@@ -274,8 +274,8 @@ func (r UpdateLoanRequest) changedFields() map[string]any {
 	if r.EntryRateSource != nil {
 		f["entry_rate_source"] = r.EntryRateSource
 	}
-	if r.EntryBufferPct != nil {
-		f["entry_buffer_pct"] = r.EntryBufferPct
+	if r.EntryBufferBps != nil {
+		f["entry_buffer_bps"] = r.EntryBufferBps
 	}
 	if r.RequestedLocalAmount != nil {
 		f["requested_local_amount"] = r.RequestedLocalAmount

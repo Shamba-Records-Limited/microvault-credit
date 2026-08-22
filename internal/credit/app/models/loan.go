@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	transactions "github.com/Shamba-Records-Limited/microvault/pkg/models"
@@ -48,16 +49,22 @@ type Loan struct {
 	SettlementMethod  *string    `json:"settlement_method,omitempty" gorm:"type:varchar(20)"`
 	RampSequenceID    *string    `json:"ramp_sequence_id,omitempty" gorm:"type:varchar(200);index"`
 	// DisbursementRate is the FX rate actually executed at disbursement, the
-	// counterpart to EntryRateBuffered at quote time. Stored as a rate, not
-	// basis points — the old disbursement_rate_bps held rate x 10^4.
-	DisbursementRate     *float64 `json:"disbursement_rate,omitempty" gorm:"column:disbursement_rate;type:numeric(20,8)"`
-	DeliveredAmountLocal *int64   `json:"delivered_amount_local,omitempty" gorm:"column:delivered_amount_local;type:bigint"`
-	ConversionSpreadBps  *int32   `json:"conversion_spread_bps,omitempty" gorm:"type:int"`
-	BorrowIndex          *int64   `json:"borrow_index,omitempty" gorm:"type:bigint"`
-	ServiceFeeUSD        *int64   `json:"service_fee_usd,omitempty" gorm:"type:bigint"`
-	ServiceFeeLocal      *int64   `json:"service_fee_local,omitempty" gorm:"type:bigint"`
-	PartnerFeeUSD        *int64   `json:"partner_fee_usd,omitempty" gorm:"type:bigint"`
-	PartnerFeeLocal      *int64   `json:"partner_fee_local,omitempty" gorm:"type:bigint"`
+	// counterpart to EntryRateBuffered at quote time.
+	//
+	// Stored as the rate scaled by [RateScaleE8]: 128.23 KES/USD is
+	// 12823000000. The name carries no scale suffix and the BIGINT column type
+	// does not imply one, so this comment and [RateScaleE8] are the only record
+	// of it — always cross the boundary through [RateE8] and [RateFromE8]
+	// rather than dividing by hand. An FX rate is not a percentage; do not
+	// reach for basis points here (see migration 000019).
+	DisbursementRate     *int64 `json:"disbursement_rate,omitempty" gorm:"column:disbursement_rate;type:bigint"`
+	DeliveredAmountLocal *int64 `json:"delivered_amount_local,omitempty" gorm:"column:delivered_amount_local;type:bigint"`
+	ConversionSpreadBps  *int32 `json:"conversion_spread_bps,omitempty" gorm:"type:int"`
+	BorrowIndex          *int64 `json:"borrow_index,omitempty" gorm:"type:bigint"`
+	ServiceFeeUSD        *int64 `json:"service_fee_usd,omitempty" gorm:"type:bigint"`
+	ServiceFeeLocal      *int64 `json:"service_fee_local,omitempty" gorm:"type:bigint"`
+	PartnerFeeUSD        *int64 `json:"partner_fee_usd,omitempty" gorm:"type:bigint"`
+	PartnerFeeLocal      *int64 `json:"partner_fee_local,omitempty" gorm:"type:bigint"`
 
 	// Disclosed fees: fixed at creation and never rewritten, unlike the
 	// ServiceFee/PartnerFee pair above, which the ramp reports after
@@ -98,12 +105,16 @@ type Loan struct {
 	// FX audit fields capture the rate the loan was quoted at, the source
 	// label, the entry buffer percentage applied, and the user's originally
 	// requested local amount — used by the poller's drift detection.
-	// EntryRateBuffered already has EntryBufferPct deducted; it is not the raw
-	// provider rate, and will not match a live quote from EntryRateSource.
-	EntryRateBuffered    *float64 `json:"entry_rate_buffered,omitempty" gorm:"column:entry_rate_buffered;type:numeric(20,8)"`
-	EntryRateSource      *string  `json:"entry_rate_source,omitempty" gorm:"type:varchar(40)"`
-	EntryBufferPct       *float64 `json:"entry_buffer_pct,omitempty" gorm:"type:numeric(6,4)"`
-	RequestedLocalAmount *int64   `json:"requested_local_amount,omitempty" gorm:"type:bigint"`
+	// EntryRateBuffered already has EntryBufferBps deducted; it is not the
+	// raw provider rate, and will not match a live quote from EntryRateSource.
+	// Scaled by [RateScaleE8], as DisbursementRate — same caveat about the
+	// scale living in the comment rather than the name or column type.
+	EntryRateBuffered *int64  `json:"entry_rate_buffered,omitempty" gorm:"column:entry_rate_buffered;type:bigint"`
+	EntryRateSource   *string `json:"entry_rate_source,omitempty" gorm:"type:varchar(40)"`
+	// EntryBufferBps is a true percentage and so is held in basis points:
+	// 1 % is 100. Unlike the rates above, bps is the correct unit here.
+	EntryBufferBps       *int32 `json:"entry_buffer_bps,omitempty" gorm:"column:entry_buffer_bps;type:int"`
+	RequestedLocalAmount *int64 `json:"requested_local_amount,omitempty" gorm:"type:bigint"`
 
 	// SEP-24 withdraw memo returned on MG's transaction object; used to match
 	// refund inbound USDC back to the loan.
@@ -339,4 +350,45 @@ func (l *Loan) IsDisbursementTerminal() bool {
 	default:
 		return false
 	}
+}
+
+// RateScaleE8 is the fixed-point scale applied to stored FX rates.
+const RateScaleE8 = 100_000_000
+
+// RateE8 converts an FX rate to its stored form, rounding to the nearest unit
+// of the 10^8 scale. Returns nil for a non-positive rate so an unknown rate
+// stays NULL rather than being recorded as zero.
+func RateE8(rate float64) *int64 {
+	if rate <= 0 {
+		return nil
+	}
+	v := int64(math.Round(rate * RateScaleE8))
+	return &v
+}
+
+// RateFromE8 converts a stored rate back to its decimal form. Returns 0 when
+// the rate was never recorded.
+func RateFromE8(e8 *int64) float64 {
+	if e8 == nil {
+		return 0
+	}
+	return float64(*e8) / RateScaleE8
+}
+
+// BufferBps converts a buffer fraction (0.01 = 1 %) to basis points. Returns
+// nil for a non-positive fraction, leaving an unrecorded buffer NULL.
+func BufferBps(fraction float64) *int32 {
+	if fraction <= 0 {
+		return nil
+	}
+	v := int32(math.Round(fraction * 10_000))
+	return &v
+}
+
+// BufferFraction converts stored basis points back to a fraction.
+func BufferFraction(bps *int32) float64 {
+	if bps == nil {
+		return 0
+	}
+	return float64(*bps) / 10_000
 }

@@ -523,7 +523,7 @@ func toLoanResponse(loan *models.Loan) *LoanResponse {
 		RampStellarTxHash:      loan.RampStellarTxHash,
 		EntryRateBuffered:      loan.EntryRateBuffered,
 		EntryRateSource:        loan.EntryRateSource,
-		EntryBufferPct:         loan.EntryBufferPct,
+		EntryBufferBps:         loan.EntryBufferBps,
 		RequestedLocalAmount:   loan.RequestedLocalAmount,
 		RampWithdrawMemo:       loan.RampWithdrawMemo,
 		RampWithdrawMemoType:   loan.RampWithdrawMemoType,
