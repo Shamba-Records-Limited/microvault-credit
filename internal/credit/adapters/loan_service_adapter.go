@@ -20,6 +20,8 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
+	"github.com/samber/oops"
+
 	"github.com/Shamba-Records-Limited/microvault/pkg/urlshortener"
 )
 
@@ -51,6 +53,81 @@ type LoanServiceAdapter struct {
 	publicBaseURL  string                    // origin for SMS short-links; optional
 	shortener      urlshortener.Shortener    // optional; further shortens the SMS link
 	accountEnsurer AccountEnsurer            // ensures the child on-chain identity exists before lending
+
+	repayAnchor         *stellaranchor.Client // memo-scoped SEP-24 client for borrower cash deposits
+	repayTreasuryPubkey string                // deposit destination and memo derivation seed
+	repayWindow         time.Duration         // how long an opened deposit stays valid
+}
+
+// repaymentWindow is how long a borrower has to complete a cash deposit.
+//
+// Days, not minutes: committing in the webview and then walking to an agent
+// over the following days is the normal case, not an edge one.
+func (a *LoanServiceAdapter) repaymentWindow() time.Duration {
+	if a.repayWindow > 0 {
+		return a.repayWindow
+	}
+	return defaultRepaymentWindow
+}
+
+// SetRepaymentWindow overrides how long an opened deposit stays valid.
+func (a *LoanServiceAdapter) SetRepaymentWindow(d time.Duration) {
+	a.repayWindow = d
+}
+
+// defaultRepaymentWindow matches the deposit poller's expiry expectations.
+const defaultRepaymentWindow = 96 * time.Hour
+
+// repaymentStatusInitiated mirrors models.LoanRepaymentStatusInitiated. Named
+// here so this file does not import the model package for one constant.
+const repaymentStatusInitiated = "initiated"
+
+// sendRepaymentLink delivers the interactive URL by SMS.
+//
+// Best effort by design. The deposit exists and the quote is locked whether or
+// not the SMS lands; failing the whole initiation because a provider blipped
+// would strand a MoneyGram transaction the borrower could still complete.
+func (a *LoanServiceAdapter) sendRepaymentLink(ctx context.Context, loanRow *loan.LoanResponse, phoneNumber, interactiveURL string, payoffStroops int64) {
+	if a.loanNotifier == nil {
+		a.logger.Warn("no loan notifier wired; repayment link not delivered",
+			"loan_id", loanRow.ID)
+		return
+	}
+
+	// Same ladder as the cash-pickup link: dub first, and mint a /r/{code}
+	// bearer redirect only when dub produced nothing.
+	link, err := shortenedLink(ctx, a.shortener, interactiveURL, "")
+	if err != nil {
+		a.logger.Warn("shorten failed for repayment link; falling back",
+			"loan_id", loanRow.ID, "error", err)
+	}
+	if link == "" {
+		link = interactiveURL
+		if a.publicBaseURL != "" {
+			link = a.mintRedirectLink(ctx, loanRow.ID, interactiveURL)
+		}
+	}
+
+	// TODO(task 10): this borrows the cash-pickup template, which tells the
+	// borrower money is waiting for them. The repayment copy is the opposite
+	// message and is owned by the notification-template work.
+	n := contracts.LoanNotification{
+		LoanID:          loanRow.ID,
+		UserID:          loanRow.UserID,
+		PhoneNumber:     phoneNumber,
+		Amount:          payoffStroops,
+		DisplayAmount:   float64(payoffStroops) / 1e7,
+		DisplayCurrency: "USD",
+		InteractiveURL:  link,
+	}
+	if loanRow.LoanReference != nil {
+		n.LoanReference = *loanRow.LoanReference
+	}
+
+	if err := a.loanNotifier.NotifyLoanCashPickupInitiated(ctx, n); err != nil {
+		a.logger.Error("failed to send repayment link",
+			"loan_id", loanRow.ID, "error", err)
+	}
 }
 
 // AccountEnsurer guarantees a user's child Stellar account exists on-chain
@@ -114,6 +191,95 @@ func (a *LoanServiceAdapter) SetShortener(s urlshortener.Shortener) {
 // each vault borrow.
 func (a *LoanServiceAdapter) SetAccountEnsurer(e AccountEnsurer) {
 	a.accountEnsurer = e
+}
+
+// SetRepaymentAnchor attaches the memo-scoped SEP-24 client used to open
+// borrower cash deposits, and the treasury address those deposits credit.
+//
+// Post-construction like the other optional collaborators. Until it is set,
+// InitiateRepayment refuses rather than half-opening a repayment: the USSD
+// screen must not tell a borrower an SMS is coming when no deposit exists.
+func (a *LoanServiceAdapter) SetRepaymentAnchor(client *stellaranchor.Client, treasuryPubkey string) {
+	a.repayAnchor = client
+	a.repayTreasuryPubkey = treasuryPubkey
+}
+
+// InitiateRepayment locks the payoff and opens a MoneyGram cash deposit
+// against it.
+//
+// Two things are settled here and do not move afterwards. The payoff is frozen
+// in USDC, so borrow-index growth over the days the borrower takes to reach an
+// agent is absorbed by the protocol rather than charged to them. And the
+// deposit is created under the borrower's own SEP-10 memo, which is what
+// attributes the inbound USDC to them — MoneyGram picks the on-chain memo and
+// we cannot make it carry ours.
+func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phoneNumber string) (*ussd.RepaymentInitiation, error) {
+	errb := oops.In("repayment-cash-in").Tags("moneygram", "sep24").With("loan_id", loanID)
+
+	if a.repayAnchor == nil || a.repayTreasuryPubkey == "" {
+		return nil, errb.Code("anchor_not_wired").Errorf("repayment anchor is not configured")
+	}
+
+	quote, err := a.GetRepaymentQuote(ctx, loanID)
+	if err != nil {
+		return nil, errb.Code("quote_failed").Wrapf(err, "could not quote the payoff")
+	}
+	if quote.AmountUSDCStroops < ussd.MinMoneyGramDepositStroops {
+		return nil, errb.
+			Code("below_anchor_minimum").
+			With("payoff_stroops", quote.AmountUSDCStroops).
+			With("minimum_stroops", ussd.MinMoneyGramDepositStroops).
+			Errorf("payoff is below MoneyGram's deposit floor")
+	}
+
+	loanRow, err := a.loanSvc.GetByID(ctx, loanID)
+	if err != nil {
+		return nil, errb.Code("loan_load_failed").Wrapf(err, "could not load the loan")
+	}
+	if loanRow.RampChildAccountIndex == nil {
+		return nil, errb.Code("missing_account_index").Errorf("loan has no child account index to scope the SEP-10 session")
+	}
+
+	childMemo := stellaranchor.ChildAccountMemo(a.repayTreasuryPubkey, uint32(*loanRow.RampChildAccountIndex))
+
+	resp, err := a.repayAnchor.InitiateDeposit(ctx, childMemo, stellaranchor.DepositRequest{
+		AssetCode: "USDC",
+		Amount:    fmt.Sprintf("%.2f", float64(quote.AmountUSDCStroops)/1e7),
+		Lang:      "en",
+		// Destination is the treasury: child accounts hold no USDC trustline,
+		// and adding one per borrower would cost a sponsored reserve for an
+		// account that only ever passes funds through.
+		Account: a.repayTreasuryPubkey,
+	})
+	if err != nil {
+		return nil, errb.Code("deposit_init_failed").With("child_memo", childMemo).Wrapf(err, "anchor refused the deposit")
+	}
+
+	now := time.Now()
+	expiresAt := now.Add(a.repaymentWindow())
+	status := repaymentStatusInitiated
+	if _, err := a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
+		RepaymentStatus:        &status,
+		RepaymentPayoffStroops: &quote.AmountUSDCStroops,
+		RepaymentLockedAt:      &now,
+		RepaymentExpiresAt:     &expiresAt,
+		RepaymentMGTxID:        &resp.ID,
+	}); err != nil {
+		// The deposit exists at MoneyGram but we have no record of it. Loud:
+		// the borrower may pay against a transaction nothing will reconcile.
+		return nil, errb.
+			Code("state_write_failed").
+			With("mg_tx_id", resp.ID).
+			Wrapf(err, "deposit opened but the quote lock was not recorded")
+	}
+
+	a.sendRepaymentLink(ctx, loanRow, phoneNumber, resp.URL, quote.AmountUSDCStroops)
+
+	return &ussd.RepaymentInitiation{
+		LoanID:            loanID,
+		AmountUSDCStroops: quote.AmountUSDCStroops,
+		ExpiresAt:         expiresAt,
+	}, nil
 }
 
 // SetFXOrchestrator attaches a MoneyGram FXOrchestrator after construction.

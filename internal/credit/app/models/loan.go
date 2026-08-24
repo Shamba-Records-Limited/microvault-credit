@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	transactions "github.com/Shamba-Records-Limited/microvault/pkg/models"
 	users "github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
@@ -132,14 +131,47 @@ type Loan struct {
 	RampRefundShortfall *int64     `json:"ramp_refund_shortfall,omitempty" gorm:"type:bigint"`
 	RampRefundedAt      *time.Time `json:"ramp_refunded_at,omitempty"`
 
+	// Borrower-initiated repayment, tracked apart from both loans.status and
+	// the VaultRepay* pair above — those mean "a disbursement was unwound",
+	// which is the opposite movement of money.
+	//
+	// RepaymentStatus and loans.status are allowed to disagree for a window:
+	// once cash lands on the treasury the borrower is told immediately, while
+	// the treasury-to-vault leg may still be retrying. Status is disbursed and
+	// RepaymentStatus is funds_received throughout that window.
+	//
+	// RepaymentPayoffStroops is quote-locked at initiation, so borrow-index
+	// movement afterwards does not change what the borrower owes.
+	// RepaymentMGTxID is MoneyGram's transaction ID and the idempotency key
+	// for the whole rail; it is uniquely indexed.
+	RepaymentStatus        string     `json:"repayment_status" gorm:"type:varchar(20);not null;default:'none'"`
+	RepaymentPayoffStroops *int64     `json:"repayment_payoff_stroops,omitempty" gorm:"type:bigint"`
+	RepaymentLockedAt      *time.Time `json:"repayment_locked_at,omitempty" gorm:"type:timestamptz"`
+	RepaymentExpiresAt     *time.Time `json:"repayment_expires_at,omitempty" gorm:"type:timestamptz"`
+	RepaymentMGTxID        *string    `json:"repayment_mg_tx_id,omitempty" gorm:"column:repayment_mg_tx_id;type:varchar(100);uniqueIndex"`
+	RepaymentNextPollAt    *time.Time `json:"repayment_next_poll_at,omitempty" gorm:"type:timestamptz;index"`
+	// RepaymentReminderSentAt is written before the pre-expiry SMS, so a
+	// failing send is not retried on every poll tick. It records a
+	// notification rather than a movement of money, so nothing else on the
+	// row can stand in for it.
+	RepaymentReminderSentAt *time.Time `json:"repayment_reminder_sent_at,omitempty" gorm:"type:timestamptz"`
+	// RepaymentVaultTxHash is the treasury-to-vault repay_for transaction.
+	// Distinct from VaultRepayTxHash, which means the disbursement was
+	// unwound; a borrower settling their debt must not overwrite that.
+	RepaymentVaultTxHash *string `json:"repayment_vault_tx_hash,omitempty" gorm:"type:varchar(64)"`
+	// RepaymentVaultAttempts counts failed treasury-to-vault repay_for calls.
+	// Durable rather than in-memory: a restart must not reset it, or the
+	// escalation ceiling would never be reached. Doubles as the escalation
+	// marker, since crossing the ceiling happens exactly once.
+	RepaymentVaultAttempts int `json:"repayment_vault_attempts" gorm:"not null;default:0"`
+
 	CreatedAt time.Time      `json:"created_at" gorm:"autoCreateTime;not null"`
 	UpdatedAt time.Time      `json:"updated_at" gorm:"autoUpdateTime;not null"`
 	DeletedAt gorm.DeletedAt `json:"deleted_at" gorm:"index"`
 
-	User       *users.User    `gorm:"foreignKey:UserID"`
-	Account    *users.Account `gorm:"foreignKey:AccountID"`
-	Product    *LoanProduct   `gorm:"foreignKey:ProductID"`
-	Repayments []Repayment    `gorm:"foreignKey:LoanID"`
+	User    *users.User    `gorm:"foreignKey:UserID"`
+	Account *users.Account `gorm:"foreignKey:AccountID"`
+	Product *LoanProduct   `gorm:"foreignKey:ProductID"`
 }
 
 // TableName specifies the table name for Loan model
@@ -208,44 +240,6 @@ func (lp *LoanProduct) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-// Repayment represents a loan repayment schedule item
-type Repayment struct {
-	ID                string         `json:"id" gorm:"type:uuid;primaryKey"`
-	LoanID            string         `json:"loan_id" gorm:"type:uuid;not null;index"`
-	UserID            string         `json:"user_id" gorm:"type:uuid;not null;index"`
-	InstallmentNumber int            `json:"installment_number" gorm:"type:int;not null"`
-	DueDate           time.Time      `json:"due_date" gorm:"type:timestamp;not null;index"`
-	AmountDue         int64          `json:"amount_due" gorm:"type:bigint;not null"`
-	AmountPaid        int64          `json:"amount_paid" gorm:"type:bigint;not null;default:0"`
-	PaidAt            *time.Time     `json:"paid_at,omitempty" gorm:"type:timestamp"`
-	PaymentMethod     *string        `json:"payment_method,omitempty" gorm:"type:varchar(50)"`
-	Status            string         `json:"status" gorm:"type:varchar(20);not null;default:'pending';index"`
-	LateFee           int64          `json:"late_fee" gorm:"type:bigint;not null;default:0"`
-	TransactionID     *string        `json:"transaction_id,omitempty" gorm:"type:uuid;index"`
-	CreatedAt         time.Time      `json:"created_at" gorm:"autoCreateTime;not null"`
-	UpdatedAt         time.Time      `json:"updated_at" gorm:"autoUpdateTime;not null"`
-	DeletedAt         gorm.DeletedAt `json:"deleted_at" gorm:"index"`
-
-	Loan        Loan                      `gorm:"foreignKey:LoanID"`
-	User        *users.User               `gorm:"foreignKey:UserID"`
-	Transaction *transactions.Transaction `gorm:"foreignKey:TransactionID"`
-}
-
-// TableName specifies the table name for Repayment model
-func (Repayment) TableName() string {
-	return "repayments"
-}
-
-// BeforeCreate sets the ID before creating a new repayment
-func (r *Repayment) BeforeCreate(tx *gorm.DB) error {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return err
-	}
-	r.ID = id.String()
-	return nil
-}
-
 const (
 	// Interest type constants
 	InterestTypeSimple   = "simple"
@@ -265,13 +259,6 @@ const (
 	// did not default. Distinct from LoanStatusDefaulted, which is a
 	// borrower-side credit event.
 	LoanStatusOffRampFailed = "offramp_failed"
-
-	// Repayment Status
-	RepaymentStatusPending = "pending"
-	RepaymentStatusPaid    = "paid"
-	RepaymentStatusOverdue = "overdue"
-	RepaymentStatusPartial = "partial"
-	RepaymentStatusWaived  = "waived"
 
 	// Disbursement status vocabulary. No longer a column: these are derived
 	// from loans.status, ramp_refund_declared_at and ramp_pickup_ready_at, and
@@ -298,7 +285,46 @@ const (
 	// completed direct where USDC went to YC and no repay is owed).
 	VaultRepayStatusSuccess = "success"
 	VaultRepayStatusFailed  = "failed"
+
+	// Loan Repayment Status — the borrower paying their loan off, stored on
+	// loans.repayment_status. The LoanRepayment prefix is deliberate: it keeps
+	// these apart from VaultRepayStatus* above, which records a disbursement
+	// being unwound rather than a borrower settling a debt.
+	//
+	// The two live states are initiated (deposit open, borrower has not paid
+	// the agent yet) and funds_received (USDC on the treasury, vault leg not
+	// yet confirmed). Everything else is terminal.
+	LoanRepaymentStatusNone = "none"
+	// LoanRepaymentStatusInitiated means a deposit is open and the payoff
+	// quote is locked until repayment_expires_at.
+	LoanRepaymentStatusInitiated = "initiated"
+	// LoanRepaymentStatusFundsReceived means the cash reached the treasury as
+	// USDC. The borrower is told at this point, before the vault leg settles.
+	LoanRepaymentStatusFundsReceived = "funds_received"
+	// LoanRepaymentStatusSettled means the treasury-to-vault leg confirmed.
+	// This is the only state that flips loans.status to repaid.
+	LoanRepaymentStatusSettled = "settled"
+	// LoanRepaymentStatusExpired means the cash-in window elapsed without the
+	// borrower paying. The quote lock is released and the loan returns to its
+	// prior status; the borrower owes what they owed before.
+	LoanRepaymentStatusExpired = "expired"
+	// LoanRepaymentStatusFailed means the rail failed before funds moved. It
+	// is not used for a failed vault leg — funds already on the treasury stay
+	// at funds_received so reconciliation keeps retrying.
+	LoanRepaymentStatusFailed = "failed"
 )
+
+// IsRepaymentOpen reports whether a borrower repayment is in flight and owned
+// by the poller or the reconciliation loop. It matches the predicate of the
+// idx_loans_repayment_open index; keep the two in step.
+func (l *Loan) IsRepaymentOpen() bool {
+	switch l.RepaymentStatus {
+	case LoanRepaymentStatusInitiated, LoanRepaymentStatusFundsReceived:
+		return true
+	default:
+		return false
+	}
+}
 
 // DeriveDisbursementStatus reports where a loan's payout stands.
 //

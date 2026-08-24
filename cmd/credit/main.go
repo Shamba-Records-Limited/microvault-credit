@@ -420,7 +420,16 @@ func main() {
 	standardPreset := &ussd.StandardLoanMenuPreset{}
 	standardPreset.Initialize(menuRegistry)
 
-	ussdHandler := ussd.NewUSSDHandler(sessionManager, menuRegistry, userAdapter, loanAdapter, rateSvc, pinService, accountNotifier)
+	ussdHandler := ussd.NewUSSDHandler(ussd.HandlerDeps{
+		SessionManager:  sessionManager,
+		MenuRegistry:    menuRegistry,
+		UserService:     userAdapter,
+		LoanService:     loanAdapter,
+		RateService:     rateSvc,
+		PINService:      pinService,
+		AccountNotifier: accountNotifier,
+		RepayPaybill:    cfg.Mobile.RepayPaybill,
+	})
 	ussdService := ussd.NewUSSDService(ussdHandler)
 
 	// Register Africa's Talking USSD provider
@@ -457,17 +466,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("MoneyGram poller adapter construction failed: %v", err)
 	}
-	mgP, err := mgpoller.NewPoller(
-		mgClient,
-		mgPollerAdapter,                   // LoanFetcher + LoanRecorder
-		mgPollerAdapter,                   // LoanRecorder (same impl)
-		disbursementAdapter,               // DisbursementUpdater (reused from YC flow)
-		mgFundsTransfer,                   // funds-wallet sender for USDC to MG anchor
-		stellarrpc.NewVerifier(rpcClient), // confirms MG's refunds landed on-ledger
-		nil,                               // AlertService — log-only for now
-		mgPollerConfig(cfg),
-		logger,
-	)
+	mgP, err := mgpoller.NewPoller(mgpoller.PollerDeps{
+		Client:       mgClient,
+		Fetcher:      mgPollerAdapter,
+		Recorder:     mgPollerAdapter,
+		Disbursement: disbursementAdapter,               // reused from the YC flow
+		Treasury:     mgFundsTransfer,                   // funds-wallet sender for USDC to MG anchor
+		Verifier:     stellarrpc.NewVerifier(rpcClient), // confirms MG's refunds landed on-ledger
+		Alerts:       nil,                               // log-only for now
+		Config:       mgPollerConfig(cfg),
+		Logger:       logger,
+	})
 	if err != nil {
 		log.Fatalf("MoneyGram poller construction failed: %v", err)
 	}

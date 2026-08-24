@@ -31,6 +31,7 @@ var (
 	ErrFailedToGetLoanByExternalRef   = errors.New("failed to get loan by ramp external ref")
 	ErrFailedToGetLoanByShortCode     = errors.New("failed to get loan by ramp short code")
 	ErrFailedToGetActiveMGLoans       = errors.New("failed to get active MoneyGram loans")
+	ErrFailedToGetDueRepayments       = errors.New("failed to get due repayments")
 	ErrFailedToGetActiveByProvider    = errors.New("failed to get active loans by provider")
 )
 
@@ -53,6 +54,12 @@ type LoanRepository interface {
 	GetByRampExternalRef(ctx context.Context, ref string) (*models.Loan, error)
 	GetByRampShortCode(ctx context.Context, code string) (*models.Loan, error)
 	GetActiveMoneyGramLoans(ctx context.Context, limit int) ([]*models.Loan, error)
+
+	// GetDueRepayments returns loans with a borrower repayment in flight whose
+	// next poll is due. Preloads User and Account: the deposit driver needs the
+	// phone number for SMS and the child account's public key to attribute the
+	// vault repay.
+	GetDueRepayments(ctx context.Context, limit int) ([]*models.Loan, error)
 
 	// GetActiveByProvider returns loans where ramp_provider matches the given
 	// provider and the loan has not reached a terminal status. Used by
@@ -354,6 +361,39 @@ func (r *loanRepository) GetActiveMoneyGramLoans(ctx context.Context, limit int)
 	return loans, nil
 }
 
+// openRepaymentStatuses are the repayment states the deposit driver owns.
+// Matches the predicate of idx_loans_repayment_open; keep the two in step.
+var openRepaymentStatuses = []string{
+	models.LoanRepaymentStatusInitiated,
+	models.LoanRepaymentStatusFundsReceived,
+}
+
+// GetDueRepayments returns repayments the deposit driver should evaluate this
+// tick.
+//
+// A NULL repayment_next_poll_at counts as due. That is the state a repayment is
+// in the moment USSD initiates it, and waiting a backoff before the first look
+// would delay the whole rail for no reason.
+func (r *loanRepository) GetDueRepayments(ctx context.Context, limit int) ([]*models.Loan, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var loans []*models.Loan
+	result := r.db.WithContext(ctx).
+		Preload("User").
+		Preload("Account").
+		Where("repayment_status IN ? AND deleted_at IS NULL", openRepaymentStatuses).
+		Where("repayment_next_poll_at IS NULL OR repayment_next_poll_at <= ?", time.Now()).
+		Order("repayment_next_poll_at ASC NULLS FIRST").
+		Limit(limit).
+		Find(&loans)
+	if result.Error != nil {
+		log.Printf("GetDueRepayments: database error: %v", result.Error)
+		return nil, ErrFailedToGetDueRepayments
+	}
+	return loans, nil
+}
+
 // --- Update Operations ---
 
 // loanUpdateMap is the single source of truth for which loan columns may be
@@ -413,6 +453,16 @@ func loanUpdateMap(loan *models.Loan) map[string]interface{} {
 		"ramp_refund_amount":         loan.RampRefundAmount,
 		"ramp_refund_shortfall":      loan.RampRefundShortfall,
 		"ramp_refunded_at":           loan.RampRefundedAt,
+
+		"repayment_status":           loan.RepaymentStatus,
+		"repayment_payoff_stroops":   loan.RepaymentPayoffStroops,
+		"repayment_locked_at":        loan.RepaymentLockedAt,
+		"repayment_expires_at":       loan.RepaymentExpiresAt,
+		"repayment_mg_tx_id":         loan.RepaymentMGTxID,
+		"repayment_next_poll_at":     loan.RepaymentNextPollAt,
+		"repayment_reminder_sent_at": loan.RepaymentReminderSentAt,
+		"repayment_vault_tx_hash":    loan.RepaymentVaultTxHash,
+		"repayment_vault_attempts":   loan.RepaymentVaultAttempts,
 	}
 }
 

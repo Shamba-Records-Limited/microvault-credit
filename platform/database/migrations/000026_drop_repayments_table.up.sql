@@ -1,0 +1,15 @@
+-- Remove the installment-schedule subsystem: the repayments table and the
+-- services/repayment package that was its only writer.
+--
+-- The table modelled a per-installment schedule — installment_number, due_date,
+-- amount_due, late_fee — for a product that only ever issues single-bullet
+-- loans. Nothing wrote a row: the service had no callers, and the one job that
+-- read them iterated an empty placeholder slice.
+--
+-- Borrower repayment is tracked on loans.repayment_* (migration 000025), which
+-- is full-payoff and has no installments to schedule. Installments and partial
+-- repayment are out of scope for this phase; if they return they will be
+-- designed against the rails that exist rather than resurrected from this.
+--
+-- CASCADE drops the loans/users/transactions foreign keys pointing at it.
+DROP TABLE IF EXISTS repayments CASCADE;

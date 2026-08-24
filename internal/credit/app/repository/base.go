@@ -9,7 +9,6 @@ type Repositories struct {
 	// Credit repositories
 	Loan               LoanRepository
 	LoanProduct        LoanProductRepository
-	Repayment          RepaymentRepository
 	LoanLimitConfig    LoanLimitConfigRepository
 	GlobalLendingLimit GlobalLendingLimitRepository
 }
@@ -29,11 +28,6 @@ func NewRepositories(db *gorm.DB) (*Repositories, error) {
 		return nil, err
 	}
 
-	repayment, err := NewRepaymentRepository(db)
-	if err != nil {
-		return nil, err
-	}
-
 	loanLimitConfig, err := NewLoanLimitConfigRepository(db)
 	if err != nil {
 		return nil, err
@@ -48,7 +42,6 @@ func NewRepositories(db *gorm.DB) (*Repositories, error) {
 		// Credit repositories
 		Loan:               loan,
 		LoanProduct:        loanProduct,
-		Repayment:          repayment,
 		LoanLimitConfig:    loanLimitConfig,
 		GlobalLendingLimit: globalLendingLimit,
 	}, nil

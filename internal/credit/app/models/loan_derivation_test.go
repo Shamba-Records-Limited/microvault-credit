@@ -97,3 +97,29 @@ func TestIsDisbursementTerminal(t *testing.T) {
 		t.Error("a declared refund awaiting inbound USDC must stay in flight")
 	}
 }
+
+func TestIsRepaymentOpen(t *testing.T) {
+	open := map[string]bool{
+		LoanRepaymentStatusNone:          false,
+		LoanRepaymentStatusInitiated:     true,
+		LoanRepaymentStatusFundsReceived: true,
+		LoanRepaymentStatusSettled:       false,
+		LoanRepaymentStatusExpired:       false,
+		LoanRepaymentStatusFailed:        false,
+	}
+
+	for status, want := range open {
+		l := &Loan{RepaymentStatus: status}
+		if got := l.IsRepaymentOpen(); got != want {
+			t.Errorf("IsRepaymentOpen() with status %q = %v, want %v", status, got, want)
+		}
+	}
+}
+
+// The zero-value Loan predates migration 000025's default, and must not read as
+// an open repayment.
+func TestIsRepaymentOpen_ZeroValue(t *testing.T) {
+	if (&Loan{}).IsRepaymentOpen() {
+		t.Fatal("zero-value loan reports an open repayment")
+	}
+}
