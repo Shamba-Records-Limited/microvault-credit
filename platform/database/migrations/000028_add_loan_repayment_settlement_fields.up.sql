@@ -1,4 +1,4 @@
--- Two columns the deposit driver needs that migration 000025 did not
+-- Two columns the deposit driver needs that migration 000026 did not
 -- anticipate.
 --
 -- repayment_reminder_sent_at marks the single pre-expiry reminder SMS. It is
@@ -20,7 +20,7 @@ ALTER TABLE loans
 -- Replace idx_loans_repayment_open with an index that matches the query that
 -- actually exists.
 --
--- 000025 built idx_loans_repayment_open as (repayment_status,
+-- 000026 built idx_loans_repayment_open as (repayment_status,
 -- repayment_expires_at), on the assumption that expiry would be its own sweep.
 -- It is not: the deposit driver reads repayment_expires_at off the row it is
 -- already polling and expires it in place, so nothing ever filters or orders on
@@ -29,7 +29,7 @@ ALTER TABLE loans
 -- The one query that does exist asks for live repayments whose next poll is
 -- due, ordered by that time. NULLS FIRST is not cosmetic: a repayment that has
 -- never been polled has a NULL next_poll_at and is the most urgent row in the
--- set, which is also why the partial index from 000025 on
+-- set, which is also why the partial index from 000026 on
 -- repayment_next_poll_at IS NOT NULL could not serve it either. Matching the
 -- query's ordering lets one index satisfy both the filter and the sort.
 --

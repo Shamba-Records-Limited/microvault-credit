@@ -443,7 +443,7 @@ func loanUpdateMap(loan *models.Loan) map[string]interface{} {
 		"ramp_stellar_tx_hash":       loan.RampStellarTxHash,
 		"entry_rate_buffered":        loan.EntryRateBuffered,
 		"entry_rate_source":          loan.EntryRateSource,
-		"entry_buffer_pct":           loan.EntryBufferPct,
+		"entry_buffer_bps":           loan.EntryBufferBps,
 		"requested_local_amount":     loan.RequestedLocalAmount,
 		"ramp_withdraw_memo":         loan.RampWithdrawMemo,
 		"ramp_withdraw_memo_type":    loan.RampWithdrawMemoType,

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-# Determine microvault path (workspace context)
+# Determine microvault path - workspace context
 MICROVAULT_DIR="${MICROVAULT_DIR:-../microvault}"
 
 # Generate Swagger docs - search in microvault repo

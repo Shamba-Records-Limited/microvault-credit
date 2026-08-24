@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"time"
 
+	creditmodels "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
@@ -29,6 +30,26 @@ import (
 // when persisting entry_rate_used on the loan. 2% is the operating norm
 // inherited from the integration plan; override via FXConfig if needed.
 const DefaultFXBufferPct = 0.02
+
+// centStroops is one USDC cent in stroops. Cash-out anchors (MoneyGram,
+// mobile-money partners) quote and reconcile amounts at 2 decimal places, so
+// every cash-out principal is rounded to a whole cent before it is stored,
+// borrowed, or sent on-chain.
+const centStroops int64 = 100_000
+
+// roundToCentStroops rounds a stroop amount to the nearest whole USDC cent
+// (round-half-up), using integer math only. A positive sub-cent amount never
+// rounds down to zero.
+func roundToCentStroops(stroops int64) int64 {
+	if stroops <= 0 {
+		return stroops
+	}
+	rounded := (stroops + centStroops/2) / centStroops * centStroops
+	if rounded == 0 {
+		return centStroops
+	}
+	return rounded
+}
 
 // Compile-time check.
 var _ ussd.LoanService = (*LoanServiceAdapter)(nil)
@@ -87,7 +108,7 @@ const repaymentStatusInitiated = "initiated"
 // Best effort by design. The deposit exists and the quote is locked whether or
 // not the SMS lands; failing the whole initiation because a provider blipped
 // would strand a MoneyGram transaction the borrower could still complete.
-func (a *LoanServiceAdapter) sendRepaymentLink(ctx context.Context, loanRow *loan.LoanResponse, phoneNumber, interactiveURL string, payoffStroops int64) {
+func (a *LoanServiceAdapter) sendRepaymentLink(ctx context.Context, loanRow *loan.LoanResponse, phoneNumber, interactiveURL string, payoffStroops int64, expiresAt time.Time) {
 	if a.loanNotifier == nil {
 		a.logger.Warn("no loan notifier wired; repayment link not delivered",
 			"loan_id", loanRow.ID)
@@ -108,9 +129,6 @@ func (a *LoanServiceAdapter) sendRepaymentLink(ctx context.Context, loanRow *loa
 		}
 	}
 
-	// TODO(task 10): this borrows the cash-pickup template, which tells the
-	// borrower money is waiting for them. The repayment copy is the opposite
-	// message and is owned by the notification-template work.
 	n := contracts.LoanNotification{
 		LoanID:          loanRow.ID,
 		UserID:          loanRow.UserID,
@@ -119,12 +137,15 @@ func (a *LoanServiceAdapter) sendRepaymentLink(ctx context.Context, loanRow *loa
 		DisplayAmount:   float64(payoffStroops) / 1e7,
 		DisplayCurrency: "USD",
 		InteractiveURL:  link,
+		// The copy quotes how long the borrower has; without this it falls
+		// back to a vague "soon".
+		RepaymentExpiresAt: &expiresAt,
 	}
 	if loanRow.LoanReference != nil {
 		n.LoanReference = *loanRow.LoanReference
 	}
 
-	if err := a.loanNotifier.NotifyLoanCashPickupInitiated(ctx, n); err != nil {
+	if err := a.loanNotifier.NotifyRepaymentInitiated(ctx, n); err != nil {
 		a.logger.Error("failed to send repayment link",
 			"loan_id", loanRow.ID, "error", err)
 	}
@@ -273,7 +294,7 @@ func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phon
 			Wrapf(err, "deposit opened but the quote lock was not recorded")
 	}
 
-	a.sendRepaymentLink(ctx, loanRow, phoneNumber, resp.URL, quote.AmountUSDCStroops)
+	a.sendRepaymentLink(ctx, loanRow, phoneNumber, resp.URL, quote.AmountUSDCStroops, expiresAt)
 
 	return &ussd.RepaymentInitiation{
 		LoanID:            loanID,
@@ -392,6 +413,21 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 
 	// Amount validation is handled by the USSD handler against the loan product
 	// config (fiat-denominated limits). By this point the request is pre-approved.
+
+	// Round the principal to whole USDC cents. Anchors quote and expect 2
+	// decimal places; sending the raw 7-decimal FX conversion on-chain (e.g.
+	// 23.430178 when the anchor expects 23.43) leaves the withdrawal stuck.
+	// Rounding here — before Create, BorrowFromVault, and Initiate — keeps the
+	// stored principal, the vault borrow, and the anchor's expected amount
+	// identical.
+	if rounded := roundToCentStroops(req.PrincipalAmount); rounded != req.PrincipalAmount {
+		a.logger.Info("principal rounded to whole cents",
+			"user_id", req.UserID,
+			"original_stroops", req.PrincipalAmount,
+			"rounded_stroops", rounded,
+		)
+		req.PrincipalAmount = rounded
+	}
 
 	payoutMethod := req.PayoutMethod
 	if payoutMethod == "" {
@@ -844,9 +880,8 @@ func (a *LoanServiceAdapter) persistEntryRate(
 ) {
 	req := loan.UpdateLoanRequest{}
 	any := false
-	if entryRate > 0 {
-		v := entryRate
-		req.EntryRateBuffered = &v
+	if e8 := creditmodels.RateE8(entryRate); e8 != nil {
+		req.EntryRateBuffered = e8
 		any = true
 	}
 	if entryRateSource != "" {
@@ -854,9 +889,8 @@ func (a *LoanServiceAdapter) persistEntryRate(
 		req.EntryRateSource = &v
 		any = true
 	}
-	if entryBufferPct > 0 {
-		v := entryBufferPct
-		req.EntryBufferPct = &v
+	if bps := creditmodels.BufferBps(entryBufferPct); bps != nil {
+		req.EntryBufferBps = bps
 		any = true
 	}
 	if localAmountCents > 0 {
@@ -1076,9 +1110,8 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 		}
 
 		// Persist conversion data when local currency info is available.
-		if req.ConversionRate > 0 {
-			rate := req.ConversionRate
-			updateReq.DisbursementRate = &rate
+		if e8 := creditmodels.RateE8(req.ConversionRate); e8 != nil {
+			updateReq.DisbursementRate = e8
 		}
 
 		if _, err := a.loanSvc.Update(ctx, loanID, updateReq); err != nil {

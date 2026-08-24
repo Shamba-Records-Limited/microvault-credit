@@ -1,6 +1,6 @@
 DROP INDEX IF EXISTS idx_loans_repayment_due;
 
--- Restore the two indexes 000025 created.
+-- Restore the two indexes 000026 created.
 CREATE INDEX IF NOT EXISTS idx_loans_repayment_open
     ON loans (repayment_status, repayment_expires_at)
     WHERE repayment_status IN ('initiated', 'funds_received');

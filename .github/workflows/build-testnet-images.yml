@@ -3,6 +3,15 @@ name: Build & Deploy Testnet
 on:
   push:
     branches: ["testnet"]
+    paths-ignore:
+      - "web/**"
+      - "docs/**"
+      - "**.md"
+      - "LICENSE"
+      - "cliff.toml"
+      - ".gitleaks.toml"
+      - ".pre-commit-config.yaml"
+      - ".github/dependabot.yml"
   workflow_dispatch:
   schedule:
     - cron: "0 2 * * *"
@@ -41,7 +50,7 @@ jobs:
           path: microvault
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: microvault-credit/go.mod
           cache: false
@@ -68,7 +77,7 @@ jobs:
           echo "credit_image=${REGISTRY}/${IMAGE_NAME}/credit:testnet-${sha7}" >> "$GITHUB_OUTPUT"
           echo "migrate_image=${REGISTRY}/${IMAGE_NAME}/migrate:testnet-${sha7}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Log in to Container Registry
         uses: docker/login-action@v4
@@ -140,13 +149,20 @@ jobs:
           COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
           COOLIFY_SERVICE_UUID: ${{ vars.COOLIFY_SERVICE_UUID }}
         run: |
+          url="$COOLIFY_BASE_URL/api/v1/services/$COOLIFY_SERVICE_UUID/envs"
           for pair in "CREDIT_IMAGE:$CREDIT_IMAGE" "MIGRATE_IMAGE:$MIGRATE_IMAGE"; do
             key="${pair%%:*}"
             value="${pair#*:}"
-            curl --fail --silent --show-error -X PATCH \
-              -H "Authorization: Bearer $COOLIFY_TOKEN" \
-              --json "$(jq -nc --arg k "$key" --arg v "$value" '{key:$k,value:$v}')" \
-              "$COOLIFY_BASE_URL/api/v1/services/$COOLIFY_SERVICE_UUID/envs"
+            payload="$(jq -nc --arg k "$key" --arg v "$value" '{key:$k,value:$v}')"
+            code="$(curl --silent --output /dev/null --write-out '%{http_code}' -X PATCH \
+              -H "Authorization: Bearer $COOLIFY_TOKEN" --json "$payload" "$url")"
+            if [ "$code" = "404" ]; then
+              curl --fail --silent --show-error -X POST \
+                -H "Authorization: Bearer $COOLIFY_TOKEN" --json "$payload" "$url"
+            elif [ "$code" -ge 400 ]; then
+              echo "PATCH $key failed with HTTP $code" >&2
+              exit 1
+            fi
           done
 
       - name: Trigger Coolify deploy

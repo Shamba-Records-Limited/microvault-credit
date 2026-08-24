@@ -6,7 +6,7 @@
 -- loans. Nothing wrote a row: the service had no callers, and the one job that
 -- read them iterated an empty placeholder slice.
 --
--- Borrower repayment is tracked on loans.repayment_* (migration 000025), which
+-- Borrower repayment is tracked on loans.repayment_* (migration 000026), which
 -- is full-payoff and has no installments to schedule. Installments and partial
 -- repayment are out of scope for this phase; if they return they will be
 -- designed against the rails that exist rather than resurrected from this.

@@ -15,6 +15,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/adapters"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/handlers"
+	creditnotifications "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/pkg/notifications"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/pkg/ratelimit"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
@@ -109,6 +110,15 @@ func main() {
 		log.Fatalf("Failed to initialize core repositories: %v", err)
 	}
 
+	// On testnet the DB may be rebuilt while on-chain child accounts persist;
+	// floor the derivation-index sequence so fresh rows never collide with them.
+	if cfg.Stellar.AccountIndexBase > 0 {
+		if err := coreRepos.Account.EnsureAccountIndexFloor(context.Background(), cfg.Stellar.AccountIndexBase); err != nil {
+			log.Fatalf("Failed to floor account index sequence: %v", err)
+		}
+		log.Printf("Account index sequence floored at %d", cfg.Stellar.AccountIndexBase)
+	}
+
 	// ---- 5. Loan service ----
 	loanSvc := loan.NewService(repos.Loan)
 
@@ -133,10 +143,11 @@ func main() {
 	)
 	smsService.RegisterProvider("africastalking", atSMSAdapter)
 
-	// Resolve SMS provider and create notifier + loan notifier.
+	// Resolve SMS provider and create the transport. The loan and account
+	// notifiers are built later, once userSvc exists to back the language
+	// resolver they take at construction.
 	atProvider, _ := smsService.GetProvider("africastalking")
 	notifier := mvnotifications.NewSMSNotifier(atProvider, cfg.Mobile.AfricasTalking.ResolveSenderID())
-	loanNotifier := mvnotifications.NewSMSLoanNotifier(notifier, nil)
 
 	// ---- 8. YellowCard adapter ----
 	ycAdapter := yellowcard.NewYellowcardAdapter(
@@ -338,6 +349,25 @@ func main() {
 		log.Fatalf("Failed to create user service adapter: %v", err)
 	}
 
+	// ---- 10c2. SMS language resolver + loan notifier ----
+	// Resolve SMS language from the recipient's stored preference so every
+	// notification (including background poller/job sends) is localized.
+	langResolver := func(ctx context.Context, phone string) string {
+		u, err := userSvc.GetByMobileNumber(ctx, phone)
+		if err != nil || u == nil {
+			return ""
+		}
+		return u.PreferredLanguage
+	}
+
+	loanNotifier, err := mvnotifications.NewSMSLoanNotifier(notifier,
+		mvnotifications.WithLoanLanguageResolver(langResolver),
+		mvnotifications.WithLoanTemplateSet(creditnotifications.LoanOverrides(cfg.Mobile.USSDDialString)),
+	)
+	if err != nil {
+		log.Fatalf("Failed to create loan notifier: %v", err)
+	}
+
 	// ---- 10d. Loan product service ----
 	loanProductSvc := loanproduct.NewService(repos.LoanProduct)
 
@@ -356,6 +386,13 @@ func main() {
 	}
 	loanAdapter.SetPublicBaseURL(cfg.Server.PublicBaseURL)
 	loanAdapter.SetAccountEnsurer(userAdapter)
+	// Opens borrower cash deposits. The treasury is the destination: child
+	// accounts carry no USDC trustline, so routing through one would cost a
+	// sponsored reserve per borrower for an account that only passes funds on.
+	loanAdapter.SetRepaymentAnchor(mgClient.Client, cfg.Stellar.TreasuryPublicKey)
+	if cfg.Payments.MoneyGram.RepaymentWindow > 0 {
+		loanAdapter.SetRepaymentWindow(cfg.Payments.MoneyGram.RepaymentWindow)
+	}
 	var linkShortener urlshortener.Shortener
 	if cfg.Shortener.Enabled() {
 		linkShortener = urlshortener.NewDub(urlshortener.DubOptions{
@@ -395,22 +432,16 @@ func main() {
 	rateSvc := adapters.NewRateServiceAdapter(fxOrch)
 
 	// ---- 12c. Account notifier + PIN service ----
-	accountNotifier := mvnotifications.NewSMSAccountNotifier(notifier, nil)
+	accountNotifier, err := mvnotifications.NewSMSAccountNotifier(notifier,
+		mvnotifications.WithAccountLanguageResolver(langResolver),
+		mvnotifications.WithAccountTemplateSet(creditnotifications.AccountOverrides(cfg.Mobile.USSDDialString)),
+	)
+	if err != nil {
+		log.Fatalf("Failed to create account notifier: %v", err)
+	}
 	pinRepo := pin.NewSecurityQuestionRepository(db)
 	pinService := pin.NewService(coreRepos.User, pinRepo, accountNotifier, cfg.Auth.PINLockoutDuration)
 	log.Println("PIN service initialized")
-
-	// Resolve SMS language from the recipient's stored preference so every
-	// notification (including background poller/job sends) is localized.
-	langResolver := func(ctx context.Context, phone string) string {
-		u, err := userSvc.GetByMobileNumber(ctx, phone)
-		if err != nil || u == nil {
-			return ""
-		}
-		return u.PreferredLanguage
-	}
-	loanNotifier.SetLanguageResolver(langResolver)
-	accountNotifier.SetLanguageResolver(langResolver)
 
 	// ---- 13. USSD stack ----
 	sessionManager := ussd.NewSessionManager(redisClient, cfg.Mobile.SessionTimeout)
@@ -428,6 +459,7 @@ func main() {
 		RateService:     rateSvc,
 		PINService:      pinService,
 		AccountNotifier: accountNotifier,
+		LoanNotifier:    loanNotifier,
 		RepayPaybill:    cfg.Mobile.RepayPaybill,
 	})
 	ussdService := ussd.NewUSSDService(ussdHandler)
@@ -444,7 +476,7 @@ func main() {
 
 	// ---- 14. Webhook service + controller ----
 	webhookSvc := webhook.NewService(disbursementAdapter, nil, disbursementAdapter, ycAdapter)
-	webhookCtrl := controllers.NewWebhookController(webhookSvc, cfg.Payments.YellowCard.WebhookSecret)
+	webhookCtrl := controllers.NewWebhookController(webhookSvc, cfg.Payments.YellowCard.PublicKey, cfg.Payments.YellowCard.SecretKey)
 
 	// ---- 15. Pollers ----
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())
@@ -482,6 +514,42 @@ func main() {
 	}
 	go mgP.Start(pollerCtx)
 	log.Println("MoneyGram poller started")
+
+	// MoneyGram deposit driver — the borrower repayment cash-in rail.
+	//
+	// Second Driver on the same runner shape as the withdrawal poller above,
+	// but on its own cadence: a deposit waits on the borrower rather than on
+	// MoneyGram, so it is scheduled from repayment_next_poll_at rather than
+	// polled hard.
+	depositAdapter, err := adapters.NewMoneyGramDepositAdapter(adapters.DepositAdapterDeps{
+		Repo:       repos.Loan,
+		LoanSvc:    loanSvc,
+		StellarSvc: stellarSvc,
+		TxnSvc:     txnSvc,
+		Logger:     logger,
+	})
+	if err != nil {
+		log.Fatalf("MoneyGram deposit adapter construction failed: %v", err)
+	}
+	repaymentNotifier, err := adapters.NewRepaymentNotifierAdapter(repos.Loan, loanNotifier, logger)
+	if err != nil {
+		log.Fatalf("Repayment notifier construction failed: %v", err)
+	}
+	depositDriver, err := mgpoller.NewDepositDriver(mgpoller.DepositDriverDeps{
+		Client:   mgClient,
+		Fetcher:  depositAdapter,
+		Recorder: depositAdapter,
+		Vault:    depositAdapter,
+		Notifier: repaymentNotifier,
+		Alerts:   nil, // log-only for now, same as the withdrawal side
+		Config:   mgPollerConfig(cfg),
+		Logger:   logger,
+	})
+	if err != nil {
+		log.Fatalf("MoneyGram deposit driver construction failed: %v", err)
+	}
+	go depositDriver.Start(pollerCtx)
+	log.Println("MoneyGram deposit driver started")
 
 	// ---- 16. Fiber app + middleware + routes ----
 	app := fiber.New()
@@ -601,6 +669,17 @@ func mgPollerConfig(cfg *config.Config) mgpoller.PollerConfig {
 		c.RefundDestination = addr
 	} else {
 		log.Printf("MoneyGram funds address unresolved, refund destination falls back to the SEP-10 account: %v", err)
+	}
+	// Borrower repayment cash-in. Left at DefaultConfig's values when unset,
+	// rather than config restating the defaults.
+	if mg.RepaymentPollInterval > 0 {
+		c.DepositPollInterval = mg.RepaymentPollInterval
+	}
+	if mg.RepaymentReminderBefore > 0 {
+		c.DepositReminderBefore = mg.RepaymentReminderBefore
+	}
+	if mg.RepaymentVaultMaxAttempt > 0 {
+		c.DepositVaultMaxAttempts = mg.RepaymentVaultMaxAttempt
 	}
 	c.RefundAssetIssuer = cfg.Stellar.USDCIssuer
 	return c
