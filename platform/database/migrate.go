@@ -1,14 +1,16 @@
 package database
 
 import (
+	"errors"
 	"fmt"
 	"log"
 
-	"github.com/Shamba-Records-Limited/microvault/pkg/config"
-	microvaultdb "github.com/Shamba-Records-Limited/microvault/platform/database"
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
+
+	"github.com/Shamba-Records-Limited/microvault/pkg/config"
+	microvaultdb "github.com/Shamba-Records-Limited/microvault/platform/database"
 )
 
 // RunMigrations executes all pending database migrations (core + credit)
@@ -59,11 +61,11 @@ func runCreditMigrations(cfg *config.PostgresConfig) error {
 		}
 	}()
 
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
 
-	if err == migrate.ErrNoChange {
+	if errors.Is(err, migrate.ErrNoChange) {
 		log.Println("Credit migrations: no changes to apply")
 	} else {
 		log.Println("Credit migrations: applied successfully")
@@ -103,11 +105,11 @@ func RollbackMigration(cfg *config.PostgresConfig) error {
 		}
 	}()
 
-	if err := m.Steps(-1); err != nil && err != migrate.ErrNoChange {
+	if err := m.Steps(-1); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("failed to rollback migration: %w", err)
 	}
 
-	if err == migrate.ErrNoChange {
+	if errors.Is(err, migrate.ErrNoChange) {
 		log.Println("Credit rollback: no migrations to rollback")
 	} else {
 		log.Println("Credit rollback: completed successfully")
@@ -148,7 +150,7 @@ func MigrationVersion(cfg *config.PostgresConfig) (uint, bool, error) {
 	}()
 
 	version, dirty, err := m.Version()
-	if err != nil && err != migrate.ErrNilVersion {
+	if err != nil && !errors.Is(err, migrate.ErrNilVersion) {
 		return 0, false, fmt.Errorf("failed to get migration version: %w", err)
 	}
 

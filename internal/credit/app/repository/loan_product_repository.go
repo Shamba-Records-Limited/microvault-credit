@@ -5,9 +5,10 @@ import (
 	"errors"
 	"log"
 
+	"gorm.io/gorm"
+
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
-	"gorm.io/gorm"
 )
 
 // Common Errors for LoanProductRepository

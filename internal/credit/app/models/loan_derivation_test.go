@@ -80,8 +80,10 @@ func TestPickupReadyGuardsTheSMSExactlyOnce(t *testing.T) {
 }
 
 func TestIsDisbursementTerminal(t *testing.T) {
-	terminal := []string{LoanStatusDisbursed, LoanStatusOffRampFailed,
-		LoanStatusCancelled, LoanStatusRepaid, LoanStatusDefaulted}
+	terminal := []string{
+		LoanStatusDisbursed, LoanStatusOffRampFailed,
+		LoanStatusCancelled, LoanStatusRepaid, LoanStatusDefaulted,
+	}
 	for _, s := range terminal {
 		if l := (&Loan{Status: s}); !l.IsDisbursementTerminal() {
 			t.Errorf("%q should be terminal", s)

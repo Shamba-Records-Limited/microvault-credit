@@ -8,6 +8,10 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/samber/oops"
+
+	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
+
 	creditmodels "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
@@ -21,7 +25,6 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
-	"github.com/samber/oops"
 
 	"github.com/Shamba-Records-Limited/microvault/pkg/urlshortener"
 )
@@ -89,11 +92,6 @@ func (a *LoanServiceAdapter) repaymentWindow() time.Duration {
 		return a.repayWindow
 	}
 	return defaultRepaymentWindow
-}
-
-// SetRepaymentWindow overrides how long an opened deposit stays valid.
-func (a *LoanServiceAdapter) SetRepaymentWindow(d time.Duration) {
-	a.repayWindow = d
 }
 
 // defaultRepaymentWindow matches the deposit poller's expiry expectations.
@@ -194,37 +192,6 @@ func (a *LoanServiceAdapter) notifyAsync(label, loanID string, send func(ctx con
 	}()
 }
 
-// SetPublicBaseURL sets the externally-reachable origin used to build the
-// cash-pickup SMS short-link (e.g. https://microvault.outray.app). When empty,
-// the raw MoneyGram interactive URL is sent instead.
-func (a *LoanServiceAdapter) SetPublicBaseURL(url string) {
-	a.publicBaseURL = url
-}
-
-// SetShortener injects an external URL shortener applied to the final
-// cash-pickup SMS link. When publicBaseURL is set it shortens the /r/{code}
-// redirect (no token exposed); otherwise it shortens the raw MoneyGram URL.
-func (a *LoanServiceAdapter) SetShortener(s urlshortener.Shortener) {
-	a.shortener = s
-}
-
-// SetAccountEnsurer injects the on-chain account guarantor consulted before
-// each vault borrow.
-func (a *LoanServiceAdapter) SetAccountEnsurer(e AccountEnsurer) {
-	a.accountEnsurer = e
-}
-
-// SetRepaymentAnchor attaches the memo-scoped SEP-24 client used to open
-// borrower cash deposits, and the treasury address those deposits credit.
-//
-// Post-construction like the other optional collaborators. Until it is set,
-// InitiateRepayment refuses rather than half-opening a repayment: the USSD
-// screen must not tell a borrower an SMS is coming when no deposit exists.
-func (a *LoanServiceAdapter) SetRepaymentAnchor(client *stellaranchor.Client, treasuryPubkey string) {
-	a.repayAnchor = client
-	a.repayTreasuryPubkey = treasuryPubkey
-}
-
 // InitiateRepayment locks the payoff and opens a MoneyGram cash deposit
 // against it.
 //
@@ -235,15 +202,15 @@ func (a *LoanServiceAdapter) SetRepaymentAnchor(client *stellaranchor.Client, tr
 // attributes the inbound USDC to them — MoneyGram picks the on-chain memo and
 // we cannot make it carry ours.
 func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phoneNumber string) (*ussd.RepaymentInitiation, error) {
-	errb := oops.In("repayment-cash-in").Tags("moneygram", "sep24").With("loan_id", loanID)
+	errb := oops.In(pkgErrors.DomainRepaymentCashIn).Tags("moneygram", "sep24").With(pkgErrors.AttrLoanID, loanID)
 
 	if a.repayAnchor == nil || a.repayTreasuryPubkey == "" {
-		return nil, errb.Code("anchor_not_wired").Errorf("repayment anchor is not configured")
+		return nil, errb.Code(pkgErrors.CodeAnchorNotWired).Errorf("repayment anchor is not configured")
 	}
 
 	quote, err := a.GetRepaymentQuote(ctx, loanID)
 	if err != nil {
-		return nil, errb.Code("quote_failed").Wrapf(err, "could not quote the payoff")
+		return nil, errb.Code(pkgErrors.CodeQuoteFailed).Wrapf(err, "could not quote the payoff")
 	}
 	if quote.AmountUSDCStroops < ussd.MinMoneyGramDepositStroops {
 		return nil, errb.
@@ -255,10 +222,10 @@ func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phon
 
 	loanRow, err := a.loanSvc.GetByID(ctx, loanID)
 	if err != nil {
-		return nil, errb.Code("loan_load_failed").Wrapf(err, "could not load the loan")
+		return nil, errb.Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not load the loan")
 	}
 	if loanRow.RampChildAccountIndex == nil {
-		return nil, errb.Code("missing_account_index").Errorf("loan has no child account index to scope the SEP-10 session")
+		return nil, errb.Code(pkgErrors.CodeMissingAccountIndex).Errorf("loan has no child account index to scope the SEP-10 session")
 	}
 
 	childMemo := stellaranchor.ChildAccountMemo(a.repayTreasuryPubkey, uint32(*loanRow.RampChildAccountIndex))
@@ -273,7 +240,7 @@ func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phon
 		Account: a.repayTreasuryPubkey,
 	})
 	if err != nil {
-		return nil, errb.Code("deposit_init_failed").With("child_memo", childMemo).Wrapf(err, "anchor refused the deposit")
+		return nil, errb.Code(pkgErrors.CodeDepositInitFailed).With("child_memo", childMemo).Wrapf(err, "anchor refused the deposit")
 	}
 
 	now := time.Now()
@@ -303,14 +270,6 @@ func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phon
 	}, nil
 }
 
-// SetFXOrchestrator attaches a MoneyGram FXOrchestrator after construction.
-// When set, the orchestrator's cascade (MG primary to YC fallback to stale
-// cache) is preferred over the per-provider Quoter for entry-rate quoting.
-// Pass nil to detach.
-func (a *LoanServiceAdapter) SetFXOrchestrator(orch *moneygram.FXOrchestrator) {
-	a.fxOrch = orch
-}
-
 // FXBufferPct reports the buffer applied on the provider-Quoter path, after
 // defaulting. Zero means entry rates are persisted unbuffered.
 func (a *LoanServiceAdapter) FXBufferPct() float64 { return a.fxBuffer.Pct() }
@@ -332,17 +291,43 @@ type FXConfig struct {
 //
 // It loads the highest-priority active loan product from the database and
 // caches its configuration. Returns an error if no active product is found.
-func NewLoanServiceAdapter(
-	ctx context.Context,
-	loanSvc loan.Service,
-	productSvc loanproduct.Service,
-	stellarSvc stellar.Service,
-	offRamps *offramp.Registry,
-	loanNotifier contracts.LoanNotifier,
-	txnSvc transaction.Service,
-	fxCfg FXConfig,
-	logger *slog.Logger,
-) (*LoanServiceAdapter, error) {
+// LoanAdapterDeps are the collaborators and settings the loan adapter needs.
+//
+// The optional members used to be applied through Set* methods after
+// construction. They are here instead because a half-built adapter is
+// reachable in the window between New and the last setter, and because a
+// dependency container resolves constructors rather than mutation — a service
+// that is only correct after six follow-up calls cannot be provided by one.
+type LoanAdapterDeps struct {
+	LoanSvc      loan.Service
+	ProductSvc   loanproduct.Service
+	StellarSvc   stellar.Service
+	OffRamps     *offramp.Registry
+	LoanNotifier contracts.LoanNotifier
+	TxnSvc       transaction.Service
+	FXConfig     FXConfig
+	Logger       *slog.Logger
+
+	// Optional.
+	FXOrchestrator  *moneygram.FXOrchestrator
+	PublicBaseURL   string
+	Shortener       urlshortener.Shortener
+	AccountEnsurer  AccountEnsurer
+	RepaymentAnchor *stellaranchor.Client
+	// TreasuryAddress is where borrower cash deposits are credited. Required
+	// alongside RepaymentAnchor; either alone leaves repayment unavailable.
+	TreasuryAddress string
+	RepaymentWindow time.Duration
+}
+
+func NewLoanServiceAdapter(ctx context.Context, deps LoanAdapterDeps) (*LoanServiceAdapter, error) {
+	loanSvc, productSvc, stellarSvc := deps.LoanSvc, deps.ProductSvc, deps.StellarSvc
+	offRamps, loanNotifier, txnSvc := deps.OffRamps, deps.LoanNotifier, deps.TxnSvc
+	fxCfg, logger := deps.FXConfig, deps.Logger
+
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if offRamps == nil {
 		return nil, fmt.Errorf("offramp registry is required")
 	}
@@ -396,6 +381,14 @@ func NewLoanServiceAdapter(
 		productConfig: cfg,
 		fxBuffer:      offramp.NewRateBuffer(fxCfg.BufferPct, DefaultFXBufferPct),
 		dedupe:        newDedupeGate(60 * time.Second),
+
+		fxOrch:              deps.FXOrchestrator,
+		publicBaseURL:       deps.PublicBaseURL,
+		shortener:           deps.Shortener,
+		accountEnsurer:      deps.AccountEnsurer,
+		repayAnchor:         deps.RepaymentAnchor,
+		repayTreasuryPubkey: deps.TreasuryAddress,
+		repayWindow:         deps.RepaymentWindow,
 	}, nil
 }
 

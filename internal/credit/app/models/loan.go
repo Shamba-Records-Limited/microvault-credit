@@ -5,10 +5,11 @@ import (
 	"math"
 	"time"
 
-	users "github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+
+	users "github.com/Shamba-Records-Limited/microvault/pkg/models"
 )
 
 // Loan represents a loan record

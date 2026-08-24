@@ -6,6 +6,8 @@ import (
 
 	"github.com/samber/oops"
 
+	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
+
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
@@ -90,7 +92,7 @@ func (a *RepaymentNotifierAdapter) send(loanID, kind string, notify func(context
 
 	loanRow, err := a.repo.GetByID(ctx, loanID)
 	if err != nil {
-		return errb.Code("loan_load_failed").Wrapf(err, "could not load the loan")
+		return errb.Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not load the loan")
 	}
 
 	n := contracts.LoanNotification{
@@ -113,11 +115,11 @@ func (a *RepaymentNotifierAdapter) send(loanID, kind string, notify func(context
 	// No phone, no SMS. Worth its own error rather than a silent success: a
 	// borrower who is never told their repayment landed will call support.
 	if n.PhoneNumber == "" {
-		return errb.Code("missing_phone_number").Errorf("loan has no phone number to notify")
+		return errb.Code(pkgErrors.CodeMissingPhoneNumber).Errorf("loan has no phone number to notify")
 	}
 
 	if err := notify(ctx, n); err != nil {
-		return errb.Code("send_failed").Wrapf(err, "could not send the notification")
+		return errb.Code(pkgErrors.CodeSendFailed).Wrapf(err, "could not send the notification")
 	}
 	return nil
 }

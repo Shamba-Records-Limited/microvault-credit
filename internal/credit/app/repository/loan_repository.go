@@ -7,10 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
-	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
+	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
 )
 
 // Common errors for LoanRepository

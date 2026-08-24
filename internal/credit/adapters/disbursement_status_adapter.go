@@ -37,13 +37,6 @@ type DisbursementStatusAdapter struct {
 	logger        *slog.Logger
 }
 
-// SetShortener injects an external URL shortener applied to the cash-pickup
-// ready SMS support link. It shortens the /r/{code} redirect (no token
-// exposed), mirroring LoanServiceAdapter for the interactive link.
-func (a *DisbursementStatusAdapter) SetShortener(s urlshortener.Shortener) {
-	a.shortener = s
-}
-
 // notifyAsync sends a borrower notification off the caller's thread.
 //
 // These methods are driven by the MoneyGram poller, whose poll() loop walks
@@ -70,13 +63,6 @@ func (a *DisbursementStatusAdapter) notifyAsync(label, loanID string, send func(
 	}()
 }
 
-// SetPublicBaseURL sets the externally-reachable origin used to build the
-// /r/{code} support link carried in the cash-pickup ready SMS. When unset the
-// SMS omits the link rather than sending a bare path.
-func (a *DisbursementStatusAdapter) SetPublicBaseURL(url string) {
-	a.publicBaseURL = url
-}
-
 // moreInfoLink returns the borrower-facing support link, or "" when the loan
 // has no code yet or no origin is configured.
 func (a *DisbursementStatusAdapter) moreInfoLink(loan *models.Loan) string {
@@ -87,19 +73,35 @@ func (a *DisbursementStatusAdapter) moreInfoLink(loan *models.Loan) string {
 }
 
 // NewDisbursementStatusAdapter creates a new DisbursementStatusAdapter.
-func NewDisbursementStatusAdapter(
-	repo repository.LoanRepository,
-	loanNotifier contracts.LoanNotifier,
-	txnSvc transaction.Service,
-	stellarSvc stellar.Service,
-	logger *slog.Logger,
-) *DisbursementStatusAdapter {
+// DisbursementAdapterDeps are the collaborators and settings the adapter
+// needs. PublicBaseURL and Shortener were previously applied through Set*
+// methods after construction; they are constructor arguments now so the
+// adapter is never observable half-built.
+type DisbursementAdapterDeps struct {
+	Repo         repository.LoanRepository
+	LoanNotifier contracts.LoanNotifier
+	TxnSvc       transaction.Service
+	StellarSvc   stellar.Service
+	Logger       *slog.Logger
+
+	// Optional.
+	PublicBaseURL string
+	Shortener     urlshortener.Shortener
+}
+
+func NewDisbursementStatusAdapter(deps DisbursementAdapterDeps) *DisbursementStatusAdapter {
+	logger := deps.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &DisbursementStatusAdapter{
-		repo:         repo,
-		loanNotifier: loanNotifier,
-		txnSvc:       txnSvc,
-		stellarSvc:   stellarSvc,
-		logger:       logger,
+		repo:          deps.Repo,
+		loanNotifier:  deps.LoanNotifier,
+		txnSvc:        deps.TxnSvc,
+		stellarSvc:    deps.StellarSvc,
+		logger:        logger,
+		publicBaseURL: deps.PublicBaseURL,
+		shortener:     deps.Shortener,
 	}
 }
 

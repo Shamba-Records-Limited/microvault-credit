@@ -11,6 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/limiter"
+	"github.com/gofiber/swagger"
+
 	_ "github.com/Shamba-Records-Limited/microvault-credit/cmd/credit/docs"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/adapters"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
@@ -47,9 +51,6 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/webhook"
 	"github.com/Shamba-Records-Limited/microvault/platform/cache"
 	"github.com/Shamba-Records-Limited/microvault/platform/database"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/limiter"
-	"github.com/gofiber/swagger"
 )
 
 // @title microvault Credit API
@@ -371,28 +372,11 @@ func main() {
 	// ---- 10d. Loan product service ----
 	loanProductSvc := loanproduct.NewService(repos.LoanProduct)
 
-	// ---- 11. LoanServiceAdapter (USSD LoanService) ----
-	ctx := context.Background()
-	loanAdapter, err := adapters.NewLoanServiceAdapter(
-		ctx, loanSvc, loanProductSvc, stellarSvc, offRampRegistry, loanNotifier, txnSvc,
-		adapters.FXConfig{BufferPct: cfg.Payments.EntryFXBufferPct}, logger,
-	)
-	if err != nil {
-		log.Fatalf("Failed to create loan service adapter: %v", err)
-	}
-	logger.Info("loan entry-rate buffer configured", "buffer_pct", loanAdapter.FXBufferPct())
-	if fxOrch != nil {
-		loanAdapter.SetFXOrchestrator(fxOrch)
-	}
-	loanAdapter.SetPublicBaseURL(cfg.Server.PublicBaseURL)
-	loanAdapter.SetAccountEnsurer(userAdapter)
-	// Opens borrower cash deposits. The treasury is the destination: child
-	// accounts carry no USDC trustline, so routing through one would cost a
-	// sponsored reserve per borrower for an account that only passes funds on.
-	loanAdapter.SetRepaymentAnchor(mgClient.Client, cfg.Stellar.TreasuryPublicKey)
-	if cfg.Payments.MoneyGram.RepaymentWindow > 0 {
-		loanAdapter.SetRepaymentWindow(cfg.Payments.MoneyGram.RepaymentWindow)
-	}
+	// ---- 11. Link shortener ----
+	//
+	// Built before the adapters that take it: it is now a constructor
+	// dependency rather than something applied afterwards, so it has to exist
+	// first.
 	var linkShortener urlshortener.Shortener
 	if cfg.Shortener.Enabled() {
 		linkShortener = urlshortener.NewDub(urlshortener.DubOptions{
@@ -403,7 +387,6 @@ func main() {
 			PreviewDescription: cfg.Shortener.PreviewDescription,
 			ImagePreviewURL:    cfg.Shortener.ImagePreviewURL,
 		})
-		loanAdapter.SetShortener(linkShortener)
 		target := cfg.Shortener.BaseURL
 		if target == "" {
 			target = "https://api.dub.co"
@@ -411,18 +394,50 @@ func main() {
 		log.Printf("Link shortener enabled — cash-pickup SMS links are sent to %s", target)
 	}
 
-	// ---- 12. DisbursementStatusAdapter (webhook callbacks) ----
-	disbursementAdapter := adapters.NewDisbursementStatusAdapter(
-		repos.Loan,
-		loanNotifier,
-		txnSvc,
-		stellarSvc,
-		logger,
-	)
-	disbursementAdapter.SetPublicBaseURL(cfg.Server.PublicBaseURL)
-	if linkShortener != nil {
-		disbursementAdapter.SetShortener(linkShortener)
+	// Where borrower cash deposits are credited. The treasury, not a child
+	// account: children carry no USDC trustline, so routing a deposit through
+	// one would cost a sponsored reserve per borrower for an account that only
+	// ever passes funds on.
+	treasuryAddr, err := cfg.Stellar.TreasuryAddress()
+	if err != nil {
+		log.Fatalf("Treasury address unresolved, repayments cannot be credited: %v", err)
 	}
+
+	// ---- 11b. LoanServiceAdapter (USSD LoanService) ----
+	ctx := context.Background()
+	loanAdapter, err := adapters.NewLoanServiceAdapter(ctx, adapters.LoanAdapterDeps{
+		LoanSvc:      loanSvc,
+		ProductSvc:   loanProductSvc,
+		StellarSvc:   stellarSvc,
+		OffRamps:     offRampRegistry,
+		LoanNotifier: loanNotifier,
+		TxnSvc:       txnSvc,
+		FXConfig:     adapters.FXConfig{BufferPct: cfg.Payments.EntryFXBufferPct},
+		Logger:       logger,
+
+		FXOrchestrator:  fxOrch,
+		PublicBaseURL:   cfg.Server.PublicBaseURL,
+		Shortener:       linkShortener,
+		AccountEnsurer:  userAdapter,
+		RepaymentAnchor: mgClient.Client,
+		TreasuryAddress: treasuryAddr,
+		RepaymentWindow: cfg.Payments.MoneyGram.RepaymentWindow,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create loan service adapter: %v", err)
+	}
+	logger.Info("loan entry-rate buffer configured", "buffer_pct", loanAdapter.FXBufferPct())
+
+	// ---- 12. DisbursementStatusAdapter (webhook callbacks) ----
+	disbursementAdapter := adapters.NewDisbursementStatusAdapter(adapters.DisbursementAdapterDeps{
+		Repo:          repos.Loan,
+		LoanNotifier:  loanNotifier,
+		TxnSvc:        txnSvc,
+		StellarSvc:    stellarSvc,
+		Logger:        logger,
+		PublicBaseURL: cfg.Server.PublicBaseURL,
+		Shortener:     linkShortener,
+	})
 
 	// ---- 12b. Rate service adapter ----
 	// The USSD flow quotes from the same MG-primary/YC-fallback cascade the
@@ -622,26 +637,16 @@ func main() {
 	}()
 
 	// ---- 18. Graceful shutdown ----
+	//
+	// Teardown order is the container's, not this function's: resources shut
+	// down in reverse of the order newLifecycle provided them, so the pollers
+	// stop before the database and cache they read through. See lifecycle.go.
 	sig := <-sigChan
 	log.Printf("Received signal %s. Shutting down gracefully...", sig)
 
-	pollerCancel()
-
-	if err := app.Shutdown(); err != nil {
-		log.Printf("Fiber shutdown error: %v", err)
-	}
-	log.Println("Fiber server shut down.")
-
-	if err := database.CloseAll(); err != nil {
-		log.Printf("Database shutdown error: %v", err)
-	} else {
-		log.Println("Database connections closed successfully.")
-	}
-
-	if err := cache.CloseAll(); err != nil {
-		log.Printf("Cache shutdown error: %v", err)
-	} else {
-		log.Println("Cache connections closed successfully.")
+	lifecycle := newLifecycle(pollerCancel, app)
+	if errs := lifecycle.Shutdown(); errs != nil {
+		log.Printf("Shutdown completed with errors: %v", errs)
 	}
 
 	log.Println("Application shutdown complete.")

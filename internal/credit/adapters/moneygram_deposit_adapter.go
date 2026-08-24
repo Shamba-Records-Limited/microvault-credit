@@ -9,6 +9,8 @@ import (
 	"github.com/samber/lo"
 	"github.com/samber/oops"
 
+	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
+
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
@@ -27,7 +29,7 @@ var (
 )
 
 // errDomain is the oops domain for the borrower repayment cash-in rail.
-const errDomain = "repayment-cash-in"
+const errDomain = pkgErrors.DomainRepaymentCashIn
 
 // adapterErr starts an error builder scoped to one loan. Loan and amount go in
 // as attributes rather than into the message text, so APM tools group every
@@ -126,7 +128,7 @@ func (a *MoneyGramDepositAdapter) GetDueRepayments(ctx context.Context, limit in
 // funds_received, where the amounts are final.
 func (a *MoneyGramDepositAdapter) RecordDepositUpdate(ctx context.Context, loanID string, tx *stellaranchor.Transaction) error {
 	if tx == nil {
-		return adapterErr("record_deposit_update", loanID).Code("nil_transaction").Errorf("polled deposit transaction was nil")
+		return adapterErr("record_deposit_update", loanID).Code(pkgErrors.CodeNilTransaction).Errorf("polled deposit transaction was nil")
 	}
 	return nil
 }
@@ -138,14 +140,14 @@ func (a *MoneyGramDepositAdapter) RecordDepositUpdate(ctx context.Context, loanI
 // the loan to repaid.
 func (a *MoneyGramDepositAdapter) MarkFundsReceived(ctx context.Context, loanID string, tx *stellaranchor.Transaction) error {
 	if tx == nil {
-		return adapterErr("mark_funds_received", loanID).Code("nil_transaction").Errorf("polled deposit transaction was nil")
+		return adapterErr("mark_funds_received", loanID).Code(pkgErrors.CodeNilTransaction).Errorf("polled deposit transaction was nil")
 	}
 
 	status := models.LoanRepaymentStatusFundsReceived
 	if _, err := a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
 		RepaymentStatus: &status,
 	}); err != nil {
-		return adapterErr("mark_funds_received", loanID).Code("state_write_failed").Wrapf(err, "could not record funds received")
+		return adapterErr("mark_funds_received", loanID).Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not record funds received")
 	}
 
 	a.recordCashInTransactions(ctx, loanID, tx)
@@ -156,7 +158,7 @@ func (a *MoneyGramDepositAdapter) MarkFundsReceived(ctx context.Context, loanID 
 func (a *MoneyGramDepositAdapter) MarkSettled(ctx context.Context, loanID, vaultTxHash string) error {
 	loanRow, err := a.repo.GetByID(ctx, loanID)
 	if err != nil {
-		return adapterErr("mark_settled", loanID).Code("loan_load_failed").Wrapf(err, "could not load loan")
+		return adapterErr("mark_settled", loanID).Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not load loan")
 	}
 
 	now := time.Now()
@@ -167,7 +169,7 @@ func (a *MoneyGramDepositAdapter) MarkSettled(ctx context.Context, loanID, vault
 	loanRow.RepaidAt = &now
 
 	if err := a.repo.Update(ctx, loanRow); err != nil {
-		return adapterErr("mark_settled", loanID).Code("state_write_failed").With("vault_tx_hash", vaultTxHash).Wrapf(err, "could not record settlement")
+		return adapterErr("mark_settled", loanID).Code(pkgErrors.CodeStateWriteFailed).With("vault_tx_hash", vaultTxHash).Wrapf(err, "could not record settlement")
 	}
 
 	a.recordVaultRepayTransaction(ctx, loanRow, vaultTxHash)
@@ -197,12 +199,12 @@ func (a *MoneyGramDepositAdapter) MarkFailed(ctx context.Context, loanID, reason
 func (a *MoneyGramDepositAdapter) closeRepayment(ctx context.Context, loanID, status string) error {
 	loanRow, err := a.repo.GetByID(ctx, loanID)
 	if err != nil {
-		return adapterErr("close_repayment", loanID).Code("loan_load_failed").With("target_status", status).Wrapf(err, "could not load loan")
+		return adapterErr("close_repayment", loanID).Code(pkgErrors.CodeLoanLoadFailed).With("target_status", status).Wrapf(err, "could not load loan")
 	}
 	loanRow.RepaymentStatus = status
 	loanRow.RepaymentNextPollAt = nil
 	if err := a.repo.Update(ctx, loanRow); err != nil {
-		return adapterErr("close_repayment", loanID).Code("state_write_failed").With("target_status", status).Wrapf(err, "could not write terminal repayment status")
+		return adapterErr("close_repayment", loanID).Code(pkgErrors.CodeStateWriteFailed).With("target_status", status).Wrapf(err, "could not write terminal repayment status")
 	}
 	return nil
 }
@@ -213,7 +215,7 @@ func (a *MoneyGramDepositAdapter) MarkReminderSent(ctx context.Context, loanID s
 	if _, err := a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
 		RepaymentReminderSentAt: &now,
 	}); err != nil {
-		return adapterErr("mark_reminder_sent", loanID).Code("state_write_failed").Wrapf(err, "could not stamp reminder as sent")
+		return adapterErr("mark_reminder_sent", loanID).Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not stamp reminder as sent")
 	}
 	return nil
 }
@@ -240,7 +242,7 @@ func (a *MoneyGramDepositAdapter) ScheduleNextPoll(ctx context.Context, loanID s
 	if _, err := a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
 		RepaymentNextPollAt: &at,
 	}); err != nil {
-		return adapterErr("schedule_next_poll", loanID).Code("state_write_failed").With("next_poll_at", at).Wrapf(err, "could not set the next poll time")
+		return adapterErr("schedule_next_poll", loanID).Code(pkgErrors.CodeStateWriteFailed).With("next_poll_at", at).Wrapf(err, "could not set the next poll time")
 	}
 	return nil
 }
@@ -253,10 +255,10 @@ func (a *MoneyGramDepositAdapter) ScheduleNextPoll(ctx context.Context, loanID s
 // treasury is still the payer.
 func (a *MoneyGramDepositAdapter) RepayForBorrower(ctx context.Context, loanID, borrowerAddress string, amountStroops int64) (string, error) {
 	if borrowerAddress == "" {
-		return "", adapterErr("repay_for_borrower", loanID).Code("missing_borrower_address").Errorf("loan has no borrower address to attribute the repayment to")
+		return "", adapterErr("repay_for_borrower", loanID).Code(pkgErrors.CodeMissingBorrowerAddr).Errorf("loan has no borrower address to attribute the repayment to")
 	}
 	if amountStroops <= 0 {
-		return "", adapterErr("repay_for_borrower", loanID).Code("invalid_amount").With("amount_stroops", amountStroops).Errorf("refusing to repay a non-positive amount")
+		return "", adapterErr("repay_for_borrower", loanID).Code(pkgErrors.CodeInvalidAmount).With(pkgErrors.AttrAmountStroops, amountStroops).Errorf("refusing to repay a non-positive amount")
 	}
 
 	resp, err := a.stellarSvc.RepayForVault(ctx, stellar.RepayForRequest{

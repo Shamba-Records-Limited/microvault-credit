@@ -4,6 +4,7 @@ package ratelimit
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -36,7 +37,7 @@ func (s *RedisStore) Get(key string) ([]byte, error) {
 		return nil, nil
 	}
 	val, err := s.client.Get(context.Background(), s.key(key)).Bytes()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return nil, nil
 	}
 	if err != nil {

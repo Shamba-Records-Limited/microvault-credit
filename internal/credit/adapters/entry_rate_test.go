@@ -6,9 +6,10 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
 )
 
 type quotingProvider struct {
