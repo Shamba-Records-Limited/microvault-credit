@@ -455,15 +455,16 @@ func loanUpdateMap(loan *models.Loan) map[string]interface{} {
 		"ramp_refund_shortfall":      loan.RampRefundShortfall,
 		"ramp_refunded_at":           loan.RampRefundedAt,
 
-		"repayment_status":           loan.RepaymentStatus,
-		"repayment_payoff_stroops":   loan.RepaymentPayoffStroops,
-		"repayment_locked_at":        loan.RepaymentLockedAt,
-		"repayment_expires_at":       loan.RepaymentExpiresAt,
-		"repayment_mg_tx_id":         loan.RepaymentMGTxID,
-		"repayment_next_poll_at":     loan.RepaymentNextPollAt,
-		"repayment_reminder_sent_at": loan.RepaymentReminderSentAt,
-		"repayment_vault_tx_hash":    loan.RepaymentVaultTxHash,
-		"repayment_vault_attempts":   loan.RepaymentVaultAttempts,
+		"repayment_status":            loan.RepaymentStatus,
+		"repayment_payoff_stroops":    loan.RepaymentPayoffStroops,
+		"repayment_locked_at":         loan.RepaymentLockedAt,
+		"repayment_expires_at":        loan.RepaymentExpiresAt,
+		"repayment_mg_tx_id":          loan.RepaymentMGTxID,
+		"repayment_next_poll_at":      loan.RepaymentNextPollAt,
+		"repayment_reminder_sent_at":  loan.RepaymentReminderSentAt,
+		"repayment_vault_tx_hash":     loan.RepaymentVaultTxHash,
+		"repayment_vault_attempts":    loan.RepaymentVaultAttempts,
+		"repayment_reference_sent_at": loan.RepaymentReferenceSentAt,
 	}
 }
 

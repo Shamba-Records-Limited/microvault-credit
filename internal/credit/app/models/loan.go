@@ -167,6 +167,10 @@ type Loan struct {
 	// notification rather than a movement of money, so nothing else on the
 	// row can stand in for it.
 	RepaymentReminderSentAt *time.Time `json:"repayment_reminder_sent_at,omitempty" gorm:"type:timestamptz"`
+	// RepaymentReferenceSentAt marks the SMS carrying MoneyGram's deposit
+	// reference. Written before the send so a failing provider is not retried
+	// every poll tick.
+	RepaymentReferenceSentAt *time.Time `json:"repayment_reference_sent_at,omitempty" gorm:"type:timestamptz"`
 	// RepaymentVaultTxHash is the treasury-to-vault repay_for transaction.
 	// Distinct from VaultRepayTxHash, which means the disbursement was
 	// unwound; a borrower settling their debt must not overwrite that.

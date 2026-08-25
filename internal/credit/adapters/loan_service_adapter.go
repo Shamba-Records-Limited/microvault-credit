@@ -106,7 +106,7 @@ const repaymentStatusInitiated = "initiated"
 // Best effort by design. The deposit exists and the quote is locked whether or
 // not the SMS lands; failing the whole initiation because a provider blipped
 // would strand a MoneyGram transaction the borrower could still complete.
-func (a *LoanServiceAdapter) sendRepaymentLink(ctx context.Context, loanRow *loan.LoanResponse, phoneNumber, interactiveURL string, payoffStroops int64, expiresAt time.Time) {
+func (a *LoanServiceAdapter) sendRepaymentLink(ctx context.Context, loanRow *loan.LoanResponse, phoneNumber, interactiveURL string, quote *ussd.RepaymentQuote, expiresAt time.Time) {
 	if a.loanNotifier == nil {
 		a.logger.Warn("no loan notifier wired; repayment link not delivered",
 			"loan_id", loanRow.ID)
@@ -127,13 +127,23 @@ func (a *LoanServiceAdapter) sendRepaymentLink(ctx context.Context, loanRow *loa
 		}
 	}
 
+	displayAmount := float64(quote.AmountUSDCStroops) / 1e7
+	displayCurrency := "USDC"
+	if quote.AmountLocalCents > 0 && quote.LocalCurrency != "" {
+		displayAmount = float64(quote.AmountLocalCents) / 100.0
+		displayCurrency = quote.LocalCurrency
+	}
+
 	n := contracts.LoanNotification{
-		LoanID:          loanRow.ID,
-		UserID:          loanRow.UserID,
-		PhoneNumber:     phoneNumber,
-		Amount:          payoffStroops,
-		DisplayAmount:   float64(payoffStroops) / 1e7,
-		DisplayCurrency: "USD",
+		LoanID:      loanRow.ID,
+		UserID:      loanRow.UserID,
+		PhoneNumber: phoneNumber,
+		Amount:      quote.AmountUSDCStroops,
+		// Local currency, matching what the USSD screen quoted. The borrower
+		// works from one figure; the deposit settles in USDC regardless, and
+		// MoneyGram converts at its own counter rate either way.
+		DisplayAmount:   displayAmount,
+		DisplayCurrency: displayCurrency,
 		InteractiveURL:  link,
 		// The copy quotes how long the borrower has; without this it falls
 		// back to a vague "soon".
@@ -261,7 +271,7 @@ func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phon
 			Wrapf(err, "deposit opened but the quote lock was not recorded")
 	}
 
-	a.sendRepaymentLink(ctx, loanRow, phoneNumber, resp.URL, quote.AmountUSDCStroops, expiresAt)
+	a.sendRepaymentLink(ctx, loanRow, phoneNumber, resp.URL, quote, expiresAt)
 
 	return &ussd.RepaymentInitiation{
 		LoanID:            loanID,
@@ -291,6 +301,21 @@ type FXConfig struct {
 //
 // It loads the highest-priority active loan product from the database and
 // caches its configuration. Returns an error if no active product is found.
+// lendingErr starts an error builder for loan origination and disbursement.
+func lendingErr(op string) oops.OopsErrorBuilder {
+	return oops.In(pkgErrors.DomainLending).Tags("loan").With(pkgErrors.AttrOperation, op)
+}
+
+// quoteErr starts an error builder for repayment quoting. The quote hard-fails
+// rather than serving a stale figure, so every error here means the borrower
+// was shown nothing rather than something wrong.
+func quoteErr(loanID string) oops.OopsErrorBuilder {
+	return oops.In(pkgErrors.DomainLending).
+		Tags("repayment", "quote").
+		With(pkgErrors.AttrOperation, "repayment_quote").
+		With(pkgErrors.AttrLoanID, loanID)
+}
+
 // LoanAdapterDeps are the collaborators and settings the loan adapter needs.
 //
 // The optional members used to be applied through Set* methods after
@@ -329,15 +354,19 @@ func NewLoanServiceAdapter(ctx context.Context, deps LoanAdapterDeps) (*LoanServ
 		logger = slog.Default()
 	}
 	if offRamps == nil {
-		return nil, fmt.Errorf("offramp registry is required")
+		return nil, lendingErr("new").With(pkgErrors.AttrDependency, "offramp_registry").
+			Code(pkgErrors.CodeMissingDependency).Errorf("required dependency is missing")
 	}
 	// Load the highest-priority active product (ordered by priority_order ASC).
 	products, err := productSvc.GetActive(ctx, services.Pagination{Page: 1, PageSize: 1})
 	if err != nil {
-		return nil, fmt.Errorf("load active loan product: %w", err)
+		return nil, lendingErr("new").Code(pkgErrors.CodeLoanLoadFailed).
+			Wrapf(err, "could not load the active loan product")
 	}
 	if len(products.Data) == 0 {
-		return nil, fmt.Errorf("no active loan product found; run the 000006 migration to seed one")
+		return nil, lendingErr("new").Code(pkgErrors.CodeNotFound).
+			Hint("run the 000006 migration to seed a loan product").
+			Errorf("no active loan product is configured")
 	}
 	p := products.Data[0]
 
@@ -433,7 +462,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		a.logger.Error("cash-pickup loan rejected: recipient name missing",
 			"user_id", req.UserID,
 		)
-		return nil, fmt.Errorf("cash-pickup requires recipient name (user has no full_name on file)")
+		return nil, lendingErr("request_loan").Code(pkgErrors.CodeMissingAccount).
+			Errorf("cash pickup needs a recipient name and the user has none on file")
 	}
 
 	// Dedupe gate — same (user, method, amount) within 60s is treated as a
@@ -501,7 +531,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	})
 	if err != nil {
 		a.logger.Error("failed to create loan record", "user_id", req.UserID, "error", err)
-		return nil, fmt.Errorf("create loan: %w", err)
+		return nil, lendingErr("request_loan").Code(pkgErrors.CodeStateWriteFailed).
+			Wrapf(err, "could not create the loan")
 	}
 	loanID := createResp.ID
 	a.logger.Info("loan record created",
@@ -521,7 +552,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	_, err = a.loanSvc.Approve(ctx, loanID, loan.ApproveLoanRequest{ApprovedBy: "00000000-0000-0000-0000-000000000000"})
 	if err != nil {
 		a.logger.Error("failed to approve loan", "loan_id", loanID, "error", err)
-		return nil, fmt.Errorf("approve loan: %w", err)
+		return nil, lendingErr("request_loan").Code(pkgErrors.CodeStateWriteFailed).
+			Wrapf(err, "could not approve the loan")
 	}
 	a.logger.Info("loan auto-approved", "loan_id", loanID)
 
@@ -560,7 +592,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 				"loan_id", loanID, "address", req.StellarAddress, "error", err)
 			cancelStatus := "cancelled"
 			_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{VaultTxStatus: &cancelStatus})
-			return nil, fmt.Errorf("ensure on-chain account: %w", err)
+			return nil, lendingErr("request_loan").Code(pkgErrors.CodeSubmitFailed).
+				Wrapf(err, "could not ensure the borrower has an on-chain account")
 		}
 	}
 
@@ -576,7 +609,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
 			VaultTxStatus: &cancelStatus,
 		})
-		return nil, fmt.Errorf("vault borrow: %w", err)
+		return nil, lendingErr("request_loan").Code(pkgErrors.CodeVaultRepayFailed).
+			Wrapf(err, "vault borrow failed")
 	}
 	a.logger.Info("vault borrow succeeded",
 		"loan_id", loanID,
@@ -667,7 +701,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			"payout_method", payoutMethod,
 			"error", resolveErr,
 		)
-		return nil, fmt.Errorf("resolve off-ramp provider: %w", resolveErr)
+		return nil, lendingErr("request_loan").Code(pkgErrors.CodeNotFound).
+			Wrapf(resolveErr, "could not resolve an off-ramp provider")
 	}
 	offRampResult, err := provider.Initiate(ctx, offrampReq)
 	offRampFailed := err != nil
@@ -796,7 +831,8 @@ func (a *LoanServiceAdapter) buildProviderOptions(payoutMethod string, req *ussd
 			ChildAccountIndex:  req.ChildAccountIndex,
 		}, nil
 	default:
-		return nil, fmt.Errorf("unsupported payout method %q", payoutMethod)
+		return nil, lendingErr("request_loan").With("payout_method", string(payoutMethod)).
+			Code(pkgErrors.CodeNotFound).Errorf("payout method is not supported")
 	}
 }
 
@@ -1211,21 +1247,27 @@ func (a *LoanServiceAdapter) CheckLoanEligibility(ctx context.Context, userID st
 func (a *LoanServiceAdapter) GetRepaymentQuote(ctx context.Context, loanID string) (*ussd.RepaymentQuote, error) {
 	resp, err := a.loanSvc.GetByID(ctx, loanID)
 	if err != nil {
-		return nil, fmt.Errorf("repayment quote: load loan %s: %w", loanID, err)
+		return nil, quoteErr(loanID).Code(pkgErrors.CodeLoanLoadFailed).
+			Wrapf(err, "could not load the loan")
 	}
 	if resp.BorrowIndex == nil || *resp.BorrowIndex <= 0 {
-		return nil, fmt.Errorf("repayment quote: loan %s has no origination borrow_index", loanID)
+		return nil, quoteErr(loanID).Code(pkgErrors.CodeIncompleteResponse).
+			Errorf("loan has no origination borrow index to quote against")
 	}
 	originIndex := *resp.BorrowIndex
 
 	currentIndex, err := a.stellarSvc.GetBorrowIndex(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("repayment quote: read vault borrow_index: %w", err)
+		return nil, quoteErr(loanID).Code(pkgErrors.CodeQuoteFailed).
+			Wrapf(err, "could not read the vault borrow index")
 	}
 	if currentIndex < originIndex {
 		// Index only grows; this would mean we read a stale or wrong value.
-		return nil, fmt.Errorf("repayment quote: current borrow_index %d < origination %d",
-			currentIndex, originIndex)
+		return nil, quoteErr(loanID).
+			With("current_index", currentIndex).
+			With("origination_index", originIndex).
+			Code(pkgErrors.CodeQuoteFailed).
+			Errorf("vault borrow index went backwards, which means a stale or wrong read")
 	}
 
 	// principal * current / origin, rounded up — favors the protocol.
@@ -1242,7 +1284,8 @@ func (a *LoanServiceAdapter) GetRepaymentQuote(ctx context.Context, loanID strin
 
 	fxRate, fxSource, fxErr := a.fetchFXForQuote(ctx, currency)
 	if fxErr != nil {
-		return nil, fmt.Errorf("repayment quote: fetch FX %s: %w", currency, fxErr)
+		return nil, quoteErr(loanID).With(pkgErrors.AttrCurrency, currency).
+			Code(pkgErrors.CodeRateUnavailable).Wrapf(fxErr, "could not fetch an FX rate")
 	}
 
 	amountLocalCents := int64(0)
@@ -1277,7 +1320,8 @@ func (a *LoanServiceAdapter) fetchFXForQuote(ctx context.Context, currency strin
 		if err == nil && res != nil && res.Rate > 0 {
 			return res.Rate, res.Source, nil
 		}
-		return 0, "", fmt.Errorf("fx orchestrator: %w", err)
+		return 0, "", lendingErr("quote_fx").Code(pkgErrors.CodeRateUnavailable).
+			Wrapf(err, "FX orchestrator produced no rate")
 	}
 	// No orchestrator wired — try the YC adapter's Quoter directly.
 	provider, err := a.offRamps.Resolve(offramp.Request{
@@ -1285,11 +1329,13 @@ func (a *LoanServiceAdapter) fetchFXForQuote(ctx context.Context, currency strin
 		Options:      yellowcard.Options{SettlementMethod: yellowcard.SettlementMethodDirect},
 	})
 	if err != nil {
-		return 0, "", fmt.Errorf("resolve fx provider: %w", err)
+		return 0, "", lendingErr("quote_fx").Code(pkgErrors.CodeNotFound).
+			Wrapf(err, "could not resolve an FX provider")
 	}
 	quoter, ok := provider.(offramp.Quoter)
 	if !ok {
-		return 0, "", fmt.Errorf("provider %s exposes no Quoter", provider.ID())
+		return 0, "", lendingErr("quote_fx").With(pkgErrors.AttrProvider, string(provider.ID())).
+			Code(pkgErrors.CodeRateUnavailable).Errorf("provider exposes no quoter")
 	}
 	q, err := quoter.Quote(ctx, offramp.QuoteRequest{Currency: currency})
 	if err != nil {
@@ -1298,7 +1344,8 @@ func (a *LoanServiceAdapter) fetchFXForQuote(ctx context.Context, currency strin
 	// Sell only — see requoteEntryRate. A repayment quoted at the buy rate is
 	// wrong by the spread, and silently so.
 	if q.SellRate <= 0 {
-		return 0, "", fmt.Errorf("quoter returned no sell rate for %s", currency)
+		return 0, "", lendingErr("quote_fx").With(pkgErrors.AttrCurrency, currency).
+			Code(pkgErrors.CodeRateUnavailable).Errorf("quoter returned no sell rate")
 	}
 	return q.SellRate, string(provider.ID()), nil
 }

@@ -3,7 +3,7 @@ tmp_dir = "tmp/credit"
 
 [build]
   bin = "./tmp/credit/main"
-  cmd = "go build -o ./tmp/credit/main ./cmd/credit/main.go"
+  cmd = "go build -o ./tmp/credit/main ./cmd/credit"
   exclude_dir = ["tmp", "vendor", "core", "cmd/credit/docs"]
   include_dir = ["internal", "cmd/credit", "platform", "/microvault/pkg"]
   include_ext = ["go", "toml", "yaml", "yml", "json"]

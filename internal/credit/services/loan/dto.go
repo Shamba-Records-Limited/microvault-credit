@@ -67,15 +67,16 @@ type UpdateLoanRequest struct {
 
 	// Borrower repayment. Separate from the VaultRepay* pair, which records a
 	// disbursement being unwound. See models.LoanRepaymentStatus*.
-	RepaymentStatus         *string    `json:"repayment_status,omitempty"`
-	RepaymentPayoffStroops  *int64     `json:"repayment_payoff_stroops,omitempty"`
-	RepaymentLockedAt       *time.Time `json:"repayment_locked_at,omitempty"`
-	RepaymentExpiresAt      *time.Time `json:"repayment_expires_at,omitempty"`
-	RepaymentMGTxID         *string    `json:"repayment_mg_tx_id,omitempty"`
-	RepaymentNextPollAt     *time.Time `json:"repayment_next_poll_at,omitempty"`
-	RepaymentReminderSentAt *time.Time `json:"repayment_reminder_sent_at,omitempty"`
-	RepaymentVaultTxHash    *string    `json:"repayment_vault_tx_hash,omitempty"`
-	RepaymentVaultAttempts  *int       `json:"repayment_vault_attempts,omitempty"`
+	RepaymentStatus          *string    `json:"repayment_status,omitempty"`
+	RepaymentPayoffStroops   *int64     `json:"repayment_payoff_stroops,omitempty"`
+	RepaymentLockedAt        *time.Time `json:"repayment_locked_at,omitempty"`
+	RepaymentExpiresAt       *time.Time `json:"repayment_expires_at,omitempty"`
+	RepaymentMGTxID          *string    `json:"repayment_mg_tx_id,omitempty"`
+	RepaymentNextPollAt      *time.Time `json:"repayment_next_poll_at,omitempty"`
+	RepaymentReminderSentAt  *time.Time `json:"repayment_reminder_sent_at,omitempty"`
+	RepaymentVaultTxHash     *string    `json:"repayment_vault_tx_hash,omitempty"`
+	RepaymentVaultAttempts   *int       `json:"repayment_vault_attempts,omitempty"`
+	RepaymentReferenceSentAt *time.Time `json:"repayment_reference_sent_at,omitempty"`
 }
 
 // ApproveLoanRequest represents the request to approve a loan
@@ -160,15 +161,16 @@ type LoanResponse struct {
 	RampRefundShortfall *int64     `json:"ramp_refund_shortfall,omitempty"`
 	RampRefundedAt      *time.Time `json:"ramp_refunded_at,omitempty"`
 
-	RepaymentStatus         string     `json:"repayment_status"`
-	RepaymentPayoffStroops  *int64     `json:"repayment_payoff_stroops,omitempty"`
-	RepaymentLockedAt       *time.Time `json:"repayment_locked_at,omitempty"`
-	RepaymentExpiresAt      *time.Time `json:"repayment_expires_at,omitempty"`
-	RepaymentMGTxID         *string    `json:"repayment_mg_tx_id,omitempty"`
-	RepaymentNextPollAt     *time.Time `json:"repayment_next_poll_at,omitempty"`
-	RepaymentReminderSentAt *time.Time `json:"repayment_reminder_sent_at,omitempty"`
-	RepaymentVaultTxHash    *string    `json:"repayment_vault_tx_hash,omitempty"`
-	RepaymentVaultAttempts  int        `json:"repayment_vault_attempts"`
+	RepaymentStatus          string     `json:"repayment_status"`
+	RepaymentPayoffStroops   *int64     `json:"repayment_payoff_stroops,omitempty"`
+	RepaymentLockedAt        *time.Time `json:"repayment_locked_at,omitempty"`
+	RepaymentExpiresAt       *time.Time `json:"repayment_expires_at,omitempty"`
+	RepaymentMGTxID          *string    `json:"repayment_mg_tx_id,omitempty"`
+	RepaymentNextPollAt      *time.Time `json:"repayment_next_poll_at,omitempty"`
+	RepaymentReminderSentAt  *time.Time `json:"repayment_reminder_sent_at,omitempty"`
+	RepaymentVaultTxHash     *string    `json:"repayment_vault_tx_hash,omitempty"`
+	RepaymentVaultAttempts   int        `json:"repayment_vault_attempts"`
+	RepaymentReferenceSentAt *time.Time `json:"repayment_reference_sent_at,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -343,6 +345,9 @@ func (r UpdateLoanRequest) changedFields() map[string]any {
 	}
 	if r.RepaymentVaultAttempts != nil {
 		f["repayment_vault_attempts"] = r.RepaymentVaultAttempts
+	}
+	if r.RepaymentReferenceSentAt != nil {
+		f["repayment_reference_sent_at"] = r.RepaymentReferenceSentAt
 	}
 	if r.RepaymentVaultTxHash != nil {
 		f["repayment_vault_tx_hash"] = r.RepaymentVaultTxHash

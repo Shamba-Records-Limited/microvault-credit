@@ -237,6 +237,19 @@ func (a *MoneyGramDepositAdapter) RecordVaultAttempt(ctx context.Context, loanID
 	return nil
 }
 
+// MarkReferenceSent stamps the deposit-reference SMS before it is sent.
+func (a *MoneyGramDepositAdapter) MarkReferenceSent(ctx context.Context, loanID string) error {
+	now := time.Now()
+	if _, err := a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
+		RepaymentReferenceSentAt: &now,
+	}); err != nil {
+		return adapterErr("mark_reference_sent", loanID).
+			Code(pkgErrors.CodeStateWriteFailed).
+			Wrapf(err, "could not stamp the deposit reference as sent")
+	}
+	return nil
+}
+
 // ScheduleNextPoll sets when this repayment is next looked at.
 func (a *MoneyGramDepositAdapter) ScheduleNextPoll(ctx context.Context, loanID string, at time.Time) error {
 	if _, err := a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
@@ -419,6 +432,7 @@ func projectRepaymentRecord(l *models.Loan) mgpoller.RepaymentRecord {
 		RepaymentStatus: l.RepaymentStatus,
 		ReminderSent:    l.RepaymentReminderSentAt != nil,
 		VaultAttempts:   l.RepaymentVaultAttempts,
+		ReferenceSent:   l.RepaymentReferenceSentAt != nil,
 	}
 	if l.RampSequenceID != nil {
 		rec.SequenceID = *l.RampSequenceID

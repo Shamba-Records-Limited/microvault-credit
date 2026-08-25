@@ -57,6 +57,18 @@ func NewRepaymentNotifierAdapter(
 	}, nil
 }
 
+// NotifyRepaymentReference sends the code the borrower quotes at the counter.
+//
+// The amount is carried in local currency, matching what the USSD screen
+// quoted, because that is the figure the borrower is working from. The deposit
+// itself settles in USDC.
+func (a *RepaymentNotifierAdapter) NotifyRepaymentReference(loanID, reference string) error {
+	return a.send(loanID, "reference", func(ctx context.Context, n contracts.LoanNotification) error {
+		n.CashPickupRef = reference
+		return a.loans.NotifyRepaymentReference(ctx, n)
+	})
+}
+
 // NotifyRepaymentReceived confirms the borrower's cash reached the treasury.
 //
 // Sent while the treasury-to-vault leg may still be retrying. That is
@@ -98,7 +110,7 @@ func (a *RepaymentNotifierAdapter) send(loanID, kind string, notify func(context
 	n := contracts.LoanNotification{
 		LoanID:             loanID,
 		UserID:             loanRow.UserID,
-		DisplayCurrency:    "USD",
+		DisplayCurrency:    "USDC",
 		RepaymentExpiresAt: loanRow.RepaymentExpiresAt,
 	}
 	if loanRow.LoanReference != nil {
@@ -111,6 +123,10 @@ func (a *RepaymentNotifierAdapter) send(loanID, kind string, notify func(context
 		n.Amount = *loanRow.RepaymentPayoffStroops
 		n.DisplayAmount = float64(*loanRow.RepaymentPayoffStroops) / 1e7
 	}
+	// The stored payoff is USDC — that is what settles the loan and what the
+	// deposit is denominated in. The local figure the borrower was quoted at
+	// initiation is not persisted, so these messages stay in USDC rather than
+	// re-quoting FX at a different moment and showing a third number.
 
 	// No phone, no SMS. Worth its own error rather than a silent success: a
 	// borrower who is never told their repayment landed will call support.

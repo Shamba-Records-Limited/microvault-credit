@@ -2,7 +2,6 @@ package adapters
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -15,6 +14,10 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
 	"github.com/Shamba-Records-Limited/microvault/pkg/urlshortener"
 	"github.com/Shamba-Records-Limited/microvault/pkg/webhook"
+
+	"github.com/samber/oops"
+
+	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
 )
 
 // Compile-time checks.
@@ -73,6 +76,13 @@ func (a *DisbursementStatusAdapter) moreInfoLink(loan *models.Loan) string {
 }
 
 // NewDisbursementStatusAdapter creates a new DisbursementStatusAdapter.
+// disbursementErr starts an error builder for the disbursement callback path.
+// The domain is off-ramp rather than the package's repayment domain: these
+// errors are about money going out, not coming back.
+func disbursementErr(op string) oops.OopsErrorBuilder {
+	return oops.In(pkgErrors.DomainOffRamp).Tags("disbursement").With(pkgErrors.AttrOperation, op)
+}
+
 // DisbursementAdapterDeps are the collaborators and settings the adapter
 // needs. PublicBaseURL and Shortener were previously applied through Set*
 // methods after construction; they are constructor arguments now so the
@@ -115,7 +125,8 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 			"sequence_id", sequenceID,
 			"error", err,
 		)
-		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
+		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
+			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not find the loan by sequence id")
 	}
 
 	status = canonicalDisbursementStatus(status)
@@ -145,7 +156,8 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 			"status", status,
 			"error", err,
 		)
-		return fmt.Errorf("update disbursement status for loan %s: %w", loan.ID, err)
+		return disbursementErr("update_status").With(pkgErrors.AttrLoanID, loan.ID).
+			Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not write the disbursement status")
 	}
 
 	a.logger.Info("disbursement status updated",
@@ -213,7 +225,8 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 
 	if a.stellarSvc == nil {
 		a.logger.Error("stellar service not configured, cannot repay vault", "loan_id", loan.ID)
-		return fmt.Errorf("stellar service not configured")
+		return disbursementErr("repay_vault").Code(pkgErrors.CodeMissingDependency).
+			With(pkgErrors.AttrDependency, "stellar_service").Errorf("required dependency is missing")
 	}
 
 	amount := loan.PrincipalAmount
@@ -221,7 +234,8 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 		amount = *amountOverride
 	}
 	if amount <= 0 {
-		return fmt.Errorf("refusing to repay a non-positive amount (%d stroops)", amount)
+		return disbursementErr("repay_vault").With(pkgErrors.AttrAmountStroops, amount).
+			Code(pkgErrors.CodeInvalidAmount).Errorf("refusing to repay a non-positive amount")
 	}
 	a.logger.Info("initiating vault repay",
 		"loan_id", loan.ID,
@@ -249,7 +263,8 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 				"error", upErr,
 			)
 		}
-		return fmt.Errorf("repay to vault: %w", err)
+		return disbursementErr("repay_vault").Code(pkgErrors.CodeVaultRepayFailed).
+			Wrapf(err, "vault repay leg failed")
 	}
 
 	// Persist repay tx hash + success status on the loan.
@@ -316,7 +331,8 @@ func (a *DisbursementStatusAdapter) RecordDisbursementCompletion(sequenceID stri
 	ctx := context.Background()
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
-		return fmt.Errorf("completion financials: find loan by sequence %s: %w", sequenceID, err)
+		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
+			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not find the loan by sequence id")
 	}
 	if loan.DeliveredAmountLocal != nil {
 		return nil
@@ -335,7 +351,8 @@ func (a *DisbursementStatusAdapter) RecordDisbursementCompletion(sequenceID stri
 	loan.PartnerFeeLocal = &partnerFeeLocal
 
 	if err := a.repo.Update(ctx, loan); err != nil {
-		return fmt.Errorf("completion financials: persist loan %s: %w", loan.ID, err)
+		return disbursementErr("persist_completion").With(pkgErrors.AttrLoanID, loan.ID).
+			Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not persist the completion financials")
 	}
 	a.logger.Info("disbursement completion financials recorded",
 		"loan_id", loan.ID,
@@ -361,7 +378,8 @@ func (a *DisbursementStatusAdapter) IsDirectSettlement(sequenceID string) (bool,
 	ctx := context.Background()
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
-		return false, fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
+		return false, disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
+			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not find the loan by sequence id")
 	}
 	if loan.SettlementMethod == nil {
 		return false, nil
@@ -377,11 +395,13 @@ func (a *DisbursementStatusAdapter) SetSettlementMethod(sequenceID string, metho
 	ctx := context.Background()
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
-		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
+		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
+			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not find the loan by sequence id")
 	}
 	loan.SettlementMethod = &method
 	if err := a.repo.Update(ctx, loan); err != nil {
-		return fmt.Errorf("update settlement_method for loan %s: %w", loan.ID, err)
+		return disbursementErr("set_settlement_method").With(pkgErrors.AttrLoanID, loan.ID).
+			Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not write the settlement method")
 	}
 	a.logger.Info("settlement_method updated",
 		"loan_id", loan.ID,
@@ -397,7 +417,8 @@ func (a *DisbursementStatusAdapter) RepayVault(sequenceID string) error {
 	ctx := context.Background()
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
-		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
+		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
+			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not find the loan by sequence id")
 	}
 	_ = a.repayVaultIfNeeded(ctx, loan, "explicit_repay", nil)
 	return nil
@@ -413,7 +434,8 @@ func (a *DisbursementStatusAdapter) RepayVaultAmount(sequenceID string, amountSt
 	ctx := context.Background()
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
-		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
+		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
+			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not find the loan by sequence id")
 	}
 	return a.repayVaultIfNeeded(ctx, loan, "anchor_refund", &amountStroops)
 }
@@ -428,7 +450,8 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(sequenceID string
 			"sequence_id", sequenceID,
 			"error", err,
 		)
-		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
+		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
+			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not find the loan by sequence id")
 	}
 
 	if a.loanNotifier == nil {
@@ -489,7 +512,8 @@ func (a *DisbursementStatusAdapter) NotifyCashPickupReady(sequenceID string) err
 			"sequence_id", sequenceID,
 			"error", err,
 		)
-		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
+		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
+			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not find the loan by sequence id")
 	}
 
 	if a.loanNotifier == nil {
@@ -511,7 +535,8 @@ func (a *DisbursementStatusAdapter) NotifyCashPickupReady(sequenceID string) err
 		a.logger.Warn("no MoneyGram reference yet, deferring cash-pickup ready SMS",
 			"loan_id", loan.ID,
 		)
-		return fmt.Errorf("loan %s has no ramp_external_ref", loan.ID)
+		return disbursementErr("cash_pickup_ready").With(pkgErrors.AttrLoanID, loan.ID).
+			Code(pkgErrors.CodeIncompleteResponse).Errorf("loan has no cash-pickup reference to quote")
 	}
 
 	displayAmount := float64(0)
@@ -569,7 +594,8 @@ func (a *DisbursementStatusAdapter) NotifyRefundReceived(sequenceID string) erro
 
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
-		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
+		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
+			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not find the loan by sequence id")
 	}
 
 	if a.loanNotifier == nil {
@@ -607,7 +633,8 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementFailed(sequenceID string) 
 			"sequence_id", sequenceID,
 			"error", err,
 		)
-		return fmt.Errorf("find loan by sequence %s: %w", sequenceID, err)
+		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
+			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not find the loan by sequence id")
 	}
 
 	if a.loanNotifier == nil {
@@ -715,7 +742,8 @@ func (a *DisbursementStatusAdapter) GetRefundPendingDisbursements() ([]webhook.R
 	loans, err := a.repo.GetRefundDeclared(ctx, "yellowcard", 100)
 	if err != nil {
 		a.logger.Error("failed to fetch refund pending disbursements", "error", err)
-		return nil, fmt.Errorf("fetch refund pending: %w", err)
+		return nil, disbursementErr("fetch_refund_pending").Code(pkgErrors.CodeLoanLoadFailed).
+			Wrapf(err, "could not fetch loans awaiting refund")
 	}
 
 	records := make([]webhook.RefundPendingRecord, 0, len(loans))
