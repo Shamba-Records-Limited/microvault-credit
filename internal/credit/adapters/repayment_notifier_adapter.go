@@ -37,14 +37,14 @@ func NewRepaymentNotifierAdapter(
 ) (*RepaymentNotifierAdapter, error) {
 	if repo == nil {
 		return nil, oops.In(errDomain).
-			Code("missing_dependency").
-			With("dependency", "loan_repository").
+			Code(pkgErrors.CodeMissingDependency).
+			With(pkgErrors.AttrDependency, "loan_repository").
 			Errorf("required dependency is missing")
 	}
 	if notifier == nil {
 		return nil, oops.In(errDomain).
-			Code("missing_dependency").
-			With("dependency", "loan_notifier").
+			Code(pkgErrors.CodeMissingDependency).
+			With(pkgErrors.AttrDependency, "loan_notifier").
 			Errorf("required dependency is missing")
 	}
 	if logger == nil {
@@ -87,8 +87,8 @@ func (a *RepaymentNotifierAdapter) send(loanID, kind string, notify func(context
 
 	errb := oops.In(errDomain).
 		Tags("notification").
-		With("loan_id", loanID).
-		With("notification", kind)
+		With(pkgErrors.AttrLoanID, loanID).
+		With(pkgErrors.AttrNotification, kind)
 
 	loanRow, err := a.repo.GetByID(ctx, loanID)
 	if err != nil {

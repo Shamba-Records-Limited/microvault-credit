@@ -214,7 +214,7 @@ func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phon
 	}
 	if quote.AmountUSDCStroops < ussd.MinMoneyGramDepositStroops {
 		return nil, errb.
-			Code("below_anchor_minimum").
+			Code(pkgErrors.CodeBelowAnchorMinimum).
 			With("payoff_stroops", quote.AmountUSDCStroops).
 			With("minimum_stroops", ussd.MinMoneyGramDepositStroops).
 			Errorf("payoff is below MoneyGram's deposit floor")
@@ -256,8 +256,8 @@ func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phon
 		// The deposit exists at MoneyGram but we have no record of it. Loud:
 		// the borrower may pay against a transaction nothing will reconcile.
 		return nil, errb.
-			Code("state_write_failed").
-			With("mg_tx_id", resp.ID).
+			Code(pkgErrors.CodeStateWriteFailed).
+			With(pkgErrors.AttrMoneyGramTxID, resp.ID).
 			Wrapf(err, "deposit opened but the quote lock was not recorded")
 	}
 

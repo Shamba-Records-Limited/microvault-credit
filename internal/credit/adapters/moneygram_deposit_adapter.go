@@ -38,8 +38,8 @@ func adapterErr(op, loanID string) oops.OopsErrorBuilder {
 	return oops.
 		In(errDomain).
 		Tags("moneygram", "deposit").
-		With("operation", op).
-		With("loan_id", loanID)
+		With(pkgErrors.AttrOperation, op).
+		With(pkgErrors.AttrLoanID, loanID)
 }
 
 // MoneyGramDepositAdapter is the persistence and on-chain half of the borrower
@@ -85,8 +85,8 @@ func NewMoneyGramDepositAdapter(deps DepositAdapterDeps) (*MoneyGramDepositAdapt
 	if found {
 		return nil, oops.
 			In(errDomain).
-			Code("missing_dependency").
-			With("dependency", missing.name).
+			Code(pkgErrors.CodeMissingDependency).
+			With(pkgErrors.AttrDependency, missing.name).
 			Errorf("required dependency is missing")
 	}
 
@@ -230,7 +230,7 @@ func (a *MoneyGramDepositAdapter) RecordVaultAttempt(ctx context.Context, loanID
 		RepaymentVaultAttempts: &attempts,
 	}); err != nil {
 		return adapterErr("record_vault_attempt", loanID).
-			Code("state_write_failed").
+			Code(pkgErrors.CodeStateWriteFailed).
 			With("attempts", attempts).
 			Wrapf(err, "could not record the vault repay attempt")
 	}
@@ -267,9 +267,9 @@ func (a *MoneyGramDepositAdapter) RepayForBorrower(ctx context.Context, loanID, 
 	})
 	if err != nil {
 		return "", adapterErr("repay_for_borrower", loanID).
-			Code("vault_repay_failed").
-			With("amount_stroops", amountStroops).
-			With("borrower", borrowerAddress).
+			Code(pkgErrors.CodeVaultRepayFailed).
+			With(pkgErrors.AttrAmountStroops, amountStroops).
+			With(pkgErrors.AttrBorrower, borrowerAddress).
 			Wrapf(err, "vault repay leg failed")
 	}
 	return resp.TxHash, nil
