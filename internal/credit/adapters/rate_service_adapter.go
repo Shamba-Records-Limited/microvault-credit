@@ -2,10 +2,13 @@ package adapters
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
+
+	"github.com/samber/oops"
+
+	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
 )
 
 // Compile-time check.
@@ -29,10 +32,6 @@ func NewRateServiceAdapter(orchestrator *moneygram.FXOrchestrator) *RateServiceA
 
 // GetExchangeRate returns the buffered sell rate for the given currency
 // (e.g. "KES"), in local units per USD.
-//
-// An unmapped currency leaves DestinationCountry empty, which makes the
-// orchestrator skip MoneyGram and quote from the fallback instead of asking
-// for a corridor that does not exist.
 func (a *RateServiceAdapter) GetExchangeRate(ctx context.Context, currency string) (float64, error) {
 	res, err := a.orchestrator.Quote(ctx, moneygram.FXQuoteRequest{
 		OriginatingCountry: moneygram.DefaultOriginatingCountry,
@@ -41,10 +40,18 @@ func (a *RateServiceAdapter) GetExchangeRate(ctx context.Context, currency strin
 		ReceiveCurrency:    currency,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("get exchange rate for %s: %w", currency, err)
+		return 0, oops.In(pkgErrors.DomainOffRamp).Tags("rate").
+			With(pkgErrors.AttrCurrency, currency).
+			Code(pkgErrors.CodeRateUnavailable).
+			Wrapf(err, "could not get an exchange rate")
 	}
 	if res.Rate <= 0 {
-		return 0, fmt.Errorf("invalid rate for %s from %s: %.4f", currency, res.Source, res.Rate)
+		return 0, oops.In(pkgErrors.DomainOffRamp).Tags("rate").
+			With(pkgErrors.AttrCurrency, currency).
+			With("source", res.Source).
+			With("rate", res.Rate).
+			Code(pkgErrors.CodeRateUnavailable).
+			Errorf("rate source returned a non-positive rate")
 	}
 	return res.Rate, nil
 }

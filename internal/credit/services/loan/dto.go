@@ -64,6 +64,19 @@ type UpdateLoanRequest struct {
 	RampRefundAmount    *int64     `json:"ramp_refund_amount,omitempty"`
 	RampRefundShortfall *int64     `json:"ramp_refund_shortfall,omitempty"`
 	RampRefundedAt      *time.Time `json:"ramp_refunded_at,omitempty"`
+
+	// Borrower repayment. Separate from the VaultRepay* pair, which records a
+	// disbursement being unwound. See models.LoanRepaymentStatus*.
+	RepaymentStatus          *string    `json:"repayment_status,omitempty"`
+	RepaymentPayoffStroops   *int64     `json:"repayment_payoff_stroops,omitempty"`
+	RepaymentLockedAt        *time.Time `json:"repayment_locked_at,omitempty"`
+	RepaymentExpiresAt       *time.Time `json:"repayment_expires_at,omitempty"`
+	RepaymentMGTxID          *string    `json:"repayment_mg_tx_id,omitempty"`
+	RepaymentNextPollAt      *time.Time `json:"repayment_next_poll_at,omitempty"`
+	RepaymentReminderSentAt  *time.Time `json:"repayment_reminder_sent_at,omitempty"`
+	RepaymentVaultTxHash     *string    `json:"repayment_vault_tx_hash,omitempty"`
+	RepaymentVaultAttempts   *int       `json:"repayment_vault_attempts,omitempty"`
+	RepaymentReferenceSentAt *time.Time `json:"repayment_reference_sent_at,omitempty"`
 }
 
 // ApproveLoanRequest represents the request to approve a loan
@@ -147,6 +160,17 @@ type LoanResponse struct {
 	RampRefundAmount    *int64     `json:"ramp_refund_amount,omitempty"`
 	RampRefundShortfall *int64     `json:"ramp_refund_shortfall,omitempty"`
 	RampRefundedAt      *time.Time `json:"ramp_refunded_at,omitempty"`
+
+	RepaymentStatus          string     `json:"repayment_status"`
+	RepaymentPayoffStroops   *int64     `json:"repayment_payoff_stroops,omitempty"`
+	RepaymentLockedAt        *time.Time `json:"repayment_locked_at,omitempty"`
+	RepaymentExpiresAt       *time.Time `json:"repayment_expires_at,omitempty"`
+	RepaymentMGTxID          *string    `json:"repayment_mg_tx_id,omitempty"`
+	RepaymentNextPollAt      *time.Time `json:"repayment_next_poll_at,omitempty"`
+	RepaymentReminderSentAt  *time.Time `json:"repayment_reminder_sent_at,omitempty"`
+	RepaymentVaultTxHash     *string    `json:"repayment_vault_tx_hash,omitempty"`
+	RepaymentVaultAttempts   int        `json:"repayment_vault_attempts"`
+	RepaymentReferenceSentAt *time.Time `json:"repayment_reference_sent_at,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -297,6 +321,36 @@ func (r UpdateLoanRequest) changedFields() map[string]any {
 	}
 	if r.RampRefundedAt != nil {
 		f["ramp_refunded_at"] = r.RampRefundedAt
+	}
+	if r.RepaymentStatus != nil {
+		f["repayment_status"] = r.RepaymentStatus
+	}
+	if r.RepaymentPayoffStroops != nil {
+		f["repayment_payoff_stroops"] = r.RepaymentPayoffStroops
+	}
+	if r.RepaymentLockedAt != nil {
+		f["repayment_locked_at"] = r.RepaymentLockedAt
+	}
+	if r.RepaymentExpiresAt != nil {
+		f["repayment_expires_at"] = r.RepaymentExpiresAt
+	}
+	if r.RepaymentMGTxID != nil {
+		f["repayment_mg_tx_id"] = r.RepaymentMGTxID
+	}
+	if r.RepaymentNextPollAt != nil {
+		f["repayment_next_poll_at"] = r.RepaymentNextPollAt
+	}
+	if r.RepaymentReminderSentAt != nil {
+		f["repayment_reminder_sent_at"] = r.RepaymentReminderSentAt
+	}
+	if r.RepaymentVaultAttempts != nil {
+		f["repayment_vault_attempts"] = r.RepaymentVaultAttempts
+	}
+	if r.RepaymentReferenceSentAt != nil {
+		f["repayment_reference_sent_at"] = r.RepaymentReferenceSentAt
+	}
+	if r.RepaymentVaultTxHash != nil {
+		f["repayment_vault_tx_hash"] = r.RepaymentVaultTxHash
 	}
 	return f
 }

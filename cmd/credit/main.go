@@ -11,6 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/limiter"
+	"github.com/gofiber/swagger"
+
 	_ "github.com/Shamba-Records-Limited/microvault-credit/cmd/credit/docs"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/adapters"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
@@ -31,8 +35,11 @@ import (
 	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
 	atussd "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/providers/africastalking"
 	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/fonbnk"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/relay"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/relay/sources"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/stellaranchor"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/pin"
@@ -47,9 +54,6 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/webhook"
 	"github.com/Shamba-Records-Limited/microvault/platform/cache"
 	"github.com/Shamba-Records-Limited/microvault/platform/database"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/limiter"
-	"github.com/gofiber/swagger"
 )
 
 // @title microvault Credit API
@@ -157,6 +161,12 @@ func main() {
 	)
 
 	// ---- 9. Treasury transfer bridge ----
+	// Derived here rather than at first use: both the Fonbnk off-ramp and the
+	// repayment rail need it, and the two are wired far apart.
+	treasuryAddr, err := cfg.Stellar.TreasuryAddress()
+	if err != nil {
+		log.Fatalf("Treasury address unresolved: %v", err)
+	}
 	treasuryTransfer := ussdadapters.NewStellarTreasuryTransfer(stellarSvc, logger)
 
 	// ---- 10. Off-ramp adapters ----
@@ -270,7 +280,13 @@ func main() {
 		cfg.Stellar.USDCIssuer,
 	)
 	mgFundsTransfer := ussdadapters.NewStellarTreasuryTransfer(mgFundsSvc, logger)
-	mgAuthAddr, _ := cfg.Payments.MoneyGram.AuthAddress()
+	// Fatal rather than ignored: the child-memo namespace is derived from this
+	// address, so an empty one silently puts every SEP-24 session in a memo
+	// space nothing else queries.
+	mgAuthAddr, err := cfg.Payments.MoneyGram.AuthAddress()
+	if err != nil {
+		log.Fatalf("MoneyGram auth address derivation failed: %v", err)
+	}
 	logger.Info("moneygram wallets resolved", "auth_address", mgAuthAddr, "funds_address", mgFundsAddr)
 
 	mgAdapter, err := ussdadapters.NewMoneyGramOffRampAdapter(ussdadapters.MoneyGramOffRampConfig{
@@ -289,6 +305,81 @@ func main() {
 	}
 	log.Printf("MoneyGram cash-pickup registered (home: %s, REST: %t)",
 		cfg.Payments.MoneyGram.HomeDomain, cfg.Payments.MoneyGram.HasRESTCredentials())
+
+	// ---- 10c. Fonbnk off-ramp and the provider relay ----
+	// Fonbnk names the asset by network, and carrier codes come from its own
+	// discovery endpoint. Both are fixed for this deployment's corridor.
+	const fonbnkCryptoCode = "STELLAR_USDC"
+	fonbnkCarrierCodes := map[string]string{"KES": "ke_safaricom"}
+
+	// Two independent gates. Fonbnk is registered only when credentials are
+	// present, and the relay only routes when
+	// ENABLE_PAYMENT_PROVIDER_RELAY_SWITCH is on. With the relay off,
+	// mobile_money still resolves to YellowCard exactly as before, whether or
+	// not Fonbnk is wired.
+	relayRegistry := relay.NewRegistry()
+
+	ycSource, err := sources.NewYellowCardSource(sources.YellowCardSourceConfig{Client: ycAdapter})
+	if err != nil {
+		log.Fatalf("YellowCard rate source construction failed: %v", err)
+	}
+	if err := relayRegistry.Register(ycSource); err != nil {
+		log.Fatalf("Failed to register the YellowCard rate source: %v", err)
+	}
+
+	if cfg.Payments.Fonbnk.ClientID != "" && cfg.Payments.Fonbnk.ClientSecret != "" {
+		fonbnkClient := fonbnk.NewFonbnkAdapter(
+			cfg.Payments.Fonbnk.ClientID,
+			cfg.Payments.Fonbnk.ClientSecret,
+			cfg.Payments.Fonbnk.BaseURL,
+		)
+
+		fonbnkOffRamp, err := ussdadapters.NewFonbnkOffRampAdapter(ussdadapters.FonbnkOffRampConfig{
+			Client:             fonbnkClient,
+			Treasury:           treasuryTransfer,
+			CryptoCurrencyCode: fonbnkCryptoCode,
+			TreasuryAddress:    treasuryAddr,
+			Logger:             logger,
+		})
+		if err != nil {
+			log.Fatalf("Fonbnk off-ramp adapter construction failed: %v", err)
+		}
+		if err := offRampRegistry.Register(fonbnkOffRamp); err != nil {
+			log.Fatalf("Failed to register Fonbnk off-ramp: %v", err)
+		}
+		// A separate alias from mobile_money: the relay pins it explicitly,
+		// so the unrouted default keeps going to YellowCard.
+		if err := offRampRegistry.Alias(adapters.PayoutMethodFonbnkMobileMoney, offramp.ProviderFonbnk); err != nil {
+			log.Fatalf("Failed to alias mobile_money_fonbnk → fonbnk: %v", err)
+		}
+
+		fonbnkSource, err := sources.NewFonbnkSource(sources.FonbnkSourceConfig{
+			Client:             fonbnkClient,
+			CryptoCurrencyCode: fonbnkCryptoCode,
+			CarrierCodes:       fonbnkCarrierCodes,
+		})
+		if err != nil {
+			log.Fatalf("Fonbnk rate source construction failed: %v", err)
+		}
+		if err := relayRegistry.Register(fonbnkSource); err != nil {
+			log.Fatalf("Failed to register the Fonbnk rate source: %v", err)
+		}
+		log.Printf("Fonbnk off-ramp registered (base: %s)", cfg.Payments.Fonbnk.BaseURL)
+	} else {
+		log.Print("Fonbnk credentials absent — off-ramp and rate source not registered")
+	}
+
+	relayRouter, err := relay.New(relay.Config{
+		Registry: relayRegistry,
+		Enabled:  cfg.Payments.EnableProviderRelaySwitch,
+		Default:  string(offramp.ProviderYellowCard),
+		Logger:   logger,
+	})
+	if err != nil {
+		log.Fatalf("Payment relay construction failed: %v", err)
+	}
+	log.Printf("Payment relay: enabled=%t, sources=%v",
+		relayRouter.Enabled(), relayRegistry.Names())
 
 	// 10d. FX orchestrator: MG primary, YC fallback, stale cache last resort.
 	ycFallback := moneygram.FallbackRateFunc(func(ctx context.Context, currency string) (float64, error) {
@@ -371,21 +462,11 @@ func main() {
 	// ---- 10d. Loan product service ----
 	loanProductSvc := loanproduct.NewService(repos.LoanProduct)
 
-	// ---- 11. LoanServiceAdapter (USSD LoanService) ----
-	ctx := context.Background()
-	loanAdapter, err := adapters.NewLoanServiceAdapter(
-		ctx, loanSvc, loanProductSvc, stellarSvc, offRampRegistry, loanNotifier, txnSvc,
-		adapters.FXConfig{BufferPct: cfg.Payments.EntryFXBufferPct}, logger,
-	)
-	if err != nil {
-		log.Fatalf("Failed to create loan service adapter: %v", err)
-	}
-	logger.Info("loan entry-rate buffer configured", "buffer_pct", loanAdapter.FXBufferPct())
-	if fxOrch != nil {
-		loanAdapter.SetFXOrchestrator(fxOrch)
-	}
-	loanAdapter.SetPublicBaseURL(cfg.Server.PublicBaseURL)
-	loanAdapter.SetAccountEnsurer(userAdapter)
+	// ---- 11. Link shortener ----
+	//
+	// Built before the adapters that take it: it is now a constructor
+	// dependency rather than something applied afterwards, so it has to exist
+	// first.
 	var linkShortener urlshortener.Shortener
 	if cfg.Shortener.Enabled() {
 		linkShortener = urlshortener.NewDub(urlshortener.DubOptions{
@@ -396,7 +477,6 @@ func main() {
 			PreviewDescription: cfg.Shortener.PreviewDescription,
 			ImagePreviewURL:    cfg.Shortener.ImagePreviewURL,
 		})
-		loanAdapter.SetShortener(linkShortener)
 		target := cfg.Shortener.BaseURL
 		if target == "" {
 			target = "https://api.dub.co"
@@ -404,18 +484,49 @@ func main() {
 		log.Printf("Link shortener enabled — cash-pickup SMS links are sent to %s", target)
 	}
 
-	// ---- 12. DisbursementStatusAdapter (webhook callbacks) ----
-	disbursementAdapter := adapters.NewDisbursementStatusAdapter(
-		repos.Loan,
-		loanNotifier,
-		txnSvc,
-		stellarSvc,
-		logger,
-	)
-	disbursementAdapter.SetPublicBaseURL(cfg.Server.PublicBaseURL)
-	if linkShortener != nil {
-		disbursementAdapter.SetShortener(linkShortener)
+	// Where borrower cash deposits are credited. The treasury, not a child
+	// account: children carry no USDC trustline, so routing a deposit through
+	// one would cost a sponsored reserve per borrower for an account that only
+	// ever passes funds on.
+
+	// ---- 11b. LoanServiceAdapter (USSD LoanService) ----
+	ctx := context.Background()
+	loanAdapter, err := adapters.NewLoanServiceAdapter(ctx, adapters.LoanAdapterDeps{
+		LoanSvc:      loanSvc,
+		ProductSvc:   loanProductSvc,
+		StellarSvc:   stellarSvc,
+		OffRamps:     offRampRegistry,
+		LoanNotifier: loanNotifier,
+		TxnSvc:       txnSvc,
+		FXConfig:     adapters.FXConfig{BufferPct: cfg.Payments.EntryFXBufferPct},
+		Logger:       logger,
+
+		FXOrchestrator:  fxOrch,
+		PublicBaseURL:   cfg.Server.PublicBaseURL,
+		Shortener:       linkShortener,
+		AccountEnsurer:  userAdapter,
+		RepaymentAnchor: mgClient.Client,
+		TreasuryAddress: treasuryAddr,
+		// The memo namespace follows the SEP-10 signer, which is the auth
+		// wallet — the same address the poller derives from.
+		AnchorAuthAddress: mgAuthAddr,
+		RepaymentWindow:   cfg.Payments.MoneyGram.RepaymentWindow,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create loan service adapter: %v", err)
 	}
+	logger.Info("loan entry-rate buffer configured", "buffer_pct", loanAdapter.FXBufferPct())
+
+	// ---- 12. DisbursementStatusAdapter (webhook callbacks) ----
+	disbursementAdapter := adapters.NewDisbursementStatusAdapter(adapters.DisbursementAdapterDeps{
+		Repo:          repos.Loan,
+		LoanNotifier:  loanNotifier,
+		TxnSvc:        txnSvc,
+		StellarSvc:    stellarSvc,
+		Logger:        logger,
+		PublicBaseURL: cfg.Server.PublicBaseURL,
+		Shortener:     linkShortener,
+	})
 
 	// ---- 12b. Rate service adapter ----
 	// The USSD flow quotes from the same MG-primary/YC-fallback cascade the
@@ -444,7 +555,17 @@ func main() {
 	standardPreset := &ussd.StandardLoanMenuPreset{}
 	standardPreset.Initialize(menuRegistry)
 
-	ussdHandler := ussd.NewUSSDHandler(sessionManager, menuRegistry, userAdapter, loanAdapter, rateSvc, pinService, accountNotifier, loanNotifier)
+	ussdHandler := ussd.NewUSSDHandler(ussd.HandlerDeps{
+		SessionManager:  sessionManager,
+		MenuRegistry:    menuRegistry,
+		UserService:     userAdapter,
+		LoanService:     loanAdapter,
+		RateService:     rateSvc,
+		PINService:      pinService,
+		AccountNotifier: accountNotifier,
+		LoanNotifier:    loanNotifier,
+		RepayPaybill:    cfg.Mobile.RepayPaybill,
+	})
 	ussdService := ussd.NewUSSDService(ussdHandler)
 
 	// Register Africa's Talking USSD provider
@@ -481,22 +602,58 @@ func main() {
 	if err != nil {
 		log.Fatalf("MoneyGram poller adapter construction failed: %v", err)
 	}
-	mgP, err := mgpoller.NewPoller(
-		mgClient,
-		mgPollerAdapter,                   // LoanFetcher + LoanRecorder
-		mgPollerAdapter,                   // LoanRecorder (same impl)
-		disbursementAdapter,               // DisbursementUpdater (reused from YC flow)
-		mgFundsTransfer,                   // funds-wallet sender for USDC to MG anchor
-		stellarrpc.NewVerifier(rpcClient), // confirms MG's refunds landed on-ledger
-		nil,                               // AlertService — log-only for now
-		mgPollerConfig(cfg),
-		logger,
-	)
+	mgP, err := mgpoller.NewPoller(mgpoller.PollerDeps{
+		Client:       mgClient,
+		Fetcher:      mgPollerAdapter,
+		Recorder:     mgPollerAdapter,
+		Disbursement: disbursementAdapter,               // reused from the YC flow
+		Treasury:     mgFundsTransfer,                   // funds-wallet sender for USDC to MG anchor
+		Verifier:     stellarrpc.NewVerifier(rpcClient), // confirms MG's refunds landed on-ledger
+		Alerts:       nil,                               // log-only for now
+		Config:       mgPollerConfig(cfg),
+		Logger:       logger,
+	})
 	if err != nil {
 		log.Fatalf("MoneyGram poller construction failed: %v", err)
 	}
 	go mgP.Start(pollerCtx)
 	log.Println("MoneyGram poller started")
+
+	// MoneyGram deposit driver — the borrower repayment cash-in rail.
+	//
+	// Second Driver on the same runner shape as the withdrawal poller above,
+	// but on its own cadence: a deposit waits on the borrower rather than on
+	// MoneyGram, so it is scheduled from repayment_next_poll_at rather than
+	// polled hard.
+	depositAdapter, err := adapters.NewMoneyGramDepositAdapter(adapters.DepositAdapterDeps{
+		Repo:       repos.Loan,
+		LoanSvc:    loanSvc,
+		StellarSvc: stellarSvc,
+		TxnSvc:     txnSvc,
+		Logger:     logger,
+	})
+	if err != nil {
+		log.Fatalf("MoneyGram deposit adapter construction failed: %v", err)
+	}
+	repaymentNotifier, err := adapters.NewRepaymentNotifierAdapter(repos.Loan, loanNotifier, cfg.Server.PublicBaseURL, linkShortener, logger)
+	if err != nil {
+		log.Fatalf("Repayment notifier construction failed: %v", err)
+	}
+	depositDriver, err := mgpoller.NewDepositDriver(mgpoller.DepositDriverDeps{
+		Client:   mgClient,
+		Fetcher:  depositAdapter,
+		Recorder: depositAdapter,
+		Vault:    depositAdapter,
+		Notifier: repaymentNotifier,
+		Alerts:   nil, // log-only for now, same as the withdrawal side
+		Config:   mgPollerConfig(cfg),
+		Logger:   logger,
+	})
+	if err != nil {
+		log.Fatalf("MoneyGram deposit driver construction failed: %v", err)
+	}
+	go depositDriver.Start(pollerCtx)
+	log.Println("MoneyGram deposit driver started")
 
 	// ---- 16. Fiber app + middleware + routes ----
 	app := fiber.New()
@@ -569,26 +726,16 @@ func main() {
 	}()
 
 	// ---- 18. Graceful shutdown ----
+	//
+	// Teardown order is the container's, not this function's: resources shut
+	// down in reverse of the order newLifecycle provided them, so the pollers
+	// stop before the database and cache they read through. See lifecycle.go.
 	sig := <-sigChan
 	log.Printf("Received signal %s. Shutting down gracefully...", sig)
 
-	pollerCancel()
-
-	if err := app.Shutdown(); err != nil {
-		log.Printf("Fiber shutdown error: %v", err)
-	}
-	log.Println("Fiber server shut down.")
-
-	if err := database.CloseAll(); err != nil {
-		log.Printf("Database shutdown error: %v", err)
-	} else {
-		log.Println("Database connections closed successfully.")
-	}
-
-	if err := cache.CloseAll(); err != nil {
-		log.Printf("Cache shutdown error: %v", err)
-	} else {
-		log.Println("Cache connections closed successfully.")
+	lifecycle := newLifecycle(pollerCancel, app)
+	if errs := lifecycle.Shutdown(); errs != nil {
+		log.Printf("Shutdown completed with errors: %v", errs)
 	}
 
 	log.Println("Application shutdown complete.")
@@ -616,6 +763,29 @@ func mgPollerConfig(cfg *config.Config) mgpoller.PollerConfig {
 		c.RefundDestination = addr
 	} else {
 		log.Printf("MoneyGram funds address unresolved, refund destination falls back to the SEP-10 account: %v", err)
+	}
+	// Borrower repayment cash-in. Left at DefaultConfig's values when unset,
+	// rather than config restating the defaults.
+	if mg.RepaymentPollInterval > 0 {
+		c.DepositPollInterval = mg.RepaymentPollInterval
+	}
+	if mg.RepaymentReminderBefore > 0 {
+		c.DepositReminderBefore = mg.RepaymentReminderBefore
+	}
+	if mg.RepaymentVaultMaxAttempt > 0 {
+		c.DepositVaultMaxAttempts = mg.RepaymentVaultMaxAttempt
+	}
+	// The per-row schedule. DepositPollInterval only sets how often the runner
+	// asks; these decide what it gets back, so both have to shrink together for
+	// a development deposit to move quickly.
+	if mg.RepaymentActiveBackoff > 0 {
+		c.DepositActiveBackoff = mg.RepaymentActiveBackoff
+	}
+	if mg.RepaymentIdleBackoff > 0 {
+		c.DepositIdleBackoff = mg.RepaymentIdleBackoff
+	}
+	if mg.RepaymentVaultRetryBackoff > 0 {
+		c.DepositVaultRetryBackoff = mg.RepaymentVaultRetryBackoff
 	}
 	c.RefundAssetIssuer = cfg.Stellar.USDCIssuer
 	return c

@@ -16,11 +16,6 @@ var ErrDuplicateLoanRequest = errors.New("duplicate loan request within dedupe w
 // dedupeGate is a small in-memory TTL set used to suppress accidental
 // double-submits from USSD retries or carrier replays. The window is short
 // (seconds) — anything beyond that is a genuinely new request.
-//
-// In-memory is intentional: dedupe is a best-effort guard against the
-// fast-path replay case, not a strong invariant. A persistent guard would
-// belong on the loans table as a unique index or in Redis; until USSD
-// retries cause real pain that's premature.
 type dedupeGate struct {
 	mu   sync.Mutex
 	seen map[string]time.Time

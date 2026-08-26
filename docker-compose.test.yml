@@ -25,6 +25,11 @@ services:
       POSTGRES_USER: ${TEST_DB_USER:-microvault_test}
       POSTGRES_PASSWORD: ${TEST_DB_PASSWORD:-microvault_test}
       POSTGRES_DB: ${TEST_DB_NAME:-microvault_test}
+      # Pinned, not defaulted. Postgres 18 images default PGDATA to
+      # /var/lib/postgresql/18/docker, which is not where the tmpfs below is
+      # mounted; the entrypoint then aborts on the "unused mount/volume" check
+      # and the container never starts. Same value as docker-compose.yml.
+      PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "5435:5432"
     # tmpfs instead of a named volume: the data is thrown away on teardown and

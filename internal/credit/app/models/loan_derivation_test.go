@@ -80,8 +80,10 @@ func TestPickupReadyGuardsTheSMSExactlyOnce(t *testing.T) {
 }
 
 func TestIsDisbursementTerminal(t *testing.T) {
-	terminal := []string{LoanStatusDisbursed, LoanStatusOffRampFailed,
-		LoanStatusCancelled, LoanStatusRepaid, LoanStatusDefaulted}
+	terminal := []string{
+		LoanStatusDisbursed, LoanStatusOffRampFailed,
+		LoanStatusCancelled, LoanStatusRepaid, LoanStatusDefaulted,
+	}
 	for _, s := range terminal {
 		if l := (&Loan{Status: s}); !l.IsDisbursementTerminal() {
 			t.Errorf("%q should be terminal", s)
@@ -95,5 +97,31 @@ func TestIsDisbursementTerminal(t *testing.T) {
 	l.RampRefundDeclaredAt = &now
 	if l.IsDisbursementTerminal() {
 		t.Error("a declared refund awaiting inbound USDC must stay in flight")
+	}
+}
+
+func TestIsRepaymentOpen(t *testing.T) {
+	open := map[string]bool{
+		LoanRepaymentStatusNone:          false,
+		LoanRepaymentStatusInitiated:     true,
+		LoanRepaymentStatusFundsReceived: true,
+		LoanRepaymentStatusSettled:       false,
+		LoanRepaymentStatusExpired:       false,
+		LoanRepaymentStatusFailed:        false,
+	}
+
+	for status, want := range open {
+		l := &Loan{RepaymentStatus: status}
+		if got := l.IsRepaymentOpen(); got != want {
+			t.Errorf("IsRepaymentOpen() with status %q = %v, want %v", status, got, want)
+		}
+	}
+}
+
+// The zero-value Loan predates migration 000025's default, and must not read as
+// an open repayment.
+func TestIsRepaymentOpen_ZeroValue(t *testing.T) {
+	if (&Loan{}).IsRepaymentOpen() {
+		t.Fatal("zero-value loan reports an open repayment")
 	}
 }

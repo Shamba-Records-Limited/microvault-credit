@@ -14,6 +14,10 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/stellaranchor"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
+
+	"github.com/samber/oops"
+
+	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
 )
 
 // Compile-time checks.
@@ -21,6 +25,15 @@ var (
 	_ mgpoller.LoanFetcher  = (*MoneyGramPollerAdapter)(nil)
 	_ mgpoller.LoanRecorder = (*MoneyGramPollerAdapter)(nil)
 )
+
+// pollerAdapterErr starts an error builder for the withdrawal poller's
+// persistence half.
+func pollerAdapterErr(op string) oops.OopsErrorBuilder {
+	return oops.In(pkgErrors.DomainMoneyGramPoller).
+		Tags("withdrawal").
+		With(pkgErrors.AttrDirection, "withdrawal").
+		With(pkgErrors.AttrOperation, op)
+}
 
 // MoneyGramPollerAdapter bridges microvault-credit's loan repository to the
 // generic mgpoller in microvault. mgpoller defines the state machine and
@@ -43,10 +56,12 @@ func NewMoneyGramPollerAdapter(
 	logger *slog.Logger,
 ) (*MoneyGramPollerAdapter, error) {
 	if repo == nil {
-		return nil, fmt.Errorf("moneygram poller adapter: repo is required")
+		return nil, pollerAdapterErr("new").With(pkgErrors.AttrDependency, "loan_repository").
+			Code(pkgErrors.CodeMissingDependency).Errorf("required dependency is missing")
 	}
 	if loanSvc == nil {
-		return nil, fmt.Errorf("moneygram poller adapter: loan service is required")
+		return nil, pollerAdapterErr("new").With(pkgErrors.AttrDependency, "loan_service").
+			Code(pkgErrors.CodeMissingDependency).Errorf("required dependency is missing")
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -83,7 +98,8 @@ func (a *MoneyGramPollerAdapter) GetActiveMoneyGramLoans(ctx context.Context, li
 // only set those that arrived non-empty.
 func (a *MoneyGramPollerAdapter) RecordTransactionUpdate(ctx context.Context, loanID string, tx *stellaranchor.Transaction) error {
 	if tx == nil {
-		return fmt.Errorf("moneygram poller adapter: nil transaction for loan %s", loanID)
+		return pollerAdapterErr("record_transaction_update").With(pkgErrors.AttrLoanID, loanID).
+			Code(pkgErrors.CodeNilTransaction).Errorf("polled transaction was nil")
 	}
 
 	req := loan.UpdateLoanRequest{}
@@ -162,7 +178,8 @@ func (a *MoneyGramPollerAdapter) RecordTransactionUpdate(ctx context.Context, lo
 	}
 
 	if _, err := a.loanSvc.Update(ctx, loanID, req); err != nil {
-		return fmt.Errorf("moneygram poller adapter: update loan %s: %w", loanID, err)
+		return pollerAdapterErr("record_transaction_update").With(pkgErrors.AttrLoanID, loanID).
+			Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not update the loan")
 	}
 
 	if pending != nil {
@@ -255,10 +272,6 @@ func (a *MoneyGramPollerAdapter) recordOffRampTransaction(ctx context.Context, l
 		"loan_id", loanID, "amount_cents", amountCents, "currency", asset, "status", final)
 }
 
-// RecordSendUSDC persists the treasury to MG anchor tx hash on the loan and
-// writes the matching on-chain transaction row. The hash doubles as the
-// idempotency marker: its presence makes HasStellarSend true, so a later tick
-// refuses to pay twice even if MG is slow to echo stellar_transaction_id.
 // sendPendingMarker is written to loans.ramp_stellar_tx_hash to claim a send
 // before it is submitted. A real hash is 64 hex chars, so this sentinel is
 // unambiguous. Its presence makes HasStellarSend true, which blocks a second
@@ -271,7 +284,8 @@ func (a *MoneyGramPollerAdapter) RecordSendAttempt(ctx context.Context, loanID s
 	if _, err := a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
 		RampStellarTxHash: &marker,
 	}); err != nil {
-		return fmt.Errorf("claim send attempt for loan %s: %w", loanID, err)
+		return pollerAdapterErr("record_send_attempt").With(pkgErrors.AttrLoanID, loanID).
+			Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not claim the send attempt")
 	}
 	return nil
 }
@@ -283,14 +297,16 @@ func (a *MoneyGramPollerAdapter) ClearSendAttempt(ctx context.Context, loanID st
 	if _, err := a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
 		RampStellarTxHash: &empty,
 	}); err != nil {
-		return fmt.Errorf("release send claim for loan %s: %w", loanID, err)
+		return pollerAdapterErr("clear_send_attempt").With(pkgErrors.AttrLoanID, loanID).
+			Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not release the send claim")
 	}
 	return nil
 }
 
 func (a *MoneyGramPollerAdapter) RecordSendUSDC(ctx context.Context, loanID string, txHash string) error {
 	if txHash == "" {
-		return fmt.Errorf("moneygram poller adapter: empty send tx hash for loan %s", loanID)
+		return pollerAdapterErr("record_send_usdc").With(pkgErrors.AttrLoanID, loanID).
+			Code(pkgErrors.CodeIncompleteResponse).Errorf("send transaction hash is empty")
 	}
 
 	// Persisted so the poller's idempotency guard survives a slow MoneyGram
@@ -298,7 +314,8 @@ func (a *MoneyGramPollerAdapter) RecordSendUSDC(ctx context.Context, loanID stri
 	if _, err := a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
 		RampStellarTxHash: &txHash,
 	}); err != nil {
-		return fmt.Errorf("record send usdc hash for loan %s: %w", loanID, err)
+		return pollerAdapterErr("record_send_usdc").With(pkgErrors.AttrLoanID, loanID).
+			Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not record the send hash")
 	}
 
 	a.recordAnchorTransferTransaction(ctx, loanID, txHash)
@@ -310,14 +327,6 @@ func (a *MoneyGramPollerAdapter) RecordSendUSDC(ctx context.Context, loanID stri
 
 // recordAnchorTransferTransaction writes the on-chain USDC leg of the anchor
 // withdrawal to the transactions ledger.
-//
-// The mobile-money path records its off-ramp in recordSuccessfulInitiate, but
-// that branch is YellowCard-only, so cash-pickup disbursements previously left
-// no transaction row at all — the treasury payment existed solely as
-// loans.ramp_stellar_tx_hash and a log line.
-//
-// Best effort: the USDC has already left the treasury by the time this runs,
-// so a bookkeeping failure must not fail the send or trigger a re-send.
 func (a *MoneyGramPollerAdapter) recordAnchorTransferTransaction(ctx context.Context, loanID, txHash string) {
 	if a.txnSvc == nil {
 		return
@@ -369,7 +378,8 @@ func (a *MoneyGramPollerAdapter) recordAnchorTransferTransaction(ctx context.Con
 // which Stellar transaction.
 func (a *MoneyGramPollerAdapter) RecordRefund(ctx context.Context, loanID string, refund mgpoller.RefundRecord) error {
 	if refund.TxHash == "" {
-		return fmt.Errorf("moneygram poller adapter: empty refund tx hash for loan %s", loanID)
+		return pollerAdapterErr("record_refund").With(pkgErrors.AttrLoanID, loanID).
+			Code(pkgErrors.CodeIncompleteResponse).Errorf("refund transaction hash is empty")
 	}
 
 	now := time.Now()
@@ -384,7 +394,8 @@ func (a *MoneyGramPollerAdapter) RecordRefund(ctx context.Context, loanID string
 	req.RampRefundShortfall = &refund.ShortfallStroops
 
 	if _, err := a.loanSvc.Update(ctx, loanID, req); err != nil {
-		return fmt.Errorf("record refund for loan %s: %w", loanID, err)
+		return pollerAdapterErr("record_refund").With(pkgErrors.AttrLoanID, loanID).
+			Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not record the refund")
 	}
 
 	a.logger.Info("MoneyGram refund recorded",
@@ -449,12 +460,6 @@ func (a *MoneyGramPollerAdapter) recordRefundTransaction(ctx context.Context, lo
 }
 
 // settleTransaction advances a freshly created row to its final status.
-//
-// The transaction service rejects pending -> success outright: its transition
-// table only allows pending -> submitted -> success. A single update to
-// success therefore returned ErrInvalidStatusTransition, which these
-// best-effort callers logged and swallowed, leaving settled payments recorded
-// as pending forever.
 func (a *MoneyGramPollerAdapter) settleTransaction(ctx context.Context, txnID, kind, loanID, final string) {
 	steps := []string{txmodels.TxStatusSubmitted}
 	if final == txmodels.TxStatusSuccess {
