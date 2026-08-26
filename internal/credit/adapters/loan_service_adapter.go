@@ -79,7 +79,8 @@ type LoanServiceAdapter struct {
 	accountEnsurer AccountEnsurer            // ensures the child on-chain identity exists before lending
 
 	repayAnchor         *stellaranchor.Client // memo-scoped SEP-24 client for borrower cash deposits
-	repayTreasuryPubkey string                // deposit destination and memo derivation seed
+	repayTreasuryPubkey string                // deposit destination
+	repayAuthPubkey     string                // SEP-10 signer, and the child-memo namespace
 	repayWindow         time.Duration         // how long an opened deposit stays valid
 }
 
@@ -211,34 +212,115 @@ func (a *LoanServiceAdapter) notifyAsync(label, loanID string, send func(ctx con
 // deposit is created under the borrower's own SEP-10 memo, which is what
 // attributes the inbound USDC to them — MoneyGram picks the on-chain memo and
 // we cannot make it carry ours.
-func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phoneNumber string) (*ussd.RepaymentInitiation, error) {
+func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phoneNumber string) error {
 	errb := oops.In(pkgErrors.DomainRepaymentCashIn).Tags("moneygram", "sep24").With(pkgErrors.AttrLoanID, loanID)
 
-	if a.repayAnchor == nil || a.repayTreasuryPubkey == "" {
-		return nil, errb.Code(pkgErrors.CodeAnchorNotWired).Errorf("repayment anchor is not configured")
+	// Synchronous, because a USSD screen that promises an SMS must not be shown
+	// when the request could never have produced one. Both checks are local.
+	if a.repayAnchor == nil || a.repayTreasuryPubkey == "" || a.repayAuthPubkey == "" {
+		return errb.Code(pkgErrors.CodeAnchorNotWired).Errorf("repayment anchor is not configured")
+	}
+	if loanID == "" || phoneNumber == "" {
+		return errb.Code(pkgErrors.CodeMissingAccount).Errorf("loan id and phone number are both required")
+	}
+
+	// Everything past here talks to MoneyGram and took over fifteen seconds
+	// against the sandbox — past the point Africa's Talking abandons the
+	// session. It runs on its own context so it outlives the USSD turn.
+	go a.runRepaymentInitiation(loanID, phoneNumber)
+
+	return nil
+}
+
+// depositMemoFor is what MoneyGram is asked to stamp on the inbound payment.
+//
+// The loan reference when there is one, because that is the identifier the
+// borrower and support both quote. Falls back to the loan ID, which is always
+// present. Truncated to MEMO_TEXT's 28 bytes — both values are ASCII, so bytes
+// and characters agree.
+func depositMemoFor(loanRow *loan.LoanResponse, loanID string) string {
+	memo := loanID
+	if loanRow.LoanReference != nil && *loanRow.LoanReference != "" {
+		memo = *loanRow.LoanReference
+	}
+	if len(memo) > 28 {
+		memo = memo[:28]
+	}
+	return memo
+}
+
+// depositCorridorErr rejects a payoff outside MoneyGram's cash-in corridor,
+// returning nil when it is inside.
+//
+// The USSD menu already hides the rail for an ineligible payoff, but this path
+// is also reachable without that screen, and the anchor would otherwise refuse
+// the deposit after the quote is locked and the link is on its way to the
+// borrower.
+//
+// The two ends carry different codes because they are actioned differently:
+// below the floor the borrower uses mobile money, above the ceiling they have
+// to split the payment.
+func depositCorridorErr(errb oops.OopsErrorBuilder, payoffStroops int64) error {
+	switch {
+	case payoffStroops < ussd.MinMoneyGramDepositStroops:
+		return errb.
+			Code(pkgErrors.CodeBelowAnchorMinimum).
+			With("payoff_stroops", payoffStroops).
+			With("minimum_stroops", ussd.MinMoneyGramDepositStroops).
+			Errorf("payoff is below MoneyGram's deposit floor")
+	case payoffStroops > ussd.MaxMoneyGramDepositStroops:
+		return errb.
+			Code(pkgErrors.CodeAboveAnchorMaximum).
+			With("payoff_stroops", payoffStroops).
+			With("maximum_stroops", ussd.MaxMoneyGramDepositStroops).
+			Errorf("payoff is above MoneyGram's deposit ceiling")
+	}
+	return nil
+}
+
+// runRepaymentInitiation does the slow half of opening a cash deposit.
+//
+// Nothing here can reach the USSD screen: by the time it runs the session has
+// been answered and very likely closed. The borrower learns the outcome by SMS
+// either way, which is why every exit path sends one.
+func (a *LoanServiceAdapter) runRepaymentInitiation(loanID, phoneNumber string) {
+	ctx, cancel := context.WithTimeout(context.Background(), repaymentInitiationTimeout)
+	defer cancel()
+
+	errb := oops.In(pkgErrors.DomainRepaymentCashIn).Tags("moneygram", "sep24").With(pkgErrors.AttrLoanID, loanID)
+
+	fail := func(err error) {
+		a.logger.Error("repayment initiation failed",
+			pkgErrors.AttrLoanID, loanID, "error", err)
+		a.sendRepaymentFailed(ctx, loanID, phoneNumber)
 	}
 
 	quote, err := a.GetRepaymentQuote(ctx, loanID)
 	if err != nil {
-		return nil, errb.Code(pkgErrors.CodeQuoteFailed).Wrapf(err, "could not quote the payoff")
+		fail(errb.Code(pkgErrors.CodeQuoteFailed).Wrapf(err, "could not quote the payoff"))
+		return
 	}
-	if quote.AmountUSDCStroops < ussd.MinMoneyGramDepositStroops {
-		return nil, errb.
-			Code(pkgErrors.CodeBelowAnchorMinimum).
-			With("payoff_stroops", quote.AmountUSDCStroops).
-			With("minimum_stroops", ussd.MinMoneyGramDepositStroops).
-			Errorf("payoff is below MoneyGram's deposit floor")
+	if err := depositCorridorErr(errb, quote.AmountUSDCStroops); err != nil {
+		fail(err)
+		return
 	}
 
 	loanRow, err := a.loanSvc.GetByID(ctx, loanID)
 	if err != nil {
-		return nil, errb.Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not load the loan")
+		fail(errb.Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not load the loan"))
+		return
 	}
 	if loanRow.RampChildAccountIndex == nil {
-		return nil, errb.Code(pkgErrors.CodeMissingAccountIndex).Errorf("loan has no child account index to scope the SEP-10 session")
+		fail(errb.Code(pkgErrors.CodeMissingAccountIndex).Errorf("loan has no child account index to scope the SEP-10 session"))
+		return
 	}
 
-	childMemo := stellaranchor.ChildAccountMemo(a.repayTreasuryPubkey, uint32(*loanRow.RampChildAccountIndex))
+	// Derived from the auth wallet, not the treasury. ChildAccountMemo is
+	// namespaced by the key it is seeded with, and the poller seeds it with
+	// the anchor client's auth address — seeding it differently here would put
+	// the deposit in a memo space the poller never queries, so the borrower
+	// could pay and nothing would ever see it.
+	childMemo := stellaranchor.ChildAccountMemo(a.repayAuthPubkey, uint32(*loanRow.RampChildAccountIndex))
 
 	resp, err := a.repayAnchor.InitiateDeposit(ctx, childMemo, stellaranchor.DepositRequest{
 		AssetCode: "USDC",
@@ -248,9 +330,20 @@ func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phon
 		// and adding one per borrower would cost a sponsored reserve for an
 		// account that only ever passes funds through.
 		Account: a.repayTreasuryPubkey,
+		// Ask MoneyGram to stamp the loan onto the payment it makes to the
+		// treasury. Every borrower's deposit lands on that one address, so
+		// without a memo the payments are told apart only by amount and
+		// timing. SEP-10's memo identifies the borrower; this identifies which
+		// of their loans is being settled.
+		//
+		// Optional in the spec, so MoneyGram may drop it. deposit_memo on the
+		// polled transaction reports what was actually attached.
+		Memo:     depositMemoFor(loanRow, loanID),
+		MemoType: "text",
 	})
 	if err != nil {
-		return nil, errb.Code(pkgErrors.CodeDepositInitFailed).With("child_memo", childMemo).Wrapf(err, "anchor refused the deposit")
+		fail(errb.Code(pkgErrors.CodeDepositInitFailed).With("child_memo", childMemo).Wrapf(err, "anchor refused the deposit"))
+		return
 	}
 
 	now := time.Now()
@@ -263,21 +356,44 @@ func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phon
 		RepaymentExpiresAt:     &expiresAt,
 		RepaymentMGTxID:        &resp.ID,
 	}); err != nil {
-		// The deposit exists at MoneyGram but we have no record of it. Loud:
-		// the borrower may pay against a transaction nothing will reconcile.
-		return nil, errb.
-			Code(pkgErrors.CodeStateWriteFailed).
-			With(pkgErrors.AttrMoneyGramTxID, resp.ID).
-			Wrapf(err, "deposit opened but the quote lock was not recorded")
+		// The deposit exists at MoneyGram but we have no record of it, so the
+		// poller will never drive it and a borrower who pays is unreconciled.
+		// Louder than the other failures for that reason.
+		a.logger.Error("CRITICAL: deposit opened but the quote lock was not recorded",
+			pkgErrors.AttrLoanID, loanID,
+			pkgErrors.AttrMoneyGramTxID, resp.ID,
+			"error", err)
+		a.sendRepaymentFailed(ctx, loanID, phoneNumber)
+		return
 	}
 
 	a.sendRepaymentLink(ctx, loanRow, phoneNumber, resp.URL, quote, expiresAt)
+}
 
-	return &ussd.RepaymentInitiation{
-		LoanID:            loanID,
-		AmountUSDCStroops: quote.AmountUSDCStroops,
-		ExpiresAt:         expiresAt,
-	}, nil
+// repaymentInitiationTimeout bounds the background initiation. Generous
+// because it spans two MoneyGram round trips and a link shortener, but finite
+// so a hung provider cannot leak a goroutine per repayment attempt.
+const repaymentInitiationTimeout = 2 * time.Minute
+
+// sendRepaymentFailed tells the borrower no deposit was opened.
+//
+// Best effort, and deliberately vague: the borrower can act on "try again",
+// not on which leg of the anchor handshake failed.
+func (a *LoanServiceAdapter) sendRepaymentFailed(ctx context.Context, loanID, phoneNumber string) {
+	if a.loanNotifier == nil || phoneNumber == "" {
+		return
+	}
+	n := contracts.LoanNotification{
+		LoanID:      loanID,
+		PhoneNumber: phoneNumber,
+	}
+	if loanRow, err := a.loanSvc.GetByID(ctx, loanID); err == nil && loanRow.LoanReference != nil {
+		n.LoanReference = *loanRow.LoanReference
+	}
+	if err := a.loanNotifier.NotifyRepaymentFailed(ctx, n); err != nil {
+		a.logger.Error("failed to send the repayment failure notice",
+			pkgErrors.AttrLoanID, loanID, "error", err)
+	}
 }
 
 // FXBufferPct reports the buffer applied on the provider-Quoter path, after
@@ -342,7 +458,17 @@ type LoanAdapterDeps struct {
 	// TreasuryAddress is where borrower cash deposits are credited. Required
 	// alongside RepaymentAnchor; either alone leaves repayment unavailable.
 	TreasuryAddress string
-	RepaymentWindow time.Duration
+	// AnchorAuthAddress is the wallet that signs SEP-10, and the seed the
+	// child memo is derived from.
+	//
+	// Separate from TreasuryAddress because the two answer different
+	// questions: where the money lands, and which memo namespace the session
+	// belongs to. They default to the same key, and the poller has always
+	// derived the memo from the auth wallet — deriving it from the treasury
+	// here meant the two disagreed the moment MONEYGRAM_AUTH_SECRET was set
+	// to anything else.
+	AnchorAuthAddress string
+	RepaymentWindow   time.Duration
 }
 
 func NewLoanServiceAdapter(ctx context.Context, deps LoanAdapterDeps) (*LoanServiceAdapter, error) {
@@ -417,6 +543,7 @@ func NewLoanServiceAdapter(ctx context.Context, deps LoanAdapterDeps) (*LoanServ
 		accountEnsurer:      deps.AccountEnsurer,
 		repayAnchor:         deps.RepaymentAnchor,
 		repayTreasuryPubkey: deps.TreasuryAddress,
+		repayAuthPubkey:     deps.AnchorAuthAddress,
 		repayWindow:         deps.RepaymentWindow,
 	}, nil
 }

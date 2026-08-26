@@ -3,14 +3,17 @@ package adapters
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/samber/oops"
 
 	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
 
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
+	"github.com/Shamba-Records-Limited/microvault/pkg/urlshortener"
 )
 
 // Compile-time check.
@@ -23,9 +26,11 @@ var _ mgpoller.RepaymentNotifier = (*RepaymentNotifierAdapter)(nil)
 // languages — it holds a projection, not a loan. This adapter is where the row
 // is read back and the message assembled.
 type RepaymentNotifierAdapter struct {
-	repo   repository.LoanRepository
-	loans  contracts.LoanNotifier
-	logger *slog.Logger
+	repo          repository.LoanRepository
+	loans         contracts.LoanNotifier
+	publicBaseURL string
+	shortener     urlshortener.Shortener
+	logger        *slog.Logger
 }
 
 // NewRepaymentNotifierAdapter builds the adapter. repo and notifier are
@@ -33,6 +38,8 @@ type RepaymentNotifierAdapter struct {
 func NewRepaymentNotifierAdapter(
 	repo repository.LoanRepository,
 	notifier contracts.LoanNotifier,
+	publicBaseURL string,
+	shortener urlshortener.Shortener,
 	logger *slog.Logger,
 ) (*RepaymentNotifierAdapter, error) {
 	if repo == nil {
@@ -51,9 +58,11 @@ func NewRepaymentNotifierAdapter(
 		logger = slog.Default()
 	}
 	return &RepaymentNotifierAdapter{
-		repo:   repo,
-		loans:  notifier,
-		logger: logger.With("component", "repayment_notifier"),
+		repo:          repo,
+		loans:         notifier,
+		publicBaseURL: strings.TrimSuffix(publicBaseURL, "/"),
+		shortener:     shortener,
+		logger:        logger.With("component", "repayment_notifier"),
 	}, nil
 }
 
@@ -66,6 +75,25 @@ func (a *RepaymentNotifierAdapter) NotifyRepaymentReference(loanID, reference st
 	return a.send(loanID, "reference", func(ctx context.Context, n contracts.LoanNotification) error {
 		n.CashPickupRef = reference
 		return a.loans.NotifyRepaymentReference(ctx, n)
+	})
+}
+
+// NotifyRepaymentMoreInfo sends MoneyGram's transaction page when no reference
+// has been issued.
+//
+// Errors rather than sending a message with an empty link: the whole point of
+// this notification is the URL, and copy that trails off after "open this for
+// your MoneyGram payment details:" tells the borrower nothing while consuming
+// the one-shot send marker.
+func (a *RepaymentNotifierAdapter) NotifyRepaymentMoreInfo(loanID string) error {
+	return a.send(loanID, "more_info", func(ctx context.Context, n contracts.LoanNotification) error {
+		if n.InteractiveURL == "" {
+			return oops.In(errDomain).
+				Code(pkgErrors.CodeIncompleteResponse).
+				With(pkgErrors.AttrLoanID, loanID).
+				Errorf("no transaction page to send")
+		}
+		return a.loans.NotifyRepaymentMoreInfo(ctx, n)
 	})
 }
 
@@ -92,6 +120,32 @@ func (a *RepaymentNotifierAdapter) NotifyRepaymentExpired(loanID string) error {
 	return a.send(loanID, "expired", a.loans.NotifyRepaymentExpired)
 }
 
+// moreInfoLink builds the SMS link to MoneyGram's transaction page.
+//
+// Same ladder as the cash-pickup rail: dub is pointed at MoneyGram's own URL,
+// so the link preview names MoneyGram rather than us, and the internal
+// /r/{code} redirect is the fallback for when dub is unconfigured or fails.
+// Returns "" when neither is available, which the caller treats as a refusal
+// to send rather than a message with a hole in it.
+func (a *RepaymentNotifierAdapter) moreInfoLink(ctx context.Context, loanRow *models.Loan) string {
+	fallback := ""
+	if a.publicBaseURL != "" && loanRow.RampMoreInfoShortCode != nil && *loanRow.RampMoreInfoShortCode != "" {
+		fallback = a.publicBaseURL + "/r/" + *loanRow.RampMoreInfoShortCode
+	}
+
+	var rawURL string
+	if loanRow.RampMoreInfoURL != nil {
+		rawURL = *loanRow.RampMoreInfoURL
+	}
+
+	link, err := shortenedLink(ctx, a.shortener, rawURL, fallback)
+	if err != nil {
+		a.logger.Warn("dub shorten failed; sending the redirect link instead",
+			pkgErrors.AttrLoanID, loanRow.ID, "error", err)
+	}
+	return link
+}
+
 // send loads the loan and hands a populated notification to one notifier
 // method.
 func (a *RepaymentNotifierAdapter) send(loanID, kind string, notify func(context.Context, contracts.LoanNotification) error) error {
@@ -112,6 +166,11 @@ func (a *RepaymentNotifierAdapter) send(loanID, kind string, notify func(context
 		UserID:             loanRow.UserID,
 		DisplayCurrency:    "USDC",
 		RepaymentExpiresAt: loanRow.RepaymentExpiresAt,
+		// The /r/{code} redirect, not MoneyGram's raw URL: that one carries a
+		// JWT in its query string and would split a one-segment SMS into four.
+		// RepaymentWindowExpiring reads this too, and rendered an empty line
+		// where the link belongs until it was populated here.
+		InteractiveURL: a.moreInfoLink(ctx, loanRow),
 	}
 	if loanRow.LoanReference != nil {
 		n.LoanReference = *loanRow.LoanReference

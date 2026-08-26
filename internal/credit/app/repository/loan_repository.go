@@ -116,9 +116,17 @@ func (r *loanRepository) Create(ctx context.Context, loan *models.Loan) error {
 // --- Read Operations ---
 
 // GetByID retrieves a loan record by its ID.
+// GetByID loads one loan with its user.
+//
+// The user is preloaded because callers that build a borrower notification off
+// this row need the mobile number, and every other Get* method here already
+// preloads it. GetByID was the one exception, which is how the repayment
+// notifier came to send nothing at all: it read a row whose User was always
+// nil and failed with "loan has no phone number to notify".
 func (r *loanRepository) GetByID(ctx context.Context, id string) (*models.Loan, error) {
 	var loan models.Loan
 	result := r.db.WithContext(ctx).
+		Preload("User").
 		Where("id = ? AND deleted_at IS NULL", id).
 		First(&loan)
 	if errors.Is(result.Error, gorm.ErrRecordNotFound) {

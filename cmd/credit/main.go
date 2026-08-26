@@ -271,7 +271,13 @@ func main() {
 		cfg.Stellar.USDCIssuer,
 	)
 	mgFundsTransfer := ussdadapters.NewStellarTreasuryTransfer(mgFundsSvc, logger)
-	mgAuthAddr, _ := cfg.Payments.MoneyGram.AuthAddress()
+	// Fatal rather than ignored: the child-memo namespace is derived from this
+	// address, so an empty one silently puts every SEP-24 session in a memo
+	// space nothing else queries.
+	mgAuthAddr, err := cfg.Payments.MoneyGram.AuthAddress()
+	if err != nil {
+		log.Fatalf("MoneyGram auth address derivation failed: %v", err)
+	}
 	logger.Info("moneygram wallets resolved", "auth_address", mgAuthAddr, "funds_address", mgFundsAddr)
 
 	mgAdapter, err := ussdadapters.NewMoneyGramOffRampAdapter(ussdadapters.MoneyGramOffRampConfig{
@@ -421,7 +427,10 @@ func main() {
 		AccountEnsurer:  userAdapter,
 		RepaymentAnchor: mgClient.Client,
 		TreasuryAddress: treasuryAddr,
-		RepaymentWindow: cfg.Payments.MoneyGram.RepaymentWindow,
+		// The memo namespace follows the SEP-10 signer, which is the auth
+		// wallet — the same address the poller derives from.
+		AnchorAuthAddress: mgAuthAddr,
+		RepaymentWindow:   cfg.Payments.MoneyGram.RepaymentWindow,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create loan service adapter: %v", err)
@@ -546,7 +555,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("MoneyGram deposit adapter construction failed: %v", err)
 	}
-	repaymentNotifier, err := adapters.NewRepaymentNotifierAdapter(repos.Loan, loanNotifier, logger)
+	repaymentNotifier, err := adapters.NewRepaymentNotifierAdapter(repos.Loan, loanNotifier, cfg.Server.PublicBaseURL, linkShortener, logger)
 	if err != nil {
 		log.Fatalf("Repayment notifier construction failed: %v", err)
 	}
@@ -685,6 +694,18 @@ func mgPollerConfig(cfg *config.Config) mgpoller.PollerConfig {
 	}
 	if mg.RepaymentVaultMaxAttempt > 0 {
 		c.DepositVaultMaxAttempts = mg.RepaymentVaultMaxAttempt
+	}
+	// The per-row schedule. DepositPollInterval only sets how often the runner
+	// asks; these decide what it gets back, so both have to shrink together for
+	// a development deposit to move quickly.
+	if mg.RepaymentActiveBackoff > 0 {
+		c.DepositActiveBackoff = mg.RepaymentActiveBackoff
+	}
+	if mg.RepaymentIdleBackoff > 0 {
+		c.DepositIdleBackoff = mg.RepaymentIdleBackoff
+	}
+	if mg.RepaymentVaultRetryBackoff > 0 {
+		c.DepositVaultRetryBackoff = mg.RepaymentVaultRetryBackoff
 	}
 	c.RefundAssetIssuer = cfg.Stellar.USDCIssuer
 	return c

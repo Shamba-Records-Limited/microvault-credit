@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -121,16 +122,98 @@ func (a *MoneyGramDepositAdapter) GetDueRepayments(ctx context.Context, limit in
 
 // RecordDepositUpdate persists what a polled deposit transaction tells us.
 //
-// Deliberately thin. Unlike the withdrawal direction, where amount_out is the
-// binding payout and has to be captured the moment MoneyGram locks it, nothing
-// on a deposit transaction can change what the borrower owes — the payoff was
-// quote-locked at initiation. The transaction rows that matter are written at
-// funds_received, where the amounts are final.
+// Two fields, both of which only exist once polling starts. Nothing here can
+// change what the borrower owes — the payoff was quote-locked at initiation —
+// so the transaction rows that matter are still written at funds_received,
+// where the amounts are final.
 func (a *MoneyGramDepositAdapter) RecordDepositUpdate(ctx context.Context, loanID string, tx *stellaranchor.Transaction) error {
 	if tx == nil {
 		return adapterErr("record_deposit_update", loanID).Code(pkgErrors.CodeNilTransaction).Errorf("polled deposit transaction was nil")
 	}
+
+	deadline, hasDeadline := parseAnchorDeadline(tx.UserActionRequiredBy)
+	moreInfoURL := strings.TrimSpace(tx.MoreInfoURL)
+	if !hasDeadline && moreInfoURL == "" {
+		return nil
+	}
+
+	loanRow, err := a.repo.GetByID(ctx, loanID)
+	if err != nil {
+		return adapterErr("record_deposit_update", loanID).
+			Code(pkgErrors.CodeLoanLoadFailed).
+			Wrapf(err, "could not load the loan")
+	}
+
+	var req loan.UpdateLoanRequest
+	changed := false
+
+	// MoneyGram's own deadline replaces the one guessed at initiation. It is
+	// the binding one — the deposit lapses on user_action_required_by whatever
+	// REPAYMENT_WINDOW says, and the sandbox reported roughly 24 hours against
+	// a 96-hour default.
+	//
+	// Written every tick rather than once: MoneyGram may extend or shorten it,
+	// and the last value seen is the one to act on. The write is skipped when
+	// it already matches, so an unchanged deadline costs nothing.
+	if hasDeadline && (loanRow.RepaymentExpiresAt == nil || !loanRow.RepaymentExpiresAt.Equal(deadline)) {
+		req.RepaymentExpiresAt = &deadline
+		changed = true
+	}
+
+	// The transaction page is the only artifact the borrower can act on before
+	// they have paid — external_transaction_id does not exist until after. The
+	// short code is minted once and only once: a second would leave the first
+	// dangling in an SMS already on a handset.
+	if moreInfoURL != "" && (loanRow.RampMoreInfoURL == nil || *loanRow.RampMoreInfoURL != moreInfoURL) {
+		req.RampMoreInfoURL = &moreInfoURL
+		changed = true
+	}
+	if moreInfoURL != "" && (loanRow.RampMoreInfoShortCode == nil || *loanRow.RampMoreInfoShortCode == "") {
+		code, codeErr := newShortCode()
+		if codeErr != nil {
+			a.logger.Warn("more-info short-code generation failed",
+				"loan_id", loanID, "error", codeErr)
+		} else {
+			req.RampMoreInfoShortCode = &code
+			changed = true
+		}
+	}
+
+	if !changed {
+		return nil
+	}
+
+	if _, err := a.loanSvc.Update(ctx, loanID, req); err != nil {
+		return adapterErr("record_deposit_update", loanID).
+			Code(pkgErrors.CodeStateWriteFailed).
+			With("user_action_required_by", tx.UserActionRequiredBy).
+			Wrapf(err, "could not record the deposit update")
+	}
+
+	if req.RepaymentExpiresAt != nil {
+		a.logger.Info("repayment deadline set from the anchor",
+			"loan_id", loanID, "expires_at", deadline.Format(time.RFC3339))
+	}
+	if req.RampMoreInfoShortCode != nil {
+		a.logger.Info("minted more-info short code for repayment",
+			"loan_id", loanID, "short_code", *req.RampMoreInfoShortCode)
+	}
 	return nil
+}
+
+// parseAnchorDeadline reads a SEP-24 timestamp. Anything unparseable is
+// ignored rather than guessed at: a misread deadline would expire a live
+// deposit while the borrower is still on their way to an agent.
+func parseAnchorDeadline(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // MarkFundsReceived records that the borrower's cash reached the treasury.
@@ -340,7 +423,17 @@ func (a *MoneyGramDepositAdapter) recordCashInTransactions(ctx context.Context, 
 	}
 
 	// On-chain leg: the anchor crediting the treasury in USDC.
+	//
+	// The amount is what MoneyGram says it credited, not what we quoted. SEP-24
+	// defines amount_out as net of fees, so on a fee-bearing corridor the two
+	// differ — and a ledger row carrying the quote instead of the credit would
+	// make reconciliation agree with itself while disagreeing with the chain.
+	// Falls back to the payoff only when amount_out is unreadable.
 	depositDesc := "USDC credited to treasury by MoneyGram for a borrower repayment"
+	creditedStroops := payoff
+	if stroops, ok := usdcDecimalToStroops(tx.AmountOut); ok && stroops > 0 {
+		creditedStroops = stroops
+	}
 	var stellarHash *string
 	if h := strings.TrimSpace(tx.StellarTransactionID); h != "" {
 		stellarHash = &h
@@ -350,7 +443,7 @@ func (a *MoneyGramDepositAdapter) recordCashInTransactions(ctx context.Context, 
 		AccountID:        &loanRow.AccountID,
 		LoanID:           &loanID,
 		TxType:           txmodels.TxTypeAnchorDeposit,
-		Amount:           payoff,
+		Amount:           creditedStroops,
 		Asset:            "USDC",
 		StellarTxHash:    stellarHash,
 		ExternalID:       loanRow.RepaymentMGTxID,
@@ -417,6 +510,22 @@ func (a *MoneyGramDepositAdapter) settleTransaction(ctx context.Context, txnID, 
 			return
 		}
 	}
+}
+
+// usdcDecimalToStroops parses a SEP-24 decimal amount into USDC stroops.
+//
+// Separate from decimalToCents: USDC carries seven decimals on Stellar, and
+// treating a USDC figure as cents would understate it by five orders of
+// magnitude.
+func usdcDecimalToStroops(s string) (int64, bool) {
+	var v float64
+	if _, err := fmt.Sscanf(strings.TrimSpace(s), "%f", &v); err != nil {
+		return 0, false
+	}
+	if v < 0 {
+		return 0, false
+	}
+	return int64(v * 1e7), true
 }
 
 // projectRepaymentRecord maps a loan row into the deposit driver's projection.
