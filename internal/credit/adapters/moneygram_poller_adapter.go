@@ -272,10 +272,6 @@ func (a *MoneyGramPollerAdapter) recordOffRampTransaction(ctx context.Context, l
 		"loan_id", loanID, "amount_cents", amountCents, "currency", asset, "status", final)
 }
 
-// RecordSendUSDC persists the treasury to MG anchor tx hash on the loan and
-// writes the matching on-chain transaction row. The hash doubles as the
-// idempotency marker: its presence makes HasStellarSend true, so a later tick
-// refuses to pay twice even if MG is slow to echo stellar_transaction_id.
 // sendPendingMarker is written to loans.ramp_stellar_tx_hash to claim a send
 // before it is submitted. A real hash is 64 hex chars, so this sentinel is
 // unambiguous. Its presence makes HasStellarSend true, which blocks a second
@@ -331,14 +327,6 @@ func (a *MoneyGramPollerAdapter) RecordSendUSDC(ctx context.Context, loanID stri
 
 // recordAnchorTransferTransaction writes the on-chain USDC leg of the anchor
 // withdrawal to the transactions ledger.
-//
-// The mobile-money path records its off-ramp in recordSuccessfulInitiate, but
-// that branch is YellowCard-only, so cash-pickup disbursements previously left
-// no transaction row at all — the treasury payment existed solely as
-// loans.ramp_stellar_tx_hash and a log line.
-//
-// Best effort: the USDC has already left the treasury by the time this runs,
-// so a bookkeeping failure must not fail the send or trigger a re-send.
 func (a *MoneyGramPollerAdapter) recordAnchorTransferTransaction(ctx context.Context, loanID, txHash string) {
 	if a.txnSvc == nil {
 		return
@@ -472,12 +460,6 @@ func (a *MoneyGramPollerAdapter) recordRefundTransaction(ctx context.Context, lo
 }
 
 // settleTransaction advances a freshly created row to its final status.
-//
-// The transaction service rejects pending -> success outright: its transition
-// table only allows pending -> submitted -> success. A single update to
-// success therefore returned ErrInvalidStatusTransition, which these
-// best-effort callers logged and swallowed, leaving settled payments recorded
-// as pending forever.
 func (a *MoneyGramPollerAdapter) settleTransaction(ctx context.Context, txnID, kind, loanID, final string) {
 	steps := []string{txmodels.TxStatusSubmitted}
 	if final == txmodels.TxStatusSuccess {

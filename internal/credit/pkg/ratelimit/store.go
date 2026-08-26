@@ -12,11 +12,6 @@ import (
 )
 
 // RedisStore implements [fiber.Storage] on top of an existing *redis.Client.
-//
-// It wraps the connection the rest of the service already uses rather than
-// opening its own, so limits share the configured pool, password and DB. Keys
-// are namespaced by prefix because that connection also holds USSD sessions and
-// idempotency records.
 type RedisStore struct {
 	client *redis.Client
 	prefix string

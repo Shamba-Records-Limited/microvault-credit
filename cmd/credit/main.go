@@ -307,6 +307,11 @@ func main() {
 		cfg.Payments.MoneyGram.HomeDomain, cfg.Payments.MoneyGram.HasRESTCredentials())
 
 	// ---- 10c. Fonbnk off-ramp and the provider relay ----
+	// Fonbnk names the asset by network, and carrier codes come from its own
+	// discovery endpoint. Both are fixed for this deployment's corridor.
+	const fonbnkCryptoCode = "STELLAR_USDC"
+	fonbnkCarrierCodes := map[string]string{"KES": "ke_safaricom"}
+
 	// Two independent gates. Fonbnk is registered only when credentials are
 	// present, and the relay only routes when
 	// ENABLE_PAYMENT_PROVIDER_RELAY_SWITCH is on. With the relay off,
@@ -344,7 +349,7 @@ func main() {
 		}
 		// A separate alias from mobile_money: the relay pins it explicitly,
 		// so the unrouted default keeps going to YellowCard.
-		if err := offRampRegistry.Alias(creditadapters.PayoutMethodFonbnkMobileMoney, offramp.ProviderFonbnk); err != nil {
+		if err := offRampRegistry.Alias(adapters.PayoutMethodFonbnkMobileMoney, offramp.ProviderFonbnk); err != nil {
 			log.Fatalf("Failed to alias mobile_money_fonbnk → fonbnk: %v", err)
 		}
 

@@ -13,16 +13,6 @@ import (
 
 // This file holds the process lifecycle: what must be torn down, and in what
 // order.
-//
-// The container owns shutdown rather than construction. Most of this service's
-// wiring is a straight line — config, then database, then services that depend
-// on them — and expressing that as lazy providers would restate the order
-// without enforcing anything new. Teardown is the part that genuinely benefits:
-// it has to run in reverse dependency order, every step has to run even when an
-// earlier one fails, and getting it wrong drops in-flight work silently.
-//
-// do.Injector gives that ordering for free through Shutdowner, and makes each
-// resource state its own teardown next to nothing else.
 
 // shutdownFunc adapts a plain teardown closure to do's Shutdowner interface, so
 // resources whose own types this module does not own — Fiber's app, the

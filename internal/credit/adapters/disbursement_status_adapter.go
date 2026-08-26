@@ -41,15 +41,6 @@ type DisbursementStatusAdapter struct {
 }
 
 // notifyAsync sends a borrower notification off the caller's thread.
-//
-// These methods are driven by the MoneyGram poller, whose poll() loop walks
-// the batch serially — so a synchronous send made every other loan in the
-// batch wait behind one SMS, including treasury transfers. With provider-level
-// retries a stalled gateway could hold a tick for minutes.
-//
-// Every caller already treats delivery as best effort and only logs the error,
-// so returning before the send completes loses nothing. See notifyLeakGuard:
-// the timeout is a backstop, never a delivery deadline.
 func (a *DisbursementStatusAdapter) notifyAsync(label, loanID string, send func(ctx context.Context) error) {
 	if a.loanNotifier == nil {
 		return
@@ -75,7 +66,6 @@ func (a *DisbursementStatusAdapter) moreInfoLink(loan *models.Loan) string {
 	return a.publicBaseURL + "/r/" + *loan.RampMoreInfoShortCode
 }
 
-// NewDisbursementStatusAdapter creates a new DisbursementStatusAdapter.
 // disbursementErr starts an error builder for the disbursement callback path.
 // The domain is off-ramp rather than the package's repayment domain: these
 // errors are about money going out, not coming back.
@@ -204,10 +194,6 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 // repayVaultIfNeeded checks whether USDC is still in the treasury for this loan
 // and, if so, calls RepayToVault to return it to the pool. Idempotent: skips if
 // VaultRepayTxHash is already set.
-//
-// amountOverride repays a specific stroop amount instead of the loan principal.
-// Refunds need this: an anchor may return less than we sent, and repaying the
-// full principal would draw the difference from unrelated treasury funds.
 func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan *models.Loan, trigger string, amountOverride *int64) error {
 	// Idempotency: already repaid.
 	if loan.VaultRepayTxHash != nil && *loan.VaultRepayTxHash != "" {
@@ -426,10 +412,6 @@ func (a *DisbursementStatusAdapter) RepayVault(sequenceID string) error {
 
 // RepayVaultAmount returns an explicit stroop amount to the vault rather than
 // the loan principal, and unlike RepayVault it surfaces the failure.
-//
-// Used for anchor refunds, where the amount that came back is authoritative:
-// repaying the principal when the anchor withheld a fee would draw the shortfall
-// from unrelated treasury funds. The caller retries on error.
 func (a *DisbursementStatusAdapter) RepayVaultAmount(sequenceID string, amountStroops int64) error {
 	ctx := context.Background()
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
@@ -729,13 +711,6 @@ func mapDisbursementToTxStatus(disbursementStatus string) string {
 
 // GetRefundPendingDisbursements returns YellowCard disbursements awaiting
 // crypto refund.
-//
-// Scoped to yellowcard deliberately. RefundPoller resolves each record against
-// the YellowCard API using RampRequestID, so a MoneyGram loan sitting in
-// refund_pending would be looked up with an MG transaction ID — which at best
-// errors every cycle and at worst matches an unrelated YC payment and triggers
-// a mobile-money failover for a cash-pickup loan. MoneyGram refunds are the
-// MG poller's responsibility.
 func (a *DisbursementStatusAdapter) GetRefundPendingDisbursements() ([]webhook.RefundPendingRecord, error) {
 	ctx := context.Background()
 
@@ -796,12 +771,6 @@ func (a *DisbursementStatusAdapter) GetRefundPendingDisbursements() ([]webhook.R
 
 // canonicalDisbursementStatus maps a provider's wire value onto the loan
 // model's vocabulary.
-//
-// YellowCard reports completion as "complete" while MoneyGram and the model
-// use "completed". Both reached this adapter untranslated, so a MoneyGram
-// completion never matched the YellowCard constant and never advanced the loan
-// — every cash-pickup loan stayed "disbursing" for life, including refunded
-// ones, which left them inside GetActiveLoans.
 func canonicalDisbursementStatus(status string) string {
 	if status == yellowcard.DisbursementComplete {
 		return models.DisbursementStatusCompleted
@@ -811,10 +780,6 @@ func canonicalDisbursementStatus(status string) string {
 
 // loanStatusForDisbursement returns the loan status a terminal payout outcome
 // implies, or "" when the outcome is not terminal and the loan status stands.
-//
-// A settled refund is LoanStatusCancelled: the borrower received nothing and
-// owes nothing. How it ended is already recorded in disbursement_status, so a
-// separate refunded loan status would differ only in provenance.
 func loanStatusForDisbursement(status string) string {
 	switch status {
 	case models.DisbursementStatusCompleted:

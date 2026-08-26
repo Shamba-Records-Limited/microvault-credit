@@ -18,12 +18,6 @@ const (
 // The child memo is namespaced by the key it is seeded with — ChildAccountMemo
 // hashes that key with the index — so initiation and polling must seed it from
 // the same wallet.
-//
-// The poller seeds it from the anchor client's auth address. Initiation seeded
-// it from the treasury, which is identical only because both default to
-// TREASURY_SECRET_KEY. Setting MONEYGRAM_AUTH_SECRET to any other wallet put
-// the deposit in a memo space the poller never queries: the borrower could pay
-// and nothing would ever see it.
 func TestChildMemoSeedsDivergeAcrossWallets(t *testing.T) {
 	const idx = 7
 

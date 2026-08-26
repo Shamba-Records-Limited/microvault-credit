@@ -6,15 +6,6 @@ import (
 )
 
 // txMetadata builds the jsonb payload for a transaction row.
-//
-// Metadata is diagnostic: it holds what a provider reported that has no
-// first-class column, so a stuck loan can be reconciled against what the anchor
-// actually said rather than what we inferred. Nothing in the application should
-// branch on a key in here — a key worth a predicate has earned a column.
-//
-// Keys with zero values are omitted rather than written as null, keeping the
-// payload to what was actually observed. Returns nil when nothing was, which
-// leaves the column NULL rather than storing an empty object.
 func txMetadata(fields map[string]any) *string {
 	present := make(map[string]any, len(fields))
 	for k, v := range fields {

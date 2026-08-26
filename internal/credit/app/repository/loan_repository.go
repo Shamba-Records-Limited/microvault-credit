@@ -117,12 +117,6 @@ func (r *loanRepository) Create(ctx context.Context, loan *models.Loan) error {
 
 // GetByID retrieves a loan record by its ID.
 // GetByID loads one loan with its user.
-//
-// The user is preloaded because callers that build a borrower notification off
-// this row need the mobile number, and every other Get* method here already
-// preloads it. GetByID was the one exception, which is how the repayment
-// notifier came to send nothing at all: it read a row whose User was always
-// nil and failed with "loan has no phone number to notify".
 func (r *loanRepository) GetByID(ctx context.Context, id string) (*models.Loan, error) {
 	var loan models.Loan
 	result := r.db.WithContext(ctx).
@@ -379,10 +373,6 @@ var openRepaymentStatuses = []string{
 
 // GetDueRepayments returns repayments the deposit driver should evaluate this
 // tick.
-//
-// A NULL repayment_next_poll_at counts as due. That is the state a repayment is
-// in the moment USSD initiates it, and waiting a backoff before the first look
-// would delay the whole rail for no reason.
 func (r *loanRepository) GetDueRepayments(ctx context.Context, limit int) ([]*models.Loan, error) {
 	if limit <= 0 {
 		limit = 100

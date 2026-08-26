@@ -46,11 +46,6 @@ func adapterErr(op, loanID string) oops.OopsErrorBuilder {
 // MoneyGramDepositAdapter is the persistence and on-chain half of the borrower
 // repayment cash-in rail. mgpoller owns the state machine; this supplies the
 // loan projection, the state writes, and the vault leg.
-//
-// It is the mirror of MoneyGramPollerAdapter, which does the same for the
-// withdrawal direction. They are kept apart rather than merged because the two
-// directions write disjoint column sets — repayment_* here, ramp_* there — and
-// sharing a type would only make it easier to write one from the other's path.
 type MoneyGramDepositAdapter struct {
 	repo       repository.LoanRepository
 	loanSvc    loan.Service
@@ -121,11 +116,6 @@ func (a *MoneyGramDepositAdapter) GetDueRepayments(ctx context.Context, limit in
 }
 
 // RecordDepositUpdate persists what a polled deposit transaction tells us.
-//
-// Two fields, both of which only exist once polling starts. Nothing here can
-// change what the borrower owes — the payoff was quote-locked at initiation —
-// so the transaction rows that matter are still written at funds_received,
-// where the amounts are final.
 func (a *MoneyGramDepositAdapter) RecordDepositUpdate(ctx context.Context, loanID string, tx *stellaranchor.Transaction) error {
 	if tx == nil {
 		return adapterErr("record_deposit_update", loanID).Code(pkgErrors.CodeNilTransaction).Errorf("polled deposit transaction was nil")
@@ -217,10 +207,6 @@ func parseAnchorDeadline(s string) (time.Time, bool) {
 }
 
 // MarkFundsReceived records that the borrower's cash reached the treasury.
-//
-// loans.status is deliberately left alone: the borrower is told at this point,
-// while the treasury-to-vault leg may still be retrying. Only MarkSettled moves
-// the loan to repaid.
 func (a *MoneyGramDepositAdapter) MarkFundsReceived(ctx context.Context, loanID string, tx *stellaranchor.Transaction) error {
 	if tx == nil {
 		return adapterErr("mark_funds_received", loanID).Code(pkgErrors.CodeNilTransaction).Errorf("polled deposit transaction was nil")
@@ -260,11 +246,6 @@ func (a *MoneyGramDepositAdapter) MarkSettled(ctx context.Context, loanID, vault
 }
 
 // MarkExpired releases the quote lock after the window elapsed.
-//
-// The payoff and the MoneyGram transaction id are left in place. They are the
-// record of what was quoted and which deposit was abandoned; clearing them
-// would erase the evidence, and the unique index on repayment_mg_tx_id is what
-// stops the same MoneyGram transaction being claimed again.
 func (a *MoneyGramDepositAdapter) MarkExpired(ctx context.Context, loanID string) error {
 	return a.closeRepayment(ctx, loanID, models.LoanRepaymentStatusExpired)
 }
@@ -345,10 +326,6 @@ func (a *MoneyGramDepositAdapter) ScheduleNextPoll(ctx context.Context, loanID s
 
 // RepayForBorrower settles the on-chain leg, attributed to the borrower's
 // child account.
-//
-// repay_for rather than repay: the vault has always recorded who a borrow went
-// out for, and this is the matching record of who it came back for. The
-// treasury is still the payer.
 func (a *MoneyGramDepositAdapter) RepayForBorrower(ctx context.Context, loanID, borrowerAddress string, amountStroops int64) (string, error) {
 	if borrowerAddress == "" {
 		return "", adapterErr("repay_for_borrower", loanID).Code(pkgErrors.CodeMissingBorrowerAddr).Errorf("loan has no borrower address to attribute the repayment to")
@@ -373,10 +350,6 @@ func (a *MoneyGramDepositAdapter) RepayForBorrower(ctx context.Context, loanID, 
 
 // recordCashInTransactions writes the two inbound legs of a repayment: the
 // borrower's cash at the counter and the anchor's USDC to the treasury.
-//
-// Two rows for one movement, mirroring what disbursement already does in the
-// other direction. The third leg, treasury to vault, is written by
-// recordVaultRepayTransaction once it confirms.
 func (a *MoneyGramDepositAdapter) recordCashInTransactions(ctx context.Context, loanID string, tx *stellaranchor.Transaction) {
 	if a.txnSvc == nil {
 		return
@@ -529,11 +502,6 @@ func usdcDecimalToStroops(s string) (int64, bool) {
 }
 
 // projectRepaymentRecord maps a loan row into the deposit driver's projection.
-//
-// A record without a MoneyGramTxID or a borrower address is still returned: the
-// driver skips the first and withholds the vault leg on the second, both with
-// their own logging. Filtering them out here would make the same rows disappear
-// silently.
 func projectRepaymentRecord(l *models.Loan) mgpoller.RepaymentRecord {
 	rec := mgpoller.RepaymentRecord{
 		LoanID:          l.ID,

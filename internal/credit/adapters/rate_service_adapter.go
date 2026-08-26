@@ -32,10 +32,6 @@ func NewRateServiceAdapter(orchestrator *moneygram.FXOrchestrator) *RateServiceA
 
 // GetExchangeRate returns the buffered sell rate for the given currency
 // (e.g. "KES"), in local units per USD.
-//
-// An unmapped currency leaves DestinationCountry empty, which makes the
-// orchestrator skip MoneyGram and quote from the fallback instead of asking
-// for a corridor that does not exist.
 func (a *RateServiceAdapter) GetExchangeRate(ctx context.Context, currency string) (float64, error) {
 	res, err := a.orchestrator.Quote(ctx, moneygram.FXQuoteRequest{
 		OriginatingCountry: moneygram.DefaultOriginatingCountry,

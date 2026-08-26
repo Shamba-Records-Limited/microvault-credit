@@ -343,15 +343,6 @@ func (l *Loan) IsRepaymentOpen() bool {
 }
 
 // DeriveDisbursementStatus reports where a loan's payout stands.
-//
-// This replaced a stored column. Every terminal value restates the loan's own
-// status, so keeping a second copy only created a way for the two to disagree —
-// which they did: MoneyGram wrote "completed" while the reader compared against
-// YellowCard's "complete", and no cash-pickup loan ever left disbursing.
-//
-// The two non-derivable states have their own markers. A declared-but-
-// unverified refund has no transaction row by design, and pickup-ready records
-// an SMS rather than a movement of money.
 func (l *Loan) DeriveDisbursementStatus() string {
 	switch {
 	case l.Status == LoanStatusCancelled:

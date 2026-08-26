@@ -104,11 +104,8 @@ const defaultRepaymentWindow = 96 * time.Hour
 // here so this file does not import the model package for one constant.
 const repaymentStatusInitiated = "initiated"
 
-// sendRepaymentLink delivers the interactive URL by SMS.
-//
-// Best effort by design. The deposit exists and the quote is locked whether or
-// not the SMS lands; failing the whole initiation because a provider blipped
-// would strand a MoneyGram transaction the borrower could still complete.
+// sendRepaymentLink delivers the interactive URL by SMS. Best effort: the
+// deposit and quote lock stand whether or not the SMS lands.
 func (a *LoanServiceAdapter) sendRepaymentLink(ctx context.Context, loanRow *loan.LoanResponse, phoneNumber, interactiveURL string, quote *ussd.RepaymentQuote, expiresAt time.Time) {
 	if a.loanNotifier == nil {
 		a.logger.Warn("no loan notifier wired; repayment link not delivered",
@@ -169,29 +166,12 @@ type AccountEnsurer interface {
 	EnsureOnChainAccount(ctx context.Context, accountIndex int, address string) error
 }
 
-// notifyLeakGuard is a backstop, not a delivery deadline.
-//
-// The notifier decides when to give up: its retry sequence is finite and every
-// attempt is bounded by the provider's own per-request timeout, so the
-// goroutine always terminates on its own. This only catches a notifier that
-// fails to self-bound.
-//
-// It must therefore never be the binding constraint — if it cancels a send
-// mid-sequence it suppresses retries that were meant to run, which is the
-// failure it exists to prevent. Sized well above any plausible sequence
-// (AT_HTTP_TIMEOUT seconds x 3 attempts, plus backoff).
+// notifyLeakGuard catches a notifier that fails to self-bound. Sized well
+// above any real retry sequence so it never cancels one mid-flight.
 const notifyLeakGuard = 10 * time.Minute
 
-// notifyAsync sends a borrower notification off the disbursement path.
-//
-// Nothing downstream reads the result: the pipeline treats every send as best
-// effort and only logs failures. Sending inline therefore bought nothing while
-// putting a slow SMS gateway directly between the vault borrow and the
-// off-ramp initiate — with provider retries a stalled gateway could hold the
-// pipeline for minutes, staling the entry FX rate quoted before approval.
-//
-// Uses a detached context: the pipeline's own context may be cancelled, and a
-// notification outliving it is correct.
+// notifyAsync sends a borrower notification off the disbursement path, on a
+// detached context so it outlives a cancelled pipeline.
 func (a *LoanServiceAdapter) notifyAsync(label, loanID string, send func(ctx context.Context) error) {
 	if a.loanNotifier == nil {
 		return
@@ -205,15 +185,8 @@ func (a *LoanServiceAdapter) notifyAsync(label, loanID string, send func(ctx con
 	}()
 }
 
-// InitiateRepayment locks the payoff and opens a MoneyGram cash deposit
-// against it.
-//
-// Two things are settled here and do not move afterwards. The payoff is frozen
-// in USDC, so borrow-index growth over the days the borrower takes to reach an
-// agent is absorbed by the protocol rather than charged to them. And the
-// deposit is created under the borrower's own SEP-10 memo, which is what
-// attributes the inbound USDC to them — MoneyGram picks the on-chain memo and
-// we cannot make it carry ours.
+// InitiateRepayment freezes the payoff in USDC and opens a MoneyGram cash
+// deposit under the borrower's own SEP-10 memo.
 func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phoneNumber string) error {
 	errb := oops.In(pkgErrors.DomainRepaymentCashIn).Tags("moneygram", "sep24").With(pkgErrors.AttrLoanID, loanID)
 
@@ -234,15 +207,8 @@ func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phon
 	return nil
 }
 
-// routeMobileMoney asks the relay which provider to disburse through,
-// returning a payout-method alias to pin, or "" to leave dispatch alone.
-//
-// Only mobile money is routed. Cash pickup is a rail the borrower chose at the
-// USSD menu, not a price decision, so a better rate must never move someone
-// away from collecting cash at an agent.
-//
-// A relay failure is not a loan failure: the registry's own alias still
-// resolves, so the borrower is disbursed through the default provider.
+// routeMobileMoney returns a payout-method alias to pin, or "" to leave
+// dispatch alone. Mobile money only — cash pickup is the borrower's choice.
 func (a *LoanServiceAdapter) routeMobileMoney(ctx context.Context, req offramp.Request, amountUSD float64) string {
 	if a.relayRouter == nil || !a.relayRouter.Enabled() {
 		return ""
@@ -253,7 +219,7 @@ func (a *LoanServiceAdapter) routeMobileMoney(ctx context.Context, req offramp.R
 
 	quote, err := a.relayRouter.Best(ctx, relay.RateRequest{
 		Direction:    relay.DirectionOffRamp,
-		FiatCurrency: a.localCurrency(req.CountryCode),
+		FiatCurrency: offramp.LocalCurrency(req.CountryCode),
 		CountryCode:  req.CountryCode,
 		CryptoAmount: amountUSD,
 	})
@@ -295,27 +261,8 @@ func payoutAliasFor(provider string) string {
 // unrouted default keeps resolving to YellowCard.
 const PayoutMethodFonbnkMobileMoney = "mobile_money_fonbnk"
 
-// localCurrency maps a country to the currency its mobile money settles in.
-func (a *LoanServiceAdapter) localCurrency(countryCode string) string {
-	switch countryCode {
-	case "KE":
-		return "KES"
-	case "NG":
-		return "NGN"
-	case "GH":
-		return "GHS"
-	case "UG":
-		return "UGX"
-	}
-	return ""
-}
-
-// depositMemoFor is what MoneyGram is asked to stamp on the inbound payment.
-//
-// The loan reference when there is one, because that is the identifier the
-// borrower and support both quote. Falls back to the loan ID, which is always
-// present. Truncated to MEMO_TEXT's 28 bytes — both values are ASCII, so bytes
-// and characters agree.
+// depositMemoFor is the memo MoneyGram stamps on the inbound payment: the loan
+// reference, else the loan ID, truncated to MEMO_TEXT's 28 bytes.
 func depositMemoFor(loanRow *loan.LoanResponse, loanID string) string {
 	memo := loanID
 	if loanRow.LoanReference != nil && *loanRow.LoanReference != "" {
@@ -327,17 +274,8 @@ func depositMemoFor(loanRow *loan.LoanResponse, loanID string) string {
 	return memo
 }
 
-// depositCorridorErr rejects a payoff outside MoneyGram's cash-in corridor,
-// returning nil when it is inside.
-//
-// The USSD menu already hides the rail for an ineligible payoff, but this path
-// is also reachable without that screen, and the anchor would otherwise refuse
-// the deposit after the quote is locked and the link is on its way to the
-// borrower.
-//
-// The two ends carry different codes because they are actioned differently:
-// below the floor the borrower uses mobile money, above the ceiling they have
-// to split the payment.
+// depositCorridorErr rejects a payoff outside MoneyGram's cash-in corridor.
+// The two ends carry different codes because they are actioned differently.
 func depositCorridorErr(errb oops.OopsErrorBuilder, payoffStroops int64) error {
 	switch {
 	case payoffStroops < ussd.MinMoneyGramDepositStroops:
@@ -356,11 +294,8 @@ func depositCorridorErr(errb oops.OopsErrorBuilder, payoffStroops int64) error {
 	return nil
 }
 
-// runRepaymentInitiation does the slow half of opening a cash deposit.
-//
-// Nothing here can reach the USSD screen: by the time it runs the session has
-// been answered and very likely closed. The borrower learns the outcome by SMS
-// either way, which is why every exit path sends one.
+// runRepaymentInitiation does the slow half of opening a cash deposit. Every
+// exit path SMSes the outcome — the USSD session is already gone.
 func (a *LoanServiceAdapter) runRepaymentInitiation(loanID, phoneNumber string) {
 	ctx, cancel := context.WithTimeout(context.Background(), repaymentInitiationTimeout)
 	defer cancel()
@@ -408,14 +343,8 @@ func (a *LoanServiceAdapter) runRepaymentInitiation(loanID, phoneNumber string) 
 		// and adding one per borrower would cost a sponsored reserve for an
 		// account that only ever passes funds through.
 		Account: a.repayTreasuryPubkey,
-		// Ask MoneyGram to stamp the loan onto the payment it makes to the
-		// treasury. Every borrower's deposit lands on that one address, so
-		// without a memo the payments are told apart only by amount and
-		// timing. SEP-10's memo identifies the borrower; this identifies which
-		// of their loans is being settled.
-		//
-		// Optional in the spec, so MoneyGram may drop it. deposit_memo on the
-		// polled transaction reports what was actually attached.
+		// SEP-10's memo identifies the borrower; this identifies which loan.
+		// Optional in the spec — deposit_memo reports what was attached.
 		Memo:     depositMemoFor(loanRow, loanID),
 		MemoType: "text",
 	})
@@ -485,16 +414,9 @@ func (a *LoanServiceAdapter) FXBufferPct() float64 { return a.fxBuffer.Pct() }
 type FXConfig struct {
 	// BufferPct is a fraction (0.02 = 2 %). Nil defaults to
 	// DefaultFXBufferPct; an explicit 0 persists the quoted rate unbuffered.
-	//
-	// A pointer because zero is a meaningful setting here and has to stay
-	// distinguishable from "not configured".
 	BufferPct *float64
 }
 
-// NewLoanServiceAdapter creates a new [LoanServiceAdapter].
-//
-// It loads the highest-priority active loan product from the database and
-// caches its configuration. Returns an error if no active product is found.
 // lendingErr starts an error builder for loan origination and disbursement.
 func lendingErr(op string) oops.OopsErrorBuilder {
 	return oops.In(pkgErrors.DomainLending).Tags("loan").With(pkgErrors.AttrOperation, op)
@@ -511,12 +433,7 @@ func quoteErr(loanID string) oops.OopsErrorBuilder {
 }
 
 // LoanAdapterDeps are the collaborators and settings the loan adapter needs.
-//
-// The optional members used to be applied through Set* methods after
-// construction. They are here instead because a half-built adapter is
-// reachable in the window between New and the last setter, and because a
-// dependency container resolves constructors rather than mutation — a service
-// that is only correct after six follow-up calls cannot be provided by one.
+// Optional members live here rather than in Set* so no half-built adapter exists.
 type LoanAdapterDeps struct {
 	LoanSvc      loan.Service
 	ProductSvc   loanproduct.Service
@@ -536,15 +453,8 @@ type LoanAdapterDeps struct {
 	// TreasuryAddress is where borrower cash deposits are credited. Required
 	// alongside RepaymentAnchor; either alone leaves repayment unavailable.
 	TreasuryAddress string
-	// AnchorAuthAddress is the wallet that signs SEP-10, and the seed the
-	// child memo is derived from.
-	//
-	// Separate from TreasuryAddress because the two answer different
-	// questions: where the money lands, and which memo namespace the session
-	// belongs to. They default to the same key, and the poller has always
-	// derived the memo from the auth wallet — deriving it from the treasury
-	// here meant the two disagreed the moment MONEYGRAM_AUTH_SECRET was set
-	// to anything else.
+	// AnchorAuthAddress signs SEP-10 and seeds the child memo. Separate from
+	// TreasuryAddress: where money lands vs which memo namespace it belongs to.
 	AnchorAuthAddress string
 	RepaymentWindow   time.Duration
 
@@ -647,12 +557,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	// Amount validation is handled by the USSD handler against the loan product
 	// config (fiat-denominated limits). By this point the request is pre-approved.
 
-	// Round the principal to whole USDC cents. Anchors quote and expect 2
-	// decimal places; sending the raw 7-decimal FX conversion on-chain (e.g.
-	// 23.430178 when the anchor expects 23.43) leaves the withdrawal stuck.
-	// Rounding here — before Create, BorrowFromVault, and Initiate — keeps the
-	// stored principal, the vault borrow, and the anchor's expected amount
-	// identical.
+	// Round to whole USDC cents before Create, BorrowFromVault and Initiate:
+	// anchors expect 2 decimals and a 7-decimal amount leaves them stuck.
 	if rounded := roundToCentStroops(req.PrincipalAmount); rounded != req.PrincipalAmount {
 		a.logger.Info("principal rounded to whole cents",
 			"user_id", req.UserID,
@@ -869,14 +775,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		}
 	}
 
-	// Step 5: Mark loan as disbursed.
 	// Settlement method and disbursement status are written by
-	// recordSuccessfulInitiate once Initiate returns with the real values.
-	// Pre-stamping "direct" here used to race with the YC webhook: when the
-	// adapter pivots direct to fiat inside Initiate and YC fires
-	// DisbursementComplete before recordSuccessfulInitiate updates the row,
-	// the webhook handler saw settlement_method="direct" and skipped the
-	// vault repay.
+	// recordSuccessfulInitiate; pre-stamping here raced the YC webhook.
 	vaultTxStatus := "success"
 	_, err = a.loanSvc.Disburse(ctx, loanID, loan.DisburseLoanRequest{
 		VaultTxHash:   &borrowResp.TxHash,
@@ -967,14 +867,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		)
 		a.recordSuccessfulInitiate(ctx, loanID, payoutMethod, provider.ID(), offRampResult, req, createResp)
 
-		// Mobile-money requests default to direct settlement (USDC pushed to
-		// YC's wallet). If the result comes back as fiat, the YC adapter
-		// pivoted direct to fiat internally — USDC is still in treasury and
-		// YC will front the fiat from their pool. Repay the vault now rather
-		// than waiting for the DisbursementComplete webhook: it's racy and
-		// leaves the USDC idle in the interim. repayVaultAfterInitiate is
-		// idempotent via VaultRepayTxHash, so the eventual fiat-complete
-		// repay branch in the webhook handler will no-op.
+		// A fiat result means the YC adapter pivoted internally: the USDC is
+		// still in treasury, so repay now rather than await the racy webhook.
 		if payoutMethod == offramp.PayoutMethodMobileMoney &&
 			offRampResult.SettlementMethod == string(yellowcard.SettlementMethodFiat) {
 			a.repayVaultAfterInitiate(ctx, loanID, req.UserID, borrowResp.AmountBorrowed, "direct_to_fiat_pivot")
@@ -1050,13 +944,8 @@ func (a *LoanServiceAdapter) buildProviderOptions(payoutMethod string, req *ussd
 	}
 }
 
-// requoteEntryRate asks for a fresh rate and bakes the safety buffer in.
-// Returns (rate, source, bufferPct). The FXOrchestrator path is preferred
-// when wired: it cascades MG primary to YC fallback to stale cache and
-// applies its own buffers (different for primary vs fallback). When the
-// orchestrator isn't set, we fall back to the resolved provider's Quoter
-// and the adapter's flat fxBuffer. A zero rate signals "no usable
-// quote" — callers should skip persistence.
+// requoteEntryRate returns (rate, source, bufferPct) with the safety buffer
+// applied. A zero rate means no usable quote; callers skip persistence.
 func (a *LoanServiceAdapter) requoteEntryRate(
 	ctx context.Context,
 	opts offramp.ProviderOptions,
@@ -1107,11 +996,8 @@ func (a *LoanServiceAdapter) requoteEntryRate(
 	return a.fxBuffer.Apply(q.SellRate), string(p.ID()), a.fxBuffer.Pct()
 }
 
-// persistEntryRate writes the entry-rate audit fields and the requested
-// local amount + child-account index onto the freshly created loan. Each
-// field is optional; nil values are skipped via the UpdateLoanRequest's
-// pointer semantics. Errors are logged, not returned — this is audit data,
-// not load-bearing for the disbursement path.
+// persistEntryRate writes the entry-rate audit fields onto a fresh loan.
+// Errors are logged, not returned: audit data, not load-bearing.
 func (a *LoanServiceAdapter) persistEntryRate(
 	ctx context.Context,
 	loanID string,
@@ -1231,12 +1117,8 @@ func (a *LoanServiceAdapter) repayVaultAfterInitiate(
 // staying resolvable forever on a loan that never reaches a terminal state.
 const shortCodeTTL = 24 * time.Hour
 
-// mintRedirectLink generates a /r/{code} redirect for rawURL and persists the
-// code with its expiry. Returns rawURL unchanged when either step fails: a long
-// link still resolves, a 404 does not.
-//
-// Called only when the shortener produced nothing, so a pickup carries one
-// unauthenticated bearer code rather than one per shortener.
+// mintRedirectLink generates a /r/{code} redirect and persists it. Returns
+// rawURL unchanged on failure: a long link resolves, a 404 does not.
 func (a *LoanServiceAdapter) mintRedirectLink(ctx context.Context, loanID, rawURL string) string {
 	code, err := newShortCode()
 	if err != nil {
@@ -1416,11 +1298,8 @@ func (a *LoanServiceAdapter) GetUserLoans(ctx context.Context, userID string) ([
 	return results, nil
 }
 
-// CheckLoanEligibility implements ussd.LoanService.
-//
-// Fiat-denominated limit checks are performed by the USSD handler using
-// [GetProductConfig]. This method fetches the dynamic vault APR and always
-// approves the request (the amount has already been validated).
+// CheckLoanEligibility implements ussd.LoanService. Fiat limits are checked by
+// the USSD handler; this fetches the vault APR and approves.
 func (a *LoanServiceAdapter) CheckLoanEligibility(ctx context.Context, userID string, amount int64, duration int) (*ussd.LoanApproval, error) {
 	// Fetch dynamic APR from vault; fall back to product rate.
 	fallbackRate := float64(a.productConfig.InterestRateBps) / 10000.0 // bps to decimal
@@ -1446,10 +1325,8 @@ func (a *LoanServiceAdapter) CheckLoanEligibility(ctx context.Context, userID st
 	}, nil
 }
 
-// GetRepaymentQuote implements ussd.LoanService. It recomputes the live
-// amount owed on a loan from the vault's current borrow_index and the
-// latest FX rate. Hard-fails on either dependency being unavailable — the
-// USSD screen should surface "service unavailable" rather than show a stale
+// GetRepaymentQuote recomputes the amount owed from the vault's current
+// borrow_index and the latest FX rate. Hard-fails rather than serve a stale
 // number the borrower might act on.
 //
 // Math:

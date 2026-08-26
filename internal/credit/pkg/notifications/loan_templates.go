@@ -12,10 +12,6 @@ import (
 // service code are overridden; the rest describe platform mechanics and are
 // left to microvault. RepaymentExpired is here because telling a borrower to
 // start over is only actionable if it says what to dial.
-//
-// dialString is the dialled string for this deployment, complete with prefix
-// and terminator (e.g. "*789*10#"), captured here rather than baked into the
-// copy because it differs between testnet and the Africa's Talking sandbox.
 func LoanOverrides(dialString string) map[string]*mvnotifications.LoanTemplates {
 	return map[string]*mvnotifications.LoanTemplates{
 		"en": {

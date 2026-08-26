@@ -21,10 +21,6 @@ var _ mgpoller.RepaymentNotifier = (*RepaymentNotifierAdapter)(nil)
 
 // RepaymentNotifierAdapter turns the deposit driver's loan-ID-only notifier
 // calls into fully populated loan notifications.
-//
-// The driver deliberately knows nothing about phone numbers, references or
-// languages — it holds a projection, not a loan. This adapter is where the row
-// is read back and the message assembled.
 type RepaymentNotifierAdapter struct {
 	repo          repository.LoanRepository
 	loans         contracts.LoanNotifier
@@ -67,10 +63,6 @@ func NewRepaymentNotifierAdapter(
 }
 
 // NotifyRepaymentReference sends the code the borrower quotes at the counter.
-//
-// The amount is carried in local currency, matching what the USSD screen
-// quoted, because that is the figure the borrower is working from. The deposit
-// itself settles in USDC.
 func (a *RepaymentNotifierAdapter) NotifyRepaymentReference(loanID, reference string) error {
 	return a.send(loanID, "reference", func(ctx context.Context, n contracts.LoanNotification) error {
 		n.CashPickupRef = reference
@@ -98,10 +90,6 @@ func (a *RepaymentNotifierAdapter) NotifyRepaymentMoreInfo(loanID string) error 
 }
 
 // NotifyRepaymentReceived confirms the borrower's cash reached the treasury.
-//
-// Sent while the treasury-to-vault leg may still be retrying. That is
-// deliberate: from the borrower's side the repayment is complete, and the
-// remaining leg is ours.
 func (a *RepaymentNotifierAdapter) NotifyRepaymentReceived(loanID string) error {
 	return a.send(loanID, "received", a.loans.NotifyRepaymentReceived)
 }
@@ -121,12 +109,6 @@ func (a *RepaymentNotifierAdapter) NotifyRepaymentExpired(loanID string) error {
 }
 
 // moreInfoLink builds the SMS link to MoneyGram's transaction page.
-//
-// Same ladder as the cash-pickup rail: dub is pointed at MoneyGram's own URL,
-// so the link preview names MoneyGram rather than us, and the internal
-// /r/{code} redirect is the fallback for when dub is unconfigured or fails.
-// Returns "" when neither is available, which the caller treats as a refusal
-// to send rather than a message with a hole in it.
 func (a *RepaymentNotifierAdapter) moreInfoLink(ctx context.Context, loanRow *models.Loan) string {
 	fallback := ""
 	if a.publicBaseURL != "" && loanRow.RampMoreInfoShortCode != nil && *loanRow.RampMoreInfoShortCode != "" {
