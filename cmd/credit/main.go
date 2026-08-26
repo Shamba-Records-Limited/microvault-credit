@@ -35,8 +35,11 @@ import (
 	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
 	atussd "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/providers/africastalking"
 	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/fonbnk"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/relay"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/relay/sources"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/stellaranchor"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/pin"
@@ -158,6 +161,12 @@ func main() {
 	)
 
 	// ---- 9. Treasury transfer bridge ----
+	// Derived here rather than at first use: both the Fonbnk off-ramp and the
+	// repayment rail need it, and the two are wired far apart.
+	treasuryAddr, err := cfg.Stellar.TreasuryAddress()
+	if err != nil {
+		log.Fatalf("Treasury address unresolved: %v", err)
+	}
 	treasuryTransfer := ussdadapters.NewStellarTreasuryTransfer(stellarSvc, logger)
 
 	// ---- 10. Off-ramp adapters ----
@@ -297,6 +306,76 @@ func main() {
 	log.Printf("MoneyGram cash-pickup registered (home: %s, REST: %t)",
 		cfg.Payments.MoneyGram.HomeDomain, cfg.Payments.MoneyGram.HasRESTCredentials())
 
+	// ---- 10c. Fonbnk off-ramp and the provider relay ----
+	// Two independent gates. Fonbnk is registered only when credentials are
+	// present, and the relay only routes when
+	// ENABLE_PAYMENT_PROVIDER_RELAY_SWITCH is on. With the relay off,
+	// mobile_money still resolves to YellowCard exactly as before, whether or
+	// not Fonbnk is wired.
+	relayRegistry := relay.NewRegistry()
+
+	ycSource, err := sources.NewYellowCardSource(sources.YellowCardSourceConfig{Client: ycAdapter})
+	if err != nil {
+		log.Fatalf("YellowCard rate source construction failed: %v", err)
+	}
+	if err := relayRegistry.Register(ycSource); err != nil {
+		log.Fatalf("Failed to register the YellowCard rate source: %v", err)
+	}
+
+	if cfg.Payments.Fonbnk.ClientID != "" && cfg.Payments.Fonbnk.ClientSecret != "" {
+		fonbnkClient := fonbnk.NewFonbnkAdapter(
+			cfg.Payments.Fonbnk.ClientID,
+			cfg.Payments.Fonbnk.ClientSecret,
+			cfg.Payments.Fonbnk.BaseURL,
+		)
+
+		fonbnkOffRamp, err := ussdadapters.NewFonbnkOffRampAdapter(ussdadapters.FonbnkOffRampConfig{
+			Client:             fonbnkClient,
+			Treasury:           treasuryTransfer,
+			CryptoCurrencyCode: fonbnkCryptoCode,
+			TreasuryAddress:    treasuryAddr,
+			Logger:             logger,
+		})
+		if err != nil {
+			log.Fatalf("Fonbnk off-ramp adapter construction failed: %v", err)
+		}
+		if err := offRampRegistry.Register(fonbnkOffRamp); err != nil {
+			log.Fatalf("Failed to register Fonbnk off-ramp: %v", err)
+		}
+		// A separate alias from mobile_money: the relay pins it explicitly,
+		// so the unrouted default keeps going to YellowCard.
+		if err := offRampRegistry.Alias(creditadapters.PayoutMethodFonbnkMobileMoney, offramp.ProviderFonbnk); err != nil {
+			log.Fatalf("Failed to alias mobile_money_fonbnk → fonbnk: %v", err)
+		}
+
+		fonbnkSource, err := sources.NewFonbnkSource(sources.FonbnkSourceConfig{
+			Client:             fonbnkClient,
+			CryptoCurrencyCode: fonbnkCryptoCode,
+			CarrierCodes:       fonbnkCarrierCodes,
+		})
+		if err != nil {
+			log.Fatalf("Fonbnk rate source construction failed: %v", err)
+		}
+		if err := relayRegistry.Register(fonbnkSource); err != nil {
+			log.Fatalf("Failed to register the Fonbnk rate source: %v", err)
+		}
+		log.Printf("Fonbnk off-ramp registered (base: %s)", cfg.Payments.Fonbnk.BaseURL)
+	} else {
+		log.Print("Fonbnk credentials absent — off-ramp and rate source not registered")
+	}
+
+	relayRouter, err := relay.New(relay.Config{
+		Registry: relayRegistry,
+		Enabled:  cfg.Payments.EnableProviderRelaySwitch,
+		Default:  string(offramp.ProviderYellowCard),
+		Logger:   logger,
+	})
+	if err != nil {
+		log.Fatalf("Payment relay construction failed: %v", err)
+	}
+	log.Printf("Payment relay: enabled=%t, sources=%v",
+		relayRouter.Enabled(), relayRegistry.Names())
+
 	// 10d. FX orchestrator: MG primary, YC fallback, stale cache last resort.
 	ycFallback := moneygram.FallbackRateFunc(func(ctx context.Context, currency string) (float64, error) {
 		rates, err := ycAdapter.GetRates(ctx, currency)
@@ -404,10 +483,6 @@ func main() {
 	// account: children carry no USDC trustline, so routing a deposit through
 	// one would cost a sponsored reserve per borrower for an account that only
 	// ever passes funds on.
-	treasuryAddr, err := cfg.Stellar.TreasuryAddress()
-	if err != nil {
-		log.Fatalf("Treasury address unresolved, repayments cannot be credited: %v", err)
-	}
 
 	// ---- 11b. LoanServiceAdapter (USSD LoanService) ----
 	ctx := context.Background()

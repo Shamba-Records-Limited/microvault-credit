@@ -21,6 +21,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/relay"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/stellaranchor"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
@@ -67,6 +68,7 @@ type LoanServiceAdapter struct {
 	productSvc     loanproduct.Service
 	stellarSvc     stellar.Service
 	offRamps       *offramp.Registry
+	relayRouter    *relay.Router
 	loanNotifier   contracts.LoanNotifier
 	txnSvc         transaction.Service
 	logger         *slog.Logger
@@ -230,6 +232,82 @@ func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phon
 	go a.runRepaymentInitiation(loanID, phoneNumber)
 
 	return nil
+}
+
+// routeMobileMoney asks the relay which provider to disburse through,
+// returning a payout-method alias to pin, or "" to leave dispatch alone.
+//
+// Only mobile money is routed. Cash pickup is a rail the borrower chose at the
+// USSD menu, not a price decision, so a better rate must never move someone
+// away from collecting cash at an agent.
+//
+// A relay failure is not a loan failure: the registry's own alias still
+// resolves, so the borrower is disbursed through the default provider.
+func (a *LoanServiceAdapter) routeMobileMoney(ctx context.Context, req offramp.Request, amountUSD float64) string {
+	if a.relayRouter == nil || !a.relayRouter.Enabled() {
+		return ""
+	}
+	if req.PayoutMethod != offramp.PayoutMethodMobileMoney || req.Options != nil {
+		return ""
+	}
+
+	quote, err := a.relayRouter.Best(ctx, relay.RateRequest{
+		Direction:    relay.DirectionOffRamp,
+		FiatCurrency: a.localCurrency(req.CountryCode),
+		CountryCode:  req.CountryCode,
+		CryptoAmount: amountUSD,
+	})
+	if err != nil {
+		a.logger.Warn("relay could not route this disbursement, using the default provider",
+			pkgErrors.AttrLoanID, req.LoanID, "error", err)
+		return ""
+	}
+
+	alias := payoutAliasFor(quote.Provider)
+	if alias == "" {
+		a.logger.Warn("relay picked a provider with no payout alias, using the default",
+			pkgErrors.AttrLoanID, req.LoanID, pkgErrors.AttrProvider, quote.Provider)
+		return ""
+	}
+
+	a.logger.Info("relay routed disbursement",
+		pkgErrors.AttrLoanID, req.LoanID,
+		pkgErrors.AttrProvider, quote.Provider,
+		"effective_rate", quote.EffectiveRate,
+		"amount_usd", amountUSD)
+	return alias
+}
+
+// payoutAliasFor maps a routed provider onto the payout method the off-ramp
+// registry resolves it by.
+func payoutAliasFor(provider string) string {
+	switch offramp.ProviderID(provider) {
+	case offramp.ProviderYellowCard:
+		return offramp.PayoutMethodMobileMoney
+	case offramp.ProviderFonbnk:
+		return PayoutMethodFonbnkMobileMoney
+	}
+	return ""
+}
+
+// PayoutMethodFonbnkMobileMoney is the off-ramp registry alias Fonbnk is
+// registered under. Distinct from offramp.PayoutMethodMobileMoney so the
+// unrouted default keeps resolving to YellowCard.
+const PayoutMethodFonbnkMobileMoney = "mobile_money_fonbnk"
+
+// localCurrency maps a country to the currency its mobile money settles in.
+func (a *LoanServiceAdapter) localCurrency(countryCode string) string {
+	switch countryCode {
+	case "KE":
+		return "KES"
+	case "NG":
+		return "NGN"
+	case "GH":
+		return "GHS"
+	case "UG":
+		return "UGX"
+	}
+	return ""
 }
 
 // depositMemoFor is what MoneyGram is asked to stamp on the inbound payment.
@@ -469,6 +547,11 @@ type LoanAdapterDeps struct {
 	// to anything else.
 	AnchorAuthAddress string
 	RepaymentWindow   time.Duration
+
+	// RelayRouter routes a mobile-money disbursement to whichever provider
+	// prices it best. Nil, or a router with routing off, leaves dispatch to
+	// the off-ramp registry's own aliases.
+	RelayRouter *relay.Router
 }
 
 func NewLoanServiceAdapter(ctx context.Context, deps LoanAdapterDeps) (*LoanServiceAdapter, error) {
@@ -530,6 +613,7 @@ func NewLoanServiceAdapter(ctx context.Context, deps LoanAdapterDeps) (*LoanServ
 		productSvc:    productSvc,
 		stellarSvc:    stellarSvc,
 		offRamps:      offRamps,
+		relayRouter:   deps.RelayRouter,
 		loanNotifier:  loanNotifier,
 		txnSvc:        txnSvc,
 		logger:        logger,
@@ -820,6 +904,9 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		IdempotencyKey:   loanID,
 		PayoutMethod:     payoutMethod,
 		Options:          providerOpts,
+	}
+	if routed := a.routeMobileMoney(ctx, offrampReq, amountUSD); routed != "" {
+		offrampReq.PayoutMethod = routed
 	}
 	provider, resolveErr := a.offRamps.Resolve(offrampReq)
 	if resolveErr != nil {
