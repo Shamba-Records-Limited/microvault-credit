@@ -28,7 +28,7 @@ RUN sh scripts/generate-credit-docs.sh
 
 # Build the application
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
-RUN go build -ldflags="-s -w" -o credit ./cmd/credit/main.go
+RUN go build -ldflags="-s -w" -o credit ./cmd/credit
 
 # --- Release stage ---
 FROM alpine:latest AS release
