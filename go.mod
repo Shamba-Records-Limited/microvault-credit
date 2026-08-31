@@ -2,7 +2,7 @@ module github.com/Shamba-Records-Limited/microvault-credit
 
 go 1.26.0
 
-require github.com/Shamba-Records-Limited/microvault v1.1.1
+require github.com/Shamba-Records-Limited/microvault v1.1.2
 
 replace github.com/Shamba-Records-Limited/microvault => ../microvault
 
@@ -31,13 +31,13 @@ require (
 	github.com/FactomProject/basen v0.0.0-20150613233007-fe3947df716e // indirect
 	github.com/FactomProject/btcutilecc v0.0.0-20130527213604-d3a63a5752ec // indirect
 	github.com/KyleBanks/depth v1.2.1 // indirect
-	github.com/andybalholm/brotli v1.2.2 // indirect
+	github.com/andybalholm/brotli v1.2.3 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/creachadair/jrpc2 v1.3.5 // indirect
 	github.com/creachadair/mds v0.30.5 // indirect
-	github.com/dubinc/dub-go v0.23.15 // indirect
+	github.com/dubinc/dub-go v0.23.18 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.15 // indirect
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
 	github.com/go-openapi/jsonreference v1.0.1 // indirect
@@ -72,7 +72,7 @@ require (
 	github.com/samber/go-type-to-string v1.8.0 // indirect
 	github.com/spyzhov/ajson v0.9.6 // indirect
 	github.com/stellar/go-stellar-sdk v0.7.3 // indirect
-	github.com/stellar/go-xdr v0.0.0-20260806060815-dc590f17552a // indirect
+	github.com/stellar/go-xdr v0.0.0-20260828180817-2b1309f8a5a6 // indirect
 	github.com/swaggo/files/v2 v2.0.2 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/tyler-smith/go-bip32 v1.0.0 // indirect
