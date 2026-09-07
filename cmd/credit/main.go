@@ -494,6 +494,7 @@ func main() {
 
 	// ---- 11b. LoanServiceAdapter (USSD LoanService) ----
 	ctx := context.Background()
+	cashInRegistry := cashin.NewRegistry()
 	loanAdapter, err := adapters.NewLoanServiceAdapter(ctx, adapters.LoanAdapterDeps{
 		LoanSvc:      loanSvc,
 		ProductSvc:   loanProductSvc,
@@ -503,6 +504,7 @@ func main() {
 		TxnSvc:       txnSvc,
 		FXConfig:     adapters.FXConfig{BufferPct: cfg.Payments.EntryFXBufferPct},
 		Logger:       logger,
+		CashIn:       cashInRegistry,
 
 		FXOrchestrator:  fxOrch,
 		PublicBaseURL:   cfg.Server.PublicBaseURL,
@@ -568,6 +570,7 @@ func main() {
 		AccountNotifier: accountNotifier,
 		LoanNotifier:    loanNotifier,
 		RepayPaybill:    cfg.Mobile.RepayPaybill,
+		MpesaPrompter:   cfg.Payments.Mpesa.ConsumerKey != "",
 	})
 	ussdService := ussd.NewUSSDService(ussdHandler)
 
@@ -685,7 +688,6 @@ func main() {
 
 		// Cash-in registry: paybill collections and STK prompts resolve to
 		// M-Pesa. In-flight prompts are driven by the loan poller below.
-		cashInRegistry := cashin.NewRegistry()
 		mpesaCollection, err := adapters.NewMpesaCollectionAdapter(adapters.MpesaCollectionAdapterDeps{
 			Client:  mpesaClient,
 			Repo:    repos.Loan,

@@ -131,6 +131,21 @@ func TestPrompt_DeclinedBeforeAnyStateIsWritten(t *testing.T) {
 	assert.Empty(t, loans.updates, "a rejected push must not mark the repayment initiated")
 }
 
+func TestPrompt_RejectsASecondPromptWhileInFlight(t *testing.T) {
+	loan := referencedLoan()
+	loan.RepaymentStatus = models.LoanRepaymentStatusInitiated
+	a, _, loans := newTestCollectionAdapter(t, loan)
+
+	_, err := a.Prompt(context.Background(), cashin.PromptRequest{
+		LoanID:    "loan-1",
+		Payer:     "254712345678",
+		AmountKES: 150,
+	})
+
+	require.Error(t, err)
+	assert.Empty(t, loans.updates, "a second push against an in-flight repayment must not reset its state")
+}
+
 func TestPromptThenStatus_ResolvedByQuery(t *testing.T) {
 	a, stub, _ := newTestCollectionAdapter(t, referencedLoan())
 	res, err := a.Prompt(context.Background(), cashin.PromptRequest{

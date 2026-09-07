@@ -19,6 +19,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd"
 	"github.com/Shamba-Records-Limited/microvault/pkg/models"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/cashin"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/relay"
@@ -84,6 +85,7 @@ type LoanServiceAdapter struct {
 	repayTreasuryPubkey string                // deposit destination
 	repayAuthPubkey     string                // SEP-10 signer, and the child-memo namespace
 	repayWindow         time.Duration         // how long an opened deposit stays valid
+	cashIn              *cashin.Registry      // prompt-capable collection providers; nil disables prompting
 }
 
 // repaymentWindow is how long a borrower has to complete a cash deposit.
@@ -462,6 +464,10 @@ type LoanAdapterDeps struct {
 	// prices it best. Nil, or a router with routing off, leaves dispatch to
 	// the off-ramp registry's own aliases.
 	RelayRouter *relay.Router
+
+	// CashIn resolves payment prompts. Nil, or a registry with no prompt
+	// alias, disables PromptRepayment.
+	CashIn *cashin.Registry
 }
 
 func NewLoanServiceAdapter(ctx context.Context, deps LoanAdapterDeps) (*LoanServiceAdapter, error) {
@@ -539,6 +545,7 @@ func NewLoanServiceAdapter(ctx context.Context, deps LoanAdapterDeps) (*LoanServ
 		repayTreasuryPubkey: deps.TreasuryAddress,
 		repayAuthPubkey:     deps.AnchorAuthAddress,
 		repayWindow:         deps.RepaymentWindow,
+		cashIn:              deps.CashIn,
 	}, nil
 }
 
@@ -1287,6 +1294,7 @@ func (a *LoanServiceAdapter) GetUserLoans(ctx context.Context, userID string) ([
 			"id":                     l.ID,
 			"loan_reference":         l.LoanReference,
 			"status":                 l.Status,
+			"repayment_status":       l.RepaymentStatus,
 			"due_date":               l.DueDate,
 			"delivered_amount_local": l.DeliveredAmountLocal,
 			"borrow_index":           l.BorrowIndex,
@@ -1396,6 +1404,52 @@ func (a *LoanServiceAdapter) GetRepaymentQuote(ctx context.Context, loanID strin
 		QuoteSource:        fxSource,
 		AsOf:               time.Now(),
 	}, nil
+}
+
+// PromptRepayment implements ussd.RepaymentPrompter. It pushes a prompt at
+// the borrower's handset for the full payoff, converted to whole shillings
+// rounded up — M-Pesa accepts whole KES only, and a shilling short is a loan
+// that never settles.
+func (a *LoanServiceAdapter) PromptRepayment(ctx context.Context, loanID, phoneNumber string) error {
+	if a.cashIn == nil {
+		return lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
+			Code(pkgErrors.CodeAnchorNotWired).Errorf("no cash-in provider is configured")
+	}
+
+	quote, err := a.GetRepaymentQuote(ctx, loanID)
+	if err != nil {
+		return err
+	}
+	if quote.LocalCurrency != "KES" {
+		return lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
+			With(pkgErrors.AttrCurrency, quote.LocalCurrency).
+			Code(pkgErrors.CodeUnsupportedOperation).Errorf("prompts push M-Pesa, which collects in KES")
+	}
+	amountKES := (quote.AmountLocalCents + 99) / 100
+
+	provider, err := a.cashIn.Resolve(cashin.Request{
+		LoanID:           loanID,
+		CollectionMethod: cashin.CollectionMethodPrompt,
+	})
+	if err != nil {
+		return lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
+			Wrapf(err, "could not resolve a prompt provider")
+	}
+	prompter, ok := provider.(cashin.Prompter)
+	if !ok {
+		return lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
+			Code(pkgErrors.CodeUnsupportedOperation).Errorf("the resolved provider cannot push prompts")
+	}
+	if _, err := prompter.Prompt(ctx, cashin.PromptRequest{
+		LoanID:    loanID,
+		Payer:     phoneNumber,
+		AmountKES: amountKES,
+	}); err != nil {
+		return lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
+			With(pkgErrors.AttrAmountLocal, amountKES).
+			Wrapf(err, "the prompt was refused")
+	}
+	return nil
 }
 
 // fetchFXForQuote sources a current FX rate using the orchestrator cascade

@@ -103,6 +103,10 @@ func (a *MpesaCollectionAdapter) Prompt(ctx context.Context, req cashin.PromptRe
 	if l.LoanReference == nil || *l.LoanReference == "" {
 		return nil, adapterErr("mpesa_prompt", req.LoanID).Code(pkgErrors.CodeMissingDependency).Errorf("loan has no short reference")
 	}
+	if l.RepaymentStatus == models.LoanRepaymentStatusInitiated {
+		return nil, adapterErr("mpesa_prompt", req.LoanID).Code(pkgErrors.CodeRepaymentInFlight).
+			Errorf("a repayment prompt is already in flight for this loan")
+	}
 	reference := *l.LoanReference
 
 	callbackURL := req.CallbackURL
