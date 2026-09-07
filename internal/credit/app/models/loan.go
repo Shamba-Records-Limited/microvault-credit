@@ -166,6 +166,16 @@ type Loan struct {
 	RepaymentExpiresAt     *time.Time `json:"repayment_expires_at,omitempty" gorm:"type:timestamptz"`
 	RepaymentMGTxID        *string    `json:"repayment_mg_tx_id,omitempty" gorm:"column:repayment_mg_tx_id;type:varchar(100);uniqueIndex"`
 	RepaymentNextPollAt    *time.Time `json:"repayment_next_poll_at,omitempty" gorm:"type:timestamptz;index"`
+	// RepaymentProvider discriminates the rails; without it the MoneyGram and
+	// M-Pesa pollers would drive each other's loans. Empty means MoneyGram-era
+	// rows predating the column.
+	RepaymentProvider string `json:"repayment_provider,omitempty" gorm:"column:repayment_provider;type:varchar(20);index"`
+	// The M-Pesa Express pair. Both are uniquely indexed by partial indexes in
+	// migration 000014, not by gorm tags — a full unique index would reject
+	// every NULL row.
+	RepaymentMpesaCheckoutID *string `json:"repayment_mpesa_checkout_id,omitempty" gorm:"column:repayment_mpesa_checkout_id;type:varchar(100)"`
+	RepaymentMpesaTransID    *string `json:"repayment_mpesa_trans_id,omitempty" gorm:"column:repayment_mpesa_trans_id;type:varchar(20)"`
+	RepaymentSTKAttempts     int     `json:"repayment_stk_attempts" gorm:"column:repayment_stk_attempts;not null;default:0"`
 	// RepaymentReminderSentAt is written before the pre-expiry SMS, so a
 	// failing send is not retried on every poll tick. It records a
 	// notification rather than a movement of money, so nothing else on the
@@ -338,6 +348,10 @@ const (
 	// is not used for a failed vault leg — funds already on the treasury stay
 	// at funds_received so reconciliation keeps retrying.
 	LoanRepaymentStatusFailed = "failed"
+
+	// Loan Repayment Provider — which rail owns the in-flight repayment.
+	LoanRepaymentProviderMoneyGram = "moneygram"
+	LoanRepaymentProviderMpesa     = "mpesa"
 )
 
 // IsRepaymentOpen reports whether a borrower repayment is in flight and owned

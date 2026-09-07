@@ -74,6 +74,10 @@ type LoanRepository interface {
 	// vault repay.
 	GetDueRepayments(ctx context.Context, limit int) ([]*models.Loan, error)
 
+	// GetDueSTKRepayments returns M-Pesa Express repayments whose prompt may
+	// have resolved and whose poll is due.
+	GetDueSTKRepayments(ctx context.Context, limit int) ([]*models.Loan, error)
+
 	// GetActiveByProvider returns loans where ramp_provider matches the given
 	// provider and the loan has not reached a terminal status. Used by
 	// provider-specific pollers to enumerate work.
@@ -411,7 +415,8 @@ var openRepaymentStatuses = []string{
 }
 
 // GetDueRepayments returns repayments the deposit driver should evaluate this
-// tick.
+// tick. Scoped to the MoneyGram rail: M-Pesa-initiated loans are driven by the
+// STK fetcher, never this one.
 func (r *loanRepository) GetDueRepayments(ctx context.Context, limit int) ([]*models.Loan, error) {
 	if limit <= 0 {
 		limit = 100
@@ -421,12 +426,35 @@ func (r *loanRepository) GetDueRepayments(ctx context.Context, limit int) ([]*mo
 		Preload("User").
 		Preload("Account").
 		Where("repayment_status IN ? AND deleted_at IS NULL", openRepaymentStatuses).
+		Where("repayment_provider = ?", models.LoanRepaymentProviderMoneyGram).
 		Where("repayment_next_poll_at IS NULL OR repayment_next_poll_at <= ?", time.Now()).
 		Order("repayment_next_poll_at ASC NULLS FIRST").
 		Limit(limit).
 		Find(&loans)
 	if result.Error != nil {
 		log.Printf("GetDueRepayments: database error: %v", result.Error)
+		return nil, ErrFailedToGetDueRepayments
+	}
+	return loans, nil
+}
+
+// GetDueSTKRepayments returns M-Pesa Express repayments whose prompt may have
+// resolved and whose poll is due.
+func (r *loanRepository) GetDueSTKRepayments(ctx context.Context, limit int) ([]*models.Loan, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var loans []*models.Loan
+	result := r.db.WithContext(ctx).
+		Where("repayment_status = ?", models.LoanRepaymentStatusInitiated).
+		Where("repayment_provider = ?", models.LoanRepaymentProviderMpesa).
+		Where("repayment_mpesa_checkout_id IS NOT NULL AND deleted_at IS NULL").
+		Where("repayment_next_poll_at IS NULL OR repayment_next_poll_at <= ?", time.Now()).
+		Order("repayment_next_poll_at ASC NULLS FIRST").
+		Limit(limit).
+		Find(&loans)
+	if result.Error != nil {
+		log.Printf("GetDueSTKRepayments: database error: %v", result.Error)
 		return nil, ErrFailedToGetDueRepayments
 	}
 	return loans, nil
@@ -502,6 +530,10 @@ func loanUpdateMap(loan *models.Loan) map[string]interface{} {
 		"repayment_vault_tx_hash":     loan.RepaymentVaultTxHash,
 		"repayment_vault_attempts":    loan.RepaymentVaultAttempts,
 		"repayment_reference_sent_at": loan.RepaymentReferenceSentAt,
+		"repayment_provider":          loan.RepaymentProvider,
+		"repayment_mpesa_checkout_id": loan.RepaymentMpesaCheckoutID,
+		"repayment_mpesa_trans_id":    loan.RepaymentMpesaTransID,
+		"repayment_stk_attempts":      loan.RepaymentSTKAttempts,
 	}
 }
 

@@ -567,6 +567,10 @@ func toLoanResponse(loan *models.Loan) *LoanResponse {
 		RepaymentVaultTxHash:     loan.RepaymentVaultTxHash,
 		RepaymentVaultAttempts:   loan.RepaymentVaultAttempts,
 		RepaymentReferenceSentAt: loan.RepaymentReferenceSentAt,
+		RepaymentProvider:        loan.RepaymentProvider,
+		RepaymentMpesaCheckoutID: loan.RepaymentMpesaCheckoutID,
+		RepaymentMpesaTransID:    loan.RepaymentMpesaTransID,
+		RepaymentSTKAttempts:     loan.RepaymentSTKAttempts,
 
 		CreatedAt: loan.CreatedAt,
 		UpdatedAt: loan.UpdatedAt,

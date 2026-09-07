@@ -35,6 +35,7 @@ import (
 	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
 	atussd "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/providers/africastalking"
 	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/cashin"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/fonbnk"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/mpesa"
@@ -681,6 +682,43 @@ func main() {
 		stkRunner := mpesapoller.NewSTKRunner(coreRepos.Mpesa, mpesaClient, cfg.Payments.Mpesa, logger)
 		go stkRunner.Start(pollerCtx)
 		log.Println("M-Pesa STK poller started")
+
+		// Cash-in registry: paybill collections and STK prompts resolve to
+		// M-Pesa. In-flight prompts are driven by the loan poller below.
+		cashInRegistry := cashin.NewRegistry()
+		mpesaCollection, err := adapters.NewMpesaCollectionAdapter(adapters.MpesaCollectionAdapterDeps{
+			Client:  mpesaClient,
+			Repo:    repos.Loan,
+			LoanSvc: loanSvc,
+			Config:  cfg.Payments.Mpesa,
+		})
+		if err != nil {
+			log.Fatalf("M-Pesa collection adapter construction failed: %v", err)
+		}
+		if err := cashInRegistry.Register(mpesaCollection); err != nil {
+			log.Fatalf("Failed to register M-Pesa cash-in: %v", err)
+		}
+		if err := cashInRegistry.Alias(cashin.CollectionMethodPayBill, cashin.ProviderMpesa); err != nil {
+			log.Fatalf("Failed to alias pay_bill → mpesa: %v", err)
+		}
+		if err := cashInRegistry.Alias(cashin.CollectionMethodPrompt, cashin.ProviderMpesa); err != nil {
+			log.Fatalf("Failed to alias prompt → mpesa: %v", err)
+		}
+		log.Printf("M-Pesa cash-in registered (%d provider)", len(cashInRegistry.All()))
+
+		mpesaLoanRunner, err := adapters.NewMpesaSTKLoanRunner(adapters.MpesaSTKLoanDriverDeps{
+			Client:    mpesaClient,
+			MpesaRepo: coreRepos.Mpesa,
+			Repo:      repos.Loan,
+			LoanSvc:   loanSvc,
+			Config:    cfg.Payments.Mpesa,
+			Logger:    logger,
+		})
+		if err != nil {
+			log.Fatalf("M-Pesa STK loan poller construction failed: %v", err)
+		}
+		go mpesaLoanRunner.Start(pollerCtx)
+		log.Println("M-Pesa STK loan poller started")
 	}
 
 	// ---- 16. Fiber app + middleware + routes ----
