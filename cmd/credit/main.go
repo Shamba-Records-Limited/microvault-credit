@@ -124,7 +124,7 @@ func main() {
 	}
 
 	// ---- 5. Loan service ----
-	loanSvc := loan.NewService(repos.Loan)
+	loanSvc := loan.NewService(repos.Loan, cfg.Payments.LoanReferencePrefix)
 
 	// ---- 6. Stellar RPC client + service ----
 	rpcClient := cfg.Stellar.NewRpcClient()

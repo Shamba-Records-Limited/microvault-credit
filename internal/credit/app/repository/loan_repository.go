@@ -3,10 +3,12 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -16,10 +18,15 @@ import (
 
 // Common errors for LoanRepository
 var (
-	ErrLoanNotFound                   = errors.New("loan not found")
+	ErrLoanNotFound = errors.New("loan not found")
+	// ErrLoanReferenceConflict is a loan_reference unique-index violation. The
+	// reference generator retries on it rather than surfacing a 500 for what is
+	// a rare collision in a 32^6 space.
+	ErrLoanReferenceConflict          = errors.New("loan reference already exists")
 	ErrFailedToCreateLoan             = errors.New("failed to create loan")
 	ErrFailedToGetLoan                = errors.New("failed to get loan")
 	ErrFailedToGetLoansByUserID       = errors.New("failed to get loans by user ID")
+	ErrFailedToGetLoanByReference     = errors.New("failed to get loan by reference")
 	ErrFailedToGetActiveLoans         = errors.New("failed to get active loans")
 	ErrFailedToGetActiveLoansByStatus = errors.New("failed to get active loans by status")
 	ErrFailedToUpdateLoan             = errors.New("failed to update loan")
@@ -47,6 +54,11 @@ type LoanRepository interface {
 	GetActiveLoans(ctx context.Context, limit, offset int) ([]*models.Loan, error)
 	GetActiveLoansByStatus(ctx context.Context, status string, limit, offset int) ([]*models.Loan, error)
 	GetBySequenceID(ctx context.Context, sequenceID string) (*models.Loan, error)
+	// GetByAnyReference resolves a loan by either its current reference or the
+	// legacy LR-... form preserved at migration time. This is the single lookup
+	// C2B validation, C2B Hakikisha and the Pull reconciler share, so the
+	// legacy path retires in one place.
+	GetByAnyReference(ctx context.Context, reference string) (*models.Loan, error)
 	// GetRefundDeclared returns loans whose anchor has declared a refund that
 	// has not yet settled, oldest first. Scoped by provider because each
 	// provider's refund is resolved through its own API.
@@ -107,6 +119,10 @@ func NewLoanRepository(db *gorm.DB) (LoanRepository, error) {
 func (r *loanRepository) Create(ctx context.Context, loan *models.Loan) error {
 	result := r.db.WithContext(ctx).Create(loan)
 	if result.Error != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(result.Error, &pgErr) && pgErr.Code == "23505" {
+			return fmt.Errorf("%w: %v", ErrLoanReferenceConflict, result.Error)
+		}
 		log.Printf("Create: database error: %v", result.Error)
 		return ErrFailedToCreateLoan
 	}
@@ -322,6 +338,29 @@ func (r *loanRepository) GetByRampExternalRef(ctx context.Context, ref string) (
 }
 
 // GetByRampShortCode resolves the loan behind a /r/{code} SMS redirect.
+// GetByAnyReference resolves a loan by loan_reference first, then
+// legacy_loan_reference. Callers must validate the reference shape before
+// calling — a garbage reference should be rejected upstream without a query.
+func (r *loanRepository) GetByAnyReference(ctx context.Context, reference string) (*models.Loan, error) {
+	var loan models.Loan
+	result := r.db.WithContext(ctx).
+		Where("loan_reference = ? AND deleted_at IS NULL", reference).
+		First(&loan)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		result = r.db.WithContext(ctx).
+			Where("legacy_loan_reference = ? AND deleted_at IS NULL", reference).
+			First(&loan)
+	}
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil, ErrLoanNotFound
+	}
+	if result.Error != nil {
+		log.Printf("GetByAnyReference: database error: %v", result.Error)
+		return nil, ErrFailedToGetLoanByReference
+	}
+	return &loan, nil
+}
+
 func (r *loanRepository) GetByRampShortCode(ctx context.Context, code string) (*models.Loan, error) {
 	var loan models.Loan
 	result := r.db.WithContext(ctx).

@@ -1,7 +1,6 @@
 package models
 
 import (
-	"fmt"
 	"math"
 	"time"
 
@@ -9,19 +8,24 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"github.com/Shamba-Records-Limited/microvault/pkg/loanref"
 	users "github.com/Shamba-Records-Limited/microvault/pkg/models"
 )
 
 // Loan represents a loan record
 // Amounts stored in smallest unit, rates in basis points
 type Loan struct {
-	ID              string  `json:"id" gorm:"type:uuid;primaryKey"`
-	LoanReference   *string `json:"loan_reference,omitempty" gorm:"column:loan_reference;type:varchar(50);uniqueIndex"`
-	UserID          string  `json:"user_id" gorm:"type:uuid;not null;index"`
-	AccountID       string  `json:"account_id" gorm:"type:uuid;not null;index"`
-	ProductID       *string `json:"product_id,omitempty" gorm:"type:uuid;index"`
-	PrincipalAmount int64   `json:"principal_amount" gorm:"type:bigint;not null"`
-	PrincipalAsset  string  `json:"principal_asset" gorm:"type:varchar(20);not null;index"`
+	ID            string  `json:"id" gorm:"type:uuid;primaryKey"`
+	LoanReference *string `json:"loan_reference,omitempty" gorm:"column:loan_reference;type:varchar(50);uniqueIndex"`
+	// LegacyLoanReference preserves the pre-migration LR-... reference so
+	// payments quoting it still resolve. Resolution tries loan_reference first,
+	// then this column. Retired once no loan predating the migration is open.
+	LegacyLoanReference *string `json:"legacy_loan_reference,omitempty" gorm:"column:legacy_loan_reference;type:varchar(50);index"`
+	UserID              string  `json:"user_id" gorm:"type:uuid;not null;index"`
+	AccountID           string  `json:"account_id" gorm:"type:uuid;not null;index"`
+	ProductID           *string `json:"product_id,omitempty" gorm:"type:uuid;index"`
+	PrincipalAmount     int64   `json:"principal_amount" gorm:"type:bigint;not null"`
+	PrincipalAsset      string  `json:"principal_asset" gorm:"type:varchar(20);not null;index"`
 	// VaultAPRBps is the annual rate that applied when the loan opened, read
 	// from the vault at borrow time. It is an audit record of the rate, not a
 	// fixed obligation: real accrual is derived from BorrowIndex, and the
@@ -203,13 +207,19 @@ func (loan *Loan) BeforeCreate(tx *gorm.DB) error {
 	}
 	loan.ID = id.String()
 
-	// Generate a human-readable loan reference from the UUIDv7 timestamp +
-	// random suffix.
-	// Format: LR-unix_ms_hex-4_random_hex e.g. "LR-018F3A2B1C-A7F2"
+	// Generate a short loan reference when the caller has not set one. The
+	// service path sets it explicitly with the configured prefix; this is the
+	// fallback for every other creation path.
+	// Format: 2-char prefix + 6 random Crockford base32 + 1 check char,
+	// e.g. "MV7K3QA9F". The previous format ("LR-unix_ms_hex-4_random_hex")
+	// embedded a millisecond timestamp, which made references enumerable — and
+	// the reference is now the only binding between a paybill payment and a
+	// loan. Existing references are preserved in loans.legacy_loan_reference.
 	if loan.LoanReference == nil {
-		ts := time.Now().UnixMilli()
-		short := id.String()[24:28] // 4 hex chars from the random portion
-		ref := fmt.Sprintf("LR-%X-%s", ts, short)
+		ref, err := loanref.Generate(loanref.DefaultPrefix)
+		if err != nil {
+			return err
+		}
 		loan.LoanReference = &ref
 	}
 	return nil
