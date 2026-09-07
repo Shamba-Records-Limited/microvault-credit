@@ -37,6 +37,7 @@ import (
 	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/fonbnk"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/mpesa"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/relay"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/relay/sources"
@@ -45,6 +46,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/pin"
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
+	"github.com/Shamba-Records-Limited/microvault/pkg/services/mpesapoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	stellarrpc "github.com/Shamba-Records-Limited/microvault/pkg/stellar/rpc"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
@@ -654,6 +656,32 @@ func main() {
 	}
 	go depositDriver.Start(pollerCtx)
 	log.Println("MoneyGram deposit driver started")
+
+	// M-Pesa STK poller — resolves Express observations into confirmed
+	// payments. A callback only lands the receipt on the queue; this is what
+	// independently verifies it before anything credits, per the
+	// confirm-before-credit discipline. Runs only when Daraja is configured.
+	if cfg.Payments.Mpesa.ConsumerKey != "" {
+		mpesaEnv := mpesa.EnvironmentSandbox
+		if cfg.Server.ServerEnvironment == "production" {
+			mpesaEnv = mpesa.EnvironmentProduction
+		}
+		mpesaClient, err := mpesa.New(mpesa.Config{
+			Environment:         mpesaEnv,
+			ConsumerKey:         cfg.Payments.Mpesa.ConsumerKey,
+			ConsumerSecret:      cfg.Payments.Mpesa.ConsumerSecret,
+			CollectionShortcode: cfg.Payments.Mpesa.CollectionShortcode,
+			Passkey:             cfg.Payments.Mpesa.Passkey,
+			InitiatorName:       cfg.Payments.Mpesa.InitiatorName,
+			InitiatorPassword:   cfg.Payments.Mpesa.InitiatorPassword,
+		})
+		if err != nil {
+			log.Fatalf("M-Pesa client construction failed: %v", err)
+		}
+		stkRunner := mpesapoller.NewSTKRunner(coreRepos.Mpesa, mpesaClient, cfg.Payments.Mpesa, logger)
+		go stkRunner.Start(pollerCtx)
+		log.Println("M-Pesa STK poller started")
+	}
 
 	// ---- 16. Fiber app + middleware + routes ----
 	app := fiber.New()
