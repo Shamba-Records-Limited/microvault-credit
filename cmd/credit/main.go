@@ -570,7 +570,7 @@ func main() {
 		AccountNotifier: accountNotifier,
 		LoanNotifier:    loanNotifier,
 		RepayPaybill:    cfg.Mobile.RepayPaybill,
-		MpesaPrompter:   cfg.Payments.Mpesa.ConsumerKey != "",
+		MpesaPrompter:   true,
 	})
 	ussdService := ussd.NewUSSDService(ussdHandler)
 
@@ -661,67 +661,70 @@ func main() {
 	go depositDriver.Start(pollerCtx)
 	log.Println("MoneyGram deposit driver started")
 
-	// M-Pesa STK poller — resolves Express observations into confirmed
-	// payments. A callback only lands the receipt on the queue; this is what
-	// independently verifies it before anything credits, per the
-	// confirm-before-credit discipline. Runs only when Daraja is configured.
-	if cfg.Payments.Mpesa.ConsumerKey != "" {
-		mpesaEnv := mpesa.EnvironmentSandbox
-		if cfg.Server.ServerEnvironment == "production" {
-			mpesaEnv = mpesa.EnvironmentProduction
-		}
-		mpesaClient, err := mpesa.New(mpesa.Config{
-			Environment:         mpesaEnv,
-			ConsumerKey:         cfg.Payments.Mpesa.ConsumerKey,
-			ConsumerSecret:      cfg.Payments.Mpesa.ConsumerSecret,
-			CollectionShortcode: cfg.Payments.Mpesa.CollectionShortcode,
-			Passkey:             cfg.Payments.Mpesa.Passkey,
-			InitiatorName:       cfg.Payments.Mpesa.InitiatorName,
-			InitiatorPassword:   cfg.Payments.Mpesa.InitiatorPassword,
-		})
-		if err != nil {
-			log.Fatalf("M-Pesa client construction failed: %v", err)
-		}
-		stkRunner := mpesapoller.NewSTKRunner(coreRepos.Mpesa, mpesaClient, cfg.Payments.Mpesa, logger)
-		go stkRunner.Start(pollerCtx)
-		log.Println("M-Pesa STK poller started")
-
-		// Cash-in registry: paybill collections and STK prompts resolve to
-		// M-Pesa. In-flight prompts are driven by the loan poller below.
-		mpesaCollection, err := adapters.NewMpesaCollectionAdapter(adapters.MpesaCollectionAdapterDeps{
-			Client:  mpesaClient,
-			Repo:    repos.Loan,
-			LoanSvc: loanSvc,
-			Config:  cfg.Payments.Mpesa,
-		})
-		if err != nil {
-			log.Fatalf("M-Pesa collection adapter construction failed: %v", err)
-		}
-		if err := cashInRegistry.Register(mpesaCollection); err != nil {
-			log.Fatalf("Failed to register M-Pesa cash-in: %v", err)
-		}
-		if err := cashInRegistry.Alias(cashin.CollectionMethodPayBill, cashin.ProviderMpesa); err != nil {
-			log.Fatalf("Failed to alias pay_bill → mpesa: %v", err)
-		}
-		if err := cashInRegistry.Alias(cashin.CollectionMethodPrompt, cashin.ProviderMpesa); err != nil {
-			log.Fatalf("Failed to alias prompt → mpesa: %v", err)
-		}
-		log.Printf("M-Pesa cash-in registered (%d provider)", len(cashInRegistry.All()))
-
-		mpesaLoanRunner, err := adapters.NewMpesaSTKLoanRunner(adapters.MpesaSTKLoanDriverDeps{
-			Client:    mpesaClient,
-			MpesaRepo: coreRepos.Mpesa,
-			Repo:      repos.Loan,
-			LoanSvc:   loanSvc,
-			Config:    cfg.Payments.Mpesa,
-			Logger:    logger,
-		})
-		if err != nil {
-			log.Fatalf("M-Pesa STK loan poller construction failed: %v", err)
-		}
-		go mpesaLoanRunner.Start(pollerCtx)
-		log.Println("M-Pesa STK loan poller started")
+	// M-Pesa is a platform rail, wired unconditionally like MoneyGram and
+	// YellowCard: a misconfigured Daraja credential is a boot failure, not a
+	// silently-absent provider. The client constructor validates the
+	// credentials; the adapters validate the rest of the config.
+	//
+	// The STK poller resolves Express observations into confirmed payments. A
+	// callback only lands the receipt on the queue; the poller independently
+	// verifies it before anything credits, per the confirm-before-credit
+	// discipline.
+	mpesaEnv := mpesa.EnvironmentSandbox
+	if cfg.Server.ServerEnvironment == "production" {
+		mpesaEnv = mpesa.EnvironmentProduction
 	}
+	mpesaClient, err := mpesa.New(mpesa.Config{
+		Environment:         mpesaEnv,
+		ConsumerKey:         cfg.Payments.Mpesa.ConsumerKey,
+		ConsumerSecret:      cfg.Payments.Mpesa.ConsumerSecret,
+		CollectionShortcode: cfg.Payments.Mpesa.CollectionShortcode,
+		Passkey:             cfg.Payments.Mpesa.Passkey,
+		InitiatorName:       cfg.Payments.Mpesa.InitiatorName,
+		InitiatorPassword:   cfg.Payments.Mpesa.InitiatorPassword,
+	})
+	if err != nil {
+		log.Fatalf("M-Pesa client construction failed: %v", err)
+	}
+	stkRunner := mpesapoller.NewSTKRunner(coreRepos.Mpesa, mpesaClient, cfg.Payments.Mpesa, logger)
+	go stkRunner.Start(pollerCtx)
+	log.Println("M-Pesa STK poller started")
+
+	// Cash-in registry: paybill collections and STK prompts resolve to M-Pesa.
+	// In-flight prompts are driven by the loan poller below.
+	mpesaCollection, err := adapters.NewMpesaCollectionAdapter(adapters.MpesaCollectionAdapterDeps{
+		Client:  mpesaClient,
+		Repo:    repos.Loan,
+		LoanSvc: loanSvc,
+		Config:  cfg.Payments.Mpesa,
+	})
+	if err != nil {
+		log.Fatalf("M-Pesa collection adapter construction failed: %v", err)
+	}
+	if err := cashInRegistry.Register(mpesaCollection); err != nil {
+		log.Fatalf("Failed to register M-Pesa cash-in: %v", err)
+	}
+	if err := cashInRegistry.Alias(cashin.CollectionMethodPayBill, cashin.ProviderMpesa); err != nil {
+		log.Fatalf("Failed to alias pay_bill → mpesa: %v", err)
+	}
+	if err := cashInRegistry.Alias(cashin.CollectionMethodPrompt, cashin.ProviderMpesa); err != nil {
+		log.Fatalf("Failed to alias prompt → mpesa: %v", err)
+	}
+	log.Print("M-Pesa cash-in registered (cash-in providers: moneygram, mpesa)")
+
+	mpesaLoanRunner, err := adapters.NewMpesaSTKLoanRunner(adapters.MpesaSTKLoanDriverDeps{
+		Client:    mpesaClient,
+		MpesaRepo: coreRepos.Mpesa,
+		Repo:      repos.Loan,
+		LoanSvc:   loanSvc,
+		Config:    cfg.Payments.Mpesa,
+		Logger:    logger,
+	})
+	if err != nil {
+		log.Fatalf("M-Pesa STK loan poller construction failed: %v", err)
+	}
+	go mpesaLoanRunner.Start(pollerCtx)
+	log.Println("M-Pesa STK loan poller started")
 
 	// ---- 16. Fiber app + middleware + routes ----
 	app := fiber.New()

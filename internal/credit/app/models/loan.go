@@ -171,7 +171,7 @@ type Loan struct {
 	// rows predating the column.
 	RepaymentProvider string `json:"repayment_provider,omitempty" gorm:"column:repayment_provider;type:varchar(20);index"`
 	// The M-Pesa Express pair. Both are uniquely indexed by partial indexes in
-	// migration 000014, not by gorm tags — a full unique index would reject
+	// migration 000032, not by gorm tags — a full unique index would reject
 	// every NULL row.
 	RepaymentMpesaCheckoutID *string `json:"repayment_mpesa_checkout_id,omitempty" gorm:"column:repayment_mpesa_checkout_id;type:varchar(100)"`
 	RepaymentMpesaTransID    *string `json:"repayment_mpesa_trans_id,omitempty" gorm:"column:repayment_mpesa_trans_id;type:varchar(20)"`
