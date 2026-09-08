@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -506,12 +507,13 @@ func main() {
 		Logger:       logger,
 		CashIn:       cashInRegistry,
 
-		FXOrchestrator:  fxOrch,
-		PublicBaseURL:   cfg.Server.PublicBaseURL,
-		Shortener:       linkShortener,
-		AccountEnsurer:  userAdapter,
-		RepaymentAnchor: mgClient.Client,
-		TreasuryAddress: treasuryAddr,
+		RoundAnchorAmounts: cfg.Payments.RoundAnchorAmounts,
+		FXOrchestrator:     fxOrch,
+		PublicBaseURL:      cfg.Server.PublicBaseURL,
+		Shortener:          linkShortener,
+		AccountEnsurer:     userAdapter,
+		RepaymentAnchor:    mgClient.Client,
+		TreasuryAddress:    treasuryAddr,
 		// The memo namespace follows the SEP-10 signer, which is the auth
 		// wallet — the same address the poller derives from.
 		AnchorAuthAddress: mgAuthAddr,
@@ -560,6 +562,10 @@ func main() {
 	standardPreset := &ussd.StandardLoanMenuPreset{}
 	standardPreset.Initialize(menuRegistry)
 
+	repayPaybill := ""
+	if cfg.Payments.Mpesa.CollectionShortcode > 0 {
+		repayPaybill = strconv.FormatUint(uint64(cfg.Payments.Mpesa.CollectionShortcode), 10)
+	}
 	ussdHandler := ussd.NewUSSDHandler(ussd.HandlerDeps{
 		SessionManager:  sessionManager,
 		MenuRegistry:    menuRegistry,
@@ -569,7 +575,7 @@ func main() {
 		PINService:      pinService,
 		AccountNotifier: accountNotifier,
 		LoanNotifier:    loanNotifier,
-		RepayPaybill:    cfg.Mobile.RepayPaybill,
+		RepayPaybill:    repayPaybill,
 		MpesaPrompter:   true,
 	})
 	ussdService := ussd.NewUSSDService(ussdHandler)
@@ -763,6 +769,21 @@ func main() {
 
 	// Webhook routes
 	api.Post("/webhooks/yellowcard", webhookCtrl.HandleYellowCardWebhook)
+
+	// Daraja callbacks — the STK result URL the prompt adapter builds is
+	// CallbackBaseURL + /api/v1/callbacks/daraja/{slug}/stk/result, and that
+	// base (MPESA_CALLBACK_BASE_URL) is the bare host for this server. The
+	// adapter adds the /api/v1 prefix, so these mount on the /api/v1 group.
+	// Unauthenticated by design: Daraja signs nothing, so the unguessable slug
+	// and the source-IP allowlist are the controls.
+	if cfg.Payments.Mpesa.CallbackSlug != "" {
+		resolveLoan := func(ctx context.Context, reference string) (string, error) {
+			return coreRepos.Mpesa.GetLoanIDByReference(ctx, reference)
+		}
+		darajaCtrl := controllers.NewDarajaCallbackController(
+			coreRepos.Mpesa, cfg.Payments.Mpesa, cfg.Server.ServerEnvironment, resolveLoan)
+		darajaCtrl.Register(api)
+	}
 
 	// Cash-pickup SMS short-link → MoneyGram interactive URL redirect.
 	//

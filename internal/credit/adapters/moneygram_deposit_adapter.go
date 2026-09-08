@@ -2,7 +2,6 @@ package adapters
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -20,6 +19,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
+	"github.com/Shamba-Records-Limited/microvault/pkg/utils"
 )
 
 // Compile-time checks.
@@ -404,7 +404,7 @@ func (a *MoneyGramDepositAdapter) recordCashInTransactions(ctx context.Context, 
 	// Falls back to the payoff only when amount_out is unreadable.
 	depositDesc := "USDC credited to treasury by MoneyGram for a borrower repayment"
 	creditedStroops := payoff
-	if stroops, ok := usdcDecimalToStroops(tx.AmountOut); ok && stroops > 0 {
+	if stroops, ok := utils.ParseDecimalStroops(tx.AmountOut); ok && stroops > 0 {
 		creditedStroops = stroops
 	}
 	var stellarHash *string
@@ -483,22 +483,6 @@ func (a *MoneyGramDepositAdapter) settleTransaction(ctx context.Context, txnID, 
 			return
 		}
 	}
-}
-
-// usdcDecimalToStroops parses a SEP-24 decimal amount into USDC stroops.
-//
-// Separate from decimalToCents: USDC carries seven decimals on Stellar, and
-// treating a USDC figure as cents would understate it by five orders of
-// magnitude.
-func usdcDecimalToStroops(s string) (int64, bool) {
-	var v float64
-	if _, err := fmt.Sscanf(strings.TrimSpace(s), "%f", &v); err != nil {
-		return 0, false
-	}
-	if v < 0 {
-		return 0, false
-	}
-	return int64(v * 1e7), true
 }
 
 // projectRepaymentRecord maps a loan row into the deposit driver's projection.

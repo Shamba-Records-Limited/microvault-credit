@@ -118,6 +118,65 @@ func TestPrompt_RecordsTheCheckoutOnTheLoan(t *testing.T) {
 	assert.Equal(t, time.Date(2026, 9, 7, 12, 0, 5, 0, time.UTC), *upd.RepaymentNextPollAt)
 }
 
+// The callback URL is built on the bare host with the /api/v1 segment added
+// here, matching where the credit server mounts the Daraja routes.
+func TestPrompt_BuildsTheCallbackURLUnderAPIv1(t *testing.T) {
+	a, stub, _ := newTestCollectionAdapter(t, referencedLoan())
+
+	_, err := a.Prompt(context.Background(), cashin.PromptRequest{
+		LoanID:    "loan-1",
+		Payer:     "254712345678",
+		AmountKES: 150,
+	})
+
+	require.NoError(t, err)
+	checkouts := stub.Checkouts()
+	require.Len(t, checkouts, 1)
+	assert.Equal(t, "https://x.test/api/v1/callbacks/daraja/slug/stk/result", checkouts[0].CallbackURL)
+}
+
+// The prompt's description is the loan reference: nine characters, inside
+// Daraja's thirteen-character TransactionDesc cap, and meaningful on the
+// borrower's handset.
+func TestPrompt_DescribesItselfByLoanReference(t *testing.T) {
+	a, stub, _ := newTestCollectionAdapter(t, referencedLoan())
+
+	res, err := a.Prompt(context.Background(), cashin.PromptRequest{
+		LoanID:    "loan-1",
+		Payer:     "254712345678",
+		AmountKES: 150,
+	})
+
+	// A desc over the cap would have come back as a 400.002.02 from the stub,
+	// so a clean accept already proves the length; the reference assertion
+	// proves which copy went out.
+	require.NoError(t, err)
+	payload := res.Provider.(mpesa.ExpressPayload)
+	checkouts := stub.Checkouts()
+	require.Len(t, checkouts, 1)
+	assert.Equal(t, "MV12345678", checkouts[0].Reference)
+	assert.NotEmpty(t, payload.CheckoutRequestID)
+}
+
+// A configured override replaces the payoff with a fixed figure — the sandbox
+// has no simulator, so a real handset can only be charged a real amount.
+func TestPrompt_SandboxOverrideReplacesTheAmount(t *testing.T) {
+	a, stub, _ := newTestCollectionAdapter(t, referencedLoan())
+	a.cfg.PromptAmountKES = 1
+
+	res, err := a.Prompt(context.Background(), cashin.PromptRequest{
+		LoanID:    "loan-1",
+		Payer:     "254712345678",
+		AmountKES: 15_000,
+	})
+
+	require.NoError(t, err)
+	checkouts := stub.Checkouts()
+	require.Len(t, checkouts, 1)
+	assert.Equal(t, int64(100), checkouts[0].AmountMinor, "KES 1 in cents")
+	assert.Equal(t, int64(1), res.Provider.(mpesa.ExpressPayload).PromptedAmountKES)
+}
+
 func TestPrompt_DeclinedBeforeAnyStateIsWritten(t *testing.T) {
 	a, _, loans := newTestCollectionAdapter(t, referencedLoan())
 

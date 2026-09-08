@@ -27,6 +27,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
+	"github.com/Shamba-Records-Limited/microvault/pkg/utils"
 
 	"github.com/Shamba-Records-Limited/microvault/pkg/urlshortener"
 )
@@ -35,26 +36,6 @@ import (
 // when persisting entry_rate_used on the loan. 2% is the operating norm
 // inherited from the integration plan; override via FXConfig if needed.
 const DefaultFXBufferPct = 0.02
-
-// centStroops is one USDC cent in stroops. Cash-out anchors (MoneyGram,
-// mobile-money partners) quote and reconcile amounts at 2 decimal places, so
-// every cash-out principal is rounded to a whole cent before it is stored,
-// borrowed, or sent on-chain.
-const centStroops int64 = 100_000
-
-// roundToCentStroops rounds a stroop amount to the nearest whole USDC cent
-// (round-half-up), using integer math only. A positive sub-cent amount never
-// rounds down to zero.
-func roundToCentStroops(stroops int64) int64 {
-	if stroops <= 0 {
-		return stroops
-	}
-	rounded := (stroops + centStroops/2) / centStroops * centStroops
-	if rounded == 0 {
-		return centStroops
-	}
-	return rounded
-}
 
 // Compile-time check.
 var _ ussd.LoanService = (*LoanServiceAdapter)(nil)
@@ -80,6 +61,12 @@ type LoanServiceAdapter struct {
 	publicBaseURL  string                    // origin for SMS short-links; optional
 	shortener      urlshortener.Shortener    // optional; further shortens the SMS link
 	accountEnsurer AccountEnsurer            // ensures the child on-chain identity exists before lending
+
+	// roundAnchorAmounts gates cent-rounding of mobile-money cash-out
+	// principals. MoneyGram cash-out and cash-in always round; this toggle
+	// covers only the other rails. Off carries full stroop precision through
+	// Create, Borrow, and Initiate.
+	roundAnchorAmounts bool
 
 	repayAnchor         *stellaranchor.Client // memo-scoped SEP-24 client for borrower cash deposits
 	repayTreasuryPubkey string                // deposit destination
@@ -315,6 +302,18 @@ func (a *LoanServiceAdapter) runRepaymentInitiation(loanID, phoneNumber string) 
 		fail(errb.Code(pkgErrors.CodeQuoteFailed).Wrapf(err, "could not quote the payoff"))
 		return
 	}
+	// MoneyGram always reconciles at 2 decimals, so the frozen payoff is
+	// rounded to whole cents: the SEP-24 POST below always formats 2dp, and a
+	// 7-decimal on-chain repayment against a 2-decimal expectation is the same
+	// confirmation mismatch that stalls payouts.
+	if rounded := utils.RoundToCentStroops(quote.AmountUSDCStroops); rounded != quote.AmountUSDCStroops {
+		a.logger.Info("payoff rounded to whole cents",
+			pkgErrors.AttrLoanID, loanID,
+			"original_stroops", quote.AmountUSDCStroops,
+			"rounded_stroops", rounded,
+		)
+		quote.AmountUSDCStroops = rounded
+	}
 	if err := depositCorridorErr(errb, quote.AmountUSDCStroops); err != nil {
 		fail(err)
 		return
@@ -468,6 +467,12 @@ type LoanAdapterDeps struct {
 	// CashIn resolves payment prompts. Nil, or a registry with no prompt
 	// alias, disables PromptRepayment.
 	CashIn *cashin.Registry
+
+	// RoundAnchorAmounts rounds mobile-money cash-out principals to whole USDC
+	// cents before they are stored, borrowed, or sent on-chain. MoneyGram
+	// (cash-out and cash-in) always rounds; this toggle covers only the other
+	// rails. Off carries full stroop precision on those rails.
+	RoundAnchorAmounts bool
 }
 
 func NewLoanServiceAdapter(ctx context.Context, deps LoanAdapterDeps) (*LoanServiceAdapter, error) {
@@ -546,6 +551,7 @@ func NewLoanServiceAdapter(ctx context.Context, deps LoanAdapterDeps) (*LoanServ
 		repayAuthPubkey:     deps.AnchorAuthAddress,
 		repayWindow:         deps.RepaymentWindow,
 		cashIn:              deps.CashIn,
+		roundAnchorAmounts:  deps.RoundAnchorAmounts,
 	}, nil
 }
 
@@ -564,20 +570,24 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	// Amount validation is handled by the USSD handler against the loan product
 	// config (fiat-denominated limits). By this point the request is pre-approved.
 
-	// Round to whole USDC cents before Create, BorrowFromVault and Initiate:
-	// anchors expect 2 decimals and a 7-decimal amount leaves them stuck.
-	if rounded := roundToCentStroops(req.PrincipalAmount); rounded != req.PrincipalAmount {
-		a.logger.Info("principal rounded to whole cents",
-			"user_id", req.UserID,
-			"original_stroops", req.PrincipalAmount,
-			"rounded_stroops", rounded,
-		)
-		req.PrincipalAmount = rounded
-	}
-
 	payoutMethod := req.PayoutMethod
 	if payoutMethod == "" {
 		payoutMethod = offramp.PayoutMethodMobileMoney
+	}
+
+	// MoneyGram always reconciles at 2 decimals, so a cash-out principal is
+	// rounded to whole cents before Create, BorrowFromVault and Initiate — a
+	// 7-decimal amount leaves the anchor stuck. Other rails round only when
+	// the anchor-rounding toggle is on.
+	if a.roundAnchorAmounts || payoutMethod == offramp.PayoutMethodCashPickup {
+		if rounded := utils.RoundToCentStroops(req.PrincipalAmount); rounded != req.PrincipalAmount {
+			a.logger.Info("principal rounded to whole cents",
+				"user_id", req.UserID,
+				"original_stroops", req.PrincipalAmount,
+				"rounded_stroops", rounded,
+			)
+			req.PrincipalAmount = rounded
+		}
 	}
 
 	// Cash-pickup needs a recipient name for SEP-9 prefill — fail before any
@@ -1295,6 +1305,7 @@ func (a *LoanServiceAdapter) GetUserLoans(ctx context.Context, userID string) ([
 			"loan_reference":         l.LoanReference,
 			"status":                 l.Status,
 			"repayment_status":       l.RepaymentStatus,
+			"repayment_provider":     l.RepaymentProvider,
 			"due_date":               l.DueDate,
 			"delivered_amount_local": l.DeliveredAmountLocal,
 			"borrow_index":           l.BorrowIndex,
@@ -1373,7 +1384,7 @@ func (a *LoanServiceAdapter) GetRepaymentQuote(ctx context.Context, loanID strin
 	amountUSDC := mulDivCeil(resp.PrincipalAmount, currentIndex, originIndex)
 
 	if resp.ServiceFeeUSD != nil && *resp.ServiceFeeUSD > 0 {
-		amountUSDC += *resp.ServiceFeeUSD * 1e5
+		amountUSDC += *resp.ServiceFeeUSD * utils.CentStroops
 	}
 
 	currency := "KES"

@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/samber/lo"
@@ -111,14 +112,27 @@ func (a *MpesaCollectionAdapter) Prompt(ctx context.Context, req cashin.PromptRe
 
 	callbackURL := req.CallbackURL
 	if callbackURL == "" {
-		callbackURL = a.cfg.CallbackBaseURL + "/callbacks/daraja/" + a.cfg.CallbackSlug + "/stk/result"
+		// The base URL is the bare host; the route lives under /api/v1, so the
+		// prefix is added here rather than carried in the configured value.
+		base := strings.TrimRight(a.cfg.CallbackBaseURL, "/")
+		callbackURL = base + "/api/v1/callbacks/daraja/" + a.cfg.CallbackSlug + "/stk/result"
+	}
+
+	// Sandbox has no simulator: a handset must be charged a real amount, so a
+	// configured override replaces the payoff with a small fixed figure.
+	amountKES := req.AmountKES
+	if a.cfg.PromptAmountKES > 0 {
+		amountKES = int64(a.cfg.PromptAmountKES)
 	}
 
 	resp, err := a.client.Express(ctx, mpesa.ExpressRequest{
-		AmountKES:        req.AmountKES,
+		AmountKES:        amountKES,
 		Payer:            req.Payer,
 		AccountReference: reference,
 		CallbackURL:      callbackURL,
+		// The loan reference doubles as the prompt's description: thirteen
+		// characters is all Daraja allows, and the nine-char reference fits.
+		TransactionDesc: reference,
 	})
 	if err != nil {
 		return nil, adapterErr("mpesa_prompt", req.LoanID).Wrapf(err, "express push failed")
@@ -144,7 +158,7 @@ func (a *MpesaCollectionAdapter) Prompt(ctx context.Context, req cashin.PromptRe
 			MerchantRequestID: resp.MerchantRequestID,
 			CheckoutRequestID: resp.CheckoutRequestID,
 			CustomerMessage:   resp.CustomerMessage,
-			PromptedAmountKES: req.AmountKES,
+			PromptedAmountKES: amountKES,
 		},
 	}, nil
 }
