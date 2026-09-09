@@ -60,7 +60,7 @@ func head(title string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " · Microvault admin</title><link rel=\"icon\" type=\"image/x-icon\" href=\"/static/favicon.ico\"><link rel=\"apple-touch-icon\" href=\"/static/img/apple-touch-icon.png\"><link rel=\"stylesheet\" href=\"/static/admin.css\"><script src=\"/static/htmx.min.js\" defer></script><script src=\"/static/sidebar.js\" defer></script></head>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " · Microvault portal</title><link rel=\"icon\" type=\"image/x-icon\" href=\"/static/favicon.ico\"><link rel=\"apple-touch-icon\" href=\"/static/img/apple-touch-icon.png\"><link rel=\"preconnect\" href=\"https://fonts.googleapis.com\"><link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin><link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400&display=swap\"><link rel=\"stylesheet\" href=\"/static/admin.css\"><script src=\"/static/htmx.min.js\" defer></script><script src=\"/static/sidebar.js\" defer></script></head>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -69,6 +69,10 @@ func head(title string) templ.Component {
 }
 
 // Shell is the authenticated layout: sidebar plus main content region.
+//
+// Sidebar and content are separate floating cards (gap between them shows
+// the background), but the navbar and content area share a single card —
+// only a border-b divides them, not a gap — so they read as one surface.
 func Shell(title, current string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -98,7 +102,7 @@ func Shell(title, current string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<body class=\"h-full bg-background text-foreground\"><div class=\"flex h-full\"><aside id=\"sidebar\" data-collapsed=\"false\" class=\"group w-60 shrink-0 border-r border-sidebar-border bg-sidebar transition-[width] duration-200 data-[collapsed=true]:w-16\"><div class=\"flex h-14 items-center justify-between px-5 group-data-[collapsed=true]:justify-center group-data-[collapsed=true]:px-0\"><a href=\"/\" class=\"flex items-center gap-2 text-foreground\" aria-label=\"Microvault admin home\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<body class=\"h-full bg-background text-foreground\"><div class=\"flex h-full w-full overflow-hidden\"><aside id=\"sidebar\" data-collapsed=\"false\" class=\"group w-60 shrink-0 p-2 transition-[width] duration-200 data-[collapsed=true]:w-16\"><div class=\"flex h-full w-full flex-col rounded-lg border border-sidebar-border bg-sidebar shadow-sm\"><div class=\"flex h-14 items-center justify-between px-5 group-data-[collapsed=true]:justify-center group-data-[collapsed=true]:px-0\"><a href=\"/\" class=\"flex items-center gap-2 text-foreground\" aria-label=\"Microvault portal home\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -116,14 +120,14 @@ func Shell(title, current string) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</nav></aside><div class=\"flex min-w-0 flex-1 flex-col\"><header class=\"flex h-14 shrink-0 items-center justify-between border-b px-6\"><h1 class=\"text-sm font-medium\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</nav></div></aside><div class=\"flex min-h-0 min-w-0 flex-1 flex-col gap-2 p-2 pl-0\"><div class=\"flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-card text-card-foreground shadow-sm\"><header class=\"flex h-14 shrink-0 items-center justify-between border-b border-border px-6\"><h1 class=\"text-sm font-medium\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/layout.templ`, Line: 72, Col: 45}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/layout.templ`, Line: 82, Col: 46}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -137,7 +141,7 @@ func Shell(title, current string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "</main></div></div></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "</main></div></div></div></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -174,7 +178,7 @@ func navLink(item NavItem, current string) templ.Component {
 			var templ_7745c5c3_Var6 templ.SafeURL
 			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(item.Href))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/layout.templ`, Line: 91, Col: 34}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/layout.templ`, Line: 102, Col: 34}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 			if templ_7745c5c3_Err != nil {
@@ -187,7 +191,7 @@ func navLink(item NavItem, current string) templ.Component {
 			var templ_7745c5c3_Var7 string
 			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.ResolveAttributeValue(item.Label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/layout.templ`, Line: 93, Col: 21}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/layout.templ`, Line: 104, Col: 21}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var7)
 			if templ_7745c5c3_Err != nil {
@@ -222,7 +226,7 @@ func navLink(item NavItem, current string) templ.Component {
 			var templ_7745c5c3_Var10 string
 			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(item.Label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/layout.templ`, Line: 97, Col: 73}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/layout.templ`, Line: 108, Col: 73}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 			if templ_7745c5c3_Err != nil {
@@ -240,7 +244,7 @@ func navLink(item NavItem, current string) templ.Component {
 			var templ_7745c5c3_Var11 templ.SafeURL
 			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(item.Href))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/layout.templ`, Line: 101, Col: 34}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/layout.templ`, Line: 112, Col: 34}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 			if templ_7745c5c3_Err != nil {
@@ -253,7 +257,7 @@ func navLink(item NavItem, current string) templ.Component {
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.ResolveAttributeValue(item.Label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/layout.templ`, Line: 102, Col: 21}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/layout.templ`, Line: 113, Col: 21}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var12)
 			if templ_7745c5c3_Err != nil {
@@ -288,7 +292,7 @@ func navLink(item NavItem, current string) templ.Component {
 			var templ_7745c5c3_Var15 string
 			templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(item.Label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/layout.templ`, Line: 106, Col: 73}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/admin/views/layout.templ`, Line: 117, Col: 73}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 			if templ_7745c5c3_Err != nil {

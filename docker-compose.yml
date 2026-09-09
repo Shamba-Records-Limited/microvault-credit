@@ -111,13 +111,17 @@ services:
       dockerfile: microvault-credit/Dockerfile.dev
     container_name: microvault-admin
     working_dir: /app/microvault-credit
-    # Tailwind watches the .templ sources and writes admin.css; air watches that
-    # css and rebuilds the binary, which re-embeds it. Without the watcher a new
-    # utility class simply would not exist in the stylesheet.
+    # Builds CSS and generates templ once, then runs the server directly — no
+    # air, no `tailwindcss --watch`. That combination self-triggered a rebuild
+    # loop (air watches internal/, which includes both templ's own generated
+    # _templ.go output and tailwind's own admin.css output, each rewrite
+    # re-queuing another air rebuild) and the server never stayed up long
+    # enough to accept a connection. Restart the container to pick up changes.
     command: >
       sh -c "cd internal/admin/assets && npm install --silent &&
-             npx tailwindcss -i input.css -o ../static/admin.css --watch &
-             cd /app/microvault-credit && mkdir -p tmp/admin && air -c .air-admin.toml"
+             npx tailwindcss -i input.css -o ../static/admin.css &&
+             cd /app/microvault-credit && go tool templ generate &&
+             go run ./cmd/admin"
     ports:
       - "8090:8090"
     env_file: .env

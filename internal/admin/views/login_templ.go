@@ -49,7 +49,7 @@ func Login(networkPassphrase, flash string) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</div><h1 class=\"text-lg font-semibold tracking-tight\">Microvault admin</h1><p class=\"mt-1 text-sm text-muted-foreground\">Sign a challenge with the admin wallet.</p></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</div><h1 class=\"text-lg font-semibold tracking-tight\">Microvault portal</h1><p class=\"mt-1 text-sm text-muted-foreground\">Sign a challenge with the admin wallet.</p></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

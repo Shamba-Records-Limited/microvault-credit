@@ -1,4 +1,4 @@
-// Command admin serves the Microvault admin dashboard.
+// Command admin serves the Microvault portal dashboard.
 //
 // It binds to ADMIN_HOST (default 127.0.0.1) rather than all interfaces: the
 // dashboard is an internal tool and is expected to sit behind a VPN or an

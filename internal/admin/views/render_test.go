@@ -242,7 +242,7 @@ func TestShellRendersBrandingAndFavicon(t *testing.T) {
 	mustContain(t, html,
 		`href="/static/favicon.ico"`,
 		`href="/static/img/apple-touch-icon.png"`,
-		`aria-label="Microvault admin home"`,
+		`aria-label="Microvault portal home"`,
 		`fill="currentColor"`,
 	)
 }
