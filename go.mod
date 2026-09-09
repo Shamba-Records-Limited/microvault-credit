@@ -9,7 +9,7 @@ replace github.com/Shamba-Records-Limited/microvault => ../microvault
 replace github.com/go-ini/ini => gopkg.in/ini.v1 v1.67.0
 
 require (
-	github.com/alicebob/miniredis/v2 v2.38.0
+	github.com/alicebob/miniredis/v2 v2.39.0
 	github.com/gofiber/fiber/v2 v2.52.15
 	github.com/gofiber/swagger v1.1.1
 	github.com/golang-migrate/migrate/v4 v4.20.1
