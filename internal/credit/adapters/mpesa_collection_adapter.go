@@ -192,7 +192,7 @@ func (a *MpesaCollectionAdapter) Prompt(ctx context.Context, req cashin.PromptRe
 	// about whether the payer's MSISDN matches their national ID should slow
 	// down or fail the STK push itself.
 	if a.validationEnabled() {
-		go a.validateNumber(context.Background(), l.UserID, req.Payer)
+		go a.validateNumber(l.UserID, req.Payer)
 	}
 
 	return &cashin.PromptResult{
@@ -247,7 +247,14 @@ func (a *MpesaCollectionAdapter) validationEnabled() bool {
 // and swallowed, because this is a fraud signal for risk scoring, not a
 // condition the STK push itself depends on. Enforcing's blocking behaviour is
 // not implemented here — see config.MpesaConfig.NumberValidationPolicy.
-func (a *MpesaCollectionAdapter) validateNumber(ctx context.Context, userID, msisdn string) {
+func (a *MpesaCollectionAdapter) validateNumber(userID, msisdn string) {
+	// Its own context, not the request's: this runs after the STK push has
+	// already responded, so a context tied to that request would be
+	// cancelled before this starts. Bounded so a slow Daraja or a slow user
+	// lookup cannot leak the goroutine forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	u, err := a.userSvc.GetByID(ctx, userID)
 	if err != nil || u.NationalID == "" {
 		return

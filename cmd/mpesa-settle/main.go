@@ -47,7 +47,9 @@ func main() {
 
 	switch os.Args[1] {
 	case "settle":
-		settle(cfg, os.Args[2:])
+		if err := settle(cfg, os.Args[2:]); err != nil {
+			log.Fatalf("%v", err)
+		}
 	default:
 		fmt.Printf("Unknown command: %s\n", os.Args[1])
 		printUsage()
@@ -55,7 +57,11 @@ func main() {
 	}
 }
 
-func settle(cfg *config.Config, args []string) {
+// settle returns an error rather than calling log.Fatalf once the advisory
+// lock (below) is held, so the deferred unlock always runs — os.Exit, which
+// Fatalf calls, skips every pending defer in the program, not just the ones
+// in the function that called it.
+func settle(cfg *config.Config, args []string) error {
 	flags := flag.NewFlagSet("settle", flag.ExitOnError)
 	confirm := flags.Bool("confirm", false, "actually execute the on-chain repay")
 	_ = flags.Parse(args)
@@ -102,8 +108,51 @@ func settle(cfg *config.Config, args []string) {
 
 	if !*confirm {
 		fmt.Println("\nNothing was sent. Re-run with --confirm to execute the on-chain repay.")
-		return
+		return nil
 	}
+
+	// A Postgres advisory lock, keyed on the loan ID, closes the gap between
+	// the funds_received check above and the on-chain call below: without it,
+	// two operators (or one, running this twice by mistake) racing on the
+	// same loan could both pass the check and both execute RepayForBorrower,
+	// which is a real transfer with no idempotency key of its own. Session-
+	// scoped rather than transaction-scoped — this is a one-shot process
+	// holding one connection for the command's whole lifetime, not a pooled
+	// ticker, so there is no connection-pinning concern to avoid.
+	sqlDB, err := db.DB()
+	if err != nil {
+		return fmt.Errorf("could not access the underlying database connection: %w", err)
+	}
+	var acquired bool
+	if err := sqlDB.QueryRowContext(context.Background(), "SELECT pg_try_advisory_lock(hashtext($1))", loanID).Scan(&acquired); err != nil {
+		return fmt.Errorf("could not acquire the settlement lock: %w", err)
+	}
+	if !acquired {
+		return fmt.Errorf("another settlement is already in progress for loan %s", loanID)
+	}
+	defer func() {
+		if _, err := sqlDB.Exec("SELECT pg_advisory_unlock(hashtext($1))", loanID); err != nil {
+			log.Printf("warning: could not release the settlement lock for loan %s: %v", loanID, err)
+		}
+	}()
+
+	// Re-check after acquiring the lock: the loan may have been settled by
+	// another run between the first read above and the lock being granted.
+	loanRow, err = repos.Loan.GetByID(context.Background(), loanID)
+	if err != nil {
+		return fmt.Errorf("could not reload loan %s: %w", loanID, err)
+	}
+	if loanRow.RepaymentStatus != models.LoanRepaymentStatusFundsReceived {
+		return fmt.Errorf("loan %s is no longer awaiting settlement (repayment_status=%q) — another run likely settled it first",
+			loanID, loanRow.RepaymentStatus)
+	}
+	if loanRow.Account == nil || loanRow.Account.PublicKey == "" {
+		return fmt.Errorf("loan %s has no borrower account to attribute the repayment to", loanID)
+	}
+	if loanRow.RepaymentPayoffStroops == nil || *loanRow.RepaymentPayoffStroops <= 0 {
+		return fmt.Errorf("loan %s has no positive frozen payoff to settle", loanID)
+	}
+	amountStroops = *loanRow.RepaymentPayoffStroops
 
 	rpcClient := cfg.Stellar.NewRpcClient()
 	stellarSvc := stellar.NewService(
@@ -127,19 +176,20 @@ func settle(cfg *config.Config, args []string) {
 		Logger:     slog.Default(),
 	})
 	if err != nil {
-		log.Fatalf("Could not construct the settlement adapter: %v", err)
+		return fmt.Errorf("could not construct the settlement adapter: %w", err)
 	}
 
 	ctx := context.Background()
 	txHash, err := depositAdapter.RepayForBorrower(ctx, loanID, loanRow.Account.PublicKey, amountStroops)
 	if err != nil {
-		log.Fatalf("Vault repay failed: %v", err)
+		return fmt.Errorf("vault repay failed: %w", err)
 	}
 	if err := depositAdapter.MarkSettled(ctx, loanID, txHash); err != nil {
-		log.Fatalf("Vault repay succeeded (tx %s) but recording settlement failed — fix the loan row by hand: %v", txHash, err)
+		return fmt.Errorf("vault repay succeeded (tx %s) but recording settlement failed — fix the loan row by hand: %w", txHash, err)
 	}
 
 	fmt.Printf("\nSettled. txHash=%s\n", txHash)
+	return nil
 }
 
 func derefStr(s *string) string {
