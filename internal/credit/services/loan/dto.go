@@ -77,6 +77,12 @@ type UpdateLoanRequest struct {
 	RepaymentVaultTxHash     *string    `json:"repayment_vault_tx_hash,omitempty"`
 	RepaymentVaultAttempts   *int       `json:"repayment_vault_attempts,omitempty"`
 	RepaymentReferenceSentAt *time.Time `json:"repayment_reference_sent_at,omitempty"`
+
+	// M-Pesa STK fields.
+	RepaymentProvider        *string `json:"repayment_provider,omitempty"`
+	RepaymentMpesaCheckoutID *string `json:"repayment_mpesa_checkout_id,omitempty"`
+	RepaymentMpesaTransID    *string `json:"repayment_mpesa_trans_id,omitempty"`
+	RepaymentSTKAttempts     *int    `json:"repayment_stk_attempts,omitempty"`
 }
 
 // ApproveLoanRequest represents the request to approve a loan
@@ -171,6 +177,10 @@ type LoanResponse struct {
 	RepaymentVaultTxHash     *string    `json:"repayment_vault_tx_hash,omitempty"`
 	RepaymentVaultAttempts   int        `json:"repayment_vault_attempts"`
 	RepaymentReferenceSentAt *time.Time `json:"repayment_reference_sent_at,omitempty"`
+	RepaymentProvider        string     `json:"repayment_provider"`
+	RepaymentMpesaCheckoutID *string    `json:"repayment_mpesa_checkout_id,omitempty"`
+	RepaymentMpesaTransID    *string    `json:"repayment_mpesa_trans_id,omitempty"`
+	RepaymentSTKAttempts     int        `json:"repayment_stk_attempts"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -348,6 +358,18 @@ func (r UpdateLoanRequest) changedFields() map[string]any {
 	}
 	if r.RepaymentReferenceSentAt != nil {
 		f["repayment_reference_sent_at"] = r.RepaymentReferenceSentAt
+	}
+	if r.RepaymentProvider != nil {
+		f["repayment_provider"] = r.RepaymentProvider
+	}
+	if r.RepaymentMpesaCheckoutID != nil {
+		f["repayment_mpesa_checkout_id"] = r.RepaymentMpesaCheckoutID
+	}
+	if r.RepaymentMpesaTransID != nil {
+		f["repayment_mpesa_trans_id"] = r.RepaymentMpesaTransID
+	}
+	if r.RepaymentSTKAttempts != nil {
+		f["repayment_stk_attempts"] = r.RepaymentSTKAttempts
 	}
 	if r.RepaymentVaultTxHash != nil {
 		f["repayment_vault_tx_hash"] = r.RepaymentVaultTxHash

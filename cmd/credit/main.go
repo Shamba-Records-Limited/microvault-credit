@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -35,8 +36,10 @@ import (
 	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
 	atussd "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/providers/africastalking"
 	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/cashin"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/fonbnk"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/mpesa"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/relay"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/relay/sources"
@@ -45,6 +48,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/pin"
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
+	"github.com/Shamba-Records-Limited/microvault/pkg/services/mpesapoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	stellarrpc "github.com/Shamba-Records-Limited/microvault/pkg/stellar/rpc"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
@@ -124,7 +128,7 @@ func main() {
 	}
 
 	// ---- 5. Loan service ----
-	loanSvc := loan.NewService(repos.Loan)
+	loanSvc := loan.NewService(repos.Loan, cfg.Payments.LoanReferencePrefix)
 
 	// ---- 6. Stellar RPC client + service ----
 	rpcClient := cfg.Stellar.NewRpcClient()
@@ -219,6 +223,9 @@ func main() {
 	// cash_pickup → moneygram. Boot fails loudly if any of that breaks.
 	if err := cfg.Payments.MoneyGram.Validate(); err != nil {
 		log.Fatalf("MoneyGram config invalid: %v", err)
+	}
+	if err := cfg.Payments.Mpesa.Validate(cfg.Server.ServerEnvironment); err != nil {
+		log.Fatalf("M-Pesa config invalid: %v", err)
 	}
 	tomlCtx, tomlCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	mgTOML, err := stellaranchor.FetchTOML(tomlCtx, nil, cfg.Payments.MoneyGram.HomeDomain)
@@ -491,6 +498,7 @@ func main() {
 
 	// ---- 11b. LoanServiceAdapter (USSD LoanService) ----
 	ctx := context.Background()
+	cashInRegistry := cashin.NewRegistry()
 	loanAdapter, err := adapters.NewLoanServiceAdapter(ctx, adapters.LoanAdapterDeps{
 		LoanSvc:      loanSvc,
 		ProductSvc:   loanProductSvc,
@@ -500,13 +508,15 @@ func main() {
 		TxnSvc:       txnSvc,
 		FXConfig:     adapters.FXConfig{BufferPct: cfg.Payments.EntryFXBufferPct},
 		Logger:       logger,
+		CashIn:       cashInRegistry,
 
-		FXOrchestrator:  fxOrch,
-		PublicBaseURL:   cfg.Server.PublicBaseURL,
-		Shortener:       linkShortener,
-		AccountEnsurer:  userAdapter,
-		RepaymentAnchor: mgClient.Client,
-		TreasuryAddress: treasuryAddr,
+		RoundAnchorAmounts: cfg.Payments.RoundAnchorAmounts,
+		FXOrchestrator:     fxOrch,
+		PublicBaseURL:      cfg.Server.PublicBaseURL,
+		Shortener:          linkShortener,
+		AccountEnsurer:     userAdapter,
+		RepaymentAnchor:    mgClient.Client,
+		TreasuryAddress:    treasuryAddr,
 		// The memo namespace follows the SEP-10 signer, which is the auth
 		// wallet — the same address the poller derives from.
 		AnchorAuthAddress: mgAuthAddr,
@@ -516,6 +526,16 @@ func main() {
 		log.Fatalf("Failed to create loan service adapter: %v", err)
 	}
 	logger.Info("loan entry-rate buffer configured", "buffer_pct", loanAdapter.FXBufferPct())
+
+	// MoneyGram is a cashin.Collector too — loanAdapter already owns the
+	// anchor/treasury dependencies InitiateRepayment needs, so it registers
+	// itself rather than a separate adapter duplicating them.
+	if err := cashInRegistry.Register(loanAdapter); err != nil {
+		log.Fatalf("Failed to register MoneyGram cash-in: %v", err)
+	}
+	if err := cashInRegistry.Alias(cashin.CollectionMethodCash, cashin.ProviderMoneyGram); err != nil {
+		log.Fatalf("Failed to alias cash → moneygram: %v", err)
+	}
 
 	// ---- 12. DisbursementStatusAdapter (webhook callbacks) ----
 	disbursementAdapter := adapters.NewDisbursementStatusAdapter(adapters.DisbursementAdapterDeps{
@@ -555,6 +575,10 @@ func main() {
 	standardPreset := &ussd.StandardLoanMenuPreset{}
 	standardPreset.Initialize(menuRegistry)
 
+	repayPaybill := ""
+	if cfg.Payments.Mpesa.CollectionShortcode > 0 {
+		repayPaybill = strconv.FormatUint(uint64(cfg.Payments.Mpesa.CollectionShortcode), 10)
+	}
 	ussdHandler := ussd.NewUSSDHandler(ussd.HandlerDeps{
 		SessionManager:  sessionManager,
 		MenuRegistry:    menuRegistry,
@@ -564,7 +588,8 @@ func main() {
 		PINService:      pinService,
 		AccountNotifier: accountNotifier,
 		LoanNotifier:    loanNotifier,
-		RepayPaybill:    cfg.Mobile.RepayPaybill,
+		RepayPaybill:    repayPaybill,
+		MpesaPrompter:   true,
 	})
 	ussdService := ussd.NewUSSDService(ussdHandler)
 
@@ -655,8 +680,108 @@ func main() {
 	go depositDriver.Start(pollerCtx)
 	log.Println("MoneyGram deposit driver started")
 
+	// M-Pesa is a platform rail, wired unconditionally like MoneyGram and
+	// YellowCard: a misconfigured Daraja credential is a boot failure, not a
+	// silently-absent provider. The client constructor validates the
+	// credentials; the adapters validate the rest of the config.
+	//
+	// The STK poller resolves Express observations into confirmed payments. A
+	// callback only lands the receipt on the queue; the poller independently
+	// verifies it before anything credits, per the confirm-before-credit
+	// discipline.
+	mpesaEnv := mpesa.EnvironmentSandbox
+	if cfg.Server.ServerEnvironment == "production" {
+		mpesaEnv = mpesa.EnvironmentProduction
+	}
+	mpesaClient, err := mpesa.New(mpesa.Config{
+		Environment:         mpesaEnv,
+		ConsumerKey:         cfg.Payments.Mpesa.ConsumerKey,
+		ConsumerSecret:      cfg.Payments.Mpesa.ConsumerSecret,
+		CollectionShortcode: cfg.Payments.Mpesa.CollectionShortcode,
+		Passkey:             cfg.Payments.Mpesa.Passkey,
+		InitiatorName:       cfg.Payments.Mpesa.InitiatorName,
+		InitiatorPassword:   cfg.Payments.Mpesa.InitiatorPassword,
+	})
+	if err != nil {
+		log.Fatalf("M-Pesa client construction failed: %v", err)
+	}
+	// Cash-in registry: paybill collections and STK prompts resolve to M-Pesa.
+	// In-flight prompts are driven by the loan poller below.
+	mpesaCollection, err := adapters.NewMpesaCollectionAdapter(adapters.MpesaCollectionAdapterDeps{
+		Client:  mpesaClient,
+		Repo:    repos.Loan,
+		LoanSvc: loanSvc,
+		Config:  cfg.Payments.Mpesa,
+
+		UserSvc:          userSvc,
+		ValidationRepo:   coreRepos.MpesaValidation,
+		ValidationPolicy: cfg.Payments.Mpesa.NumberValidationPolicy,
+		Logger:           logger,
+	})
+	if err != nil {
+		log.Fatalf("M-Pesa collection adapter construction failed: %v", err)
+	}
+	if err := cashInRegistry.Register(mpesaCollection); err != nil {
+		log.Fatalf("Failed to register M-Pesa cash-in: %v", err)
+	}
+	if err := cashInRegistry.Alias(cashin.CollectionMethodPayBill, cashin.ProviderMpesa); err != nil {
+		log.Fatalf("Failed to alias pay_bill → mpesa: %v", err)
+	}
+	if err := cashInRegistry.Alias(cashin.CollectionMethodPrompt, cashin.ProviderMpesa); err != nil {
+		log.Fatalf("Failed to alias prompt → mpesa: %v", err)
+	}
+	log.Print("M-Pesa cash-in registered (cash-in providers: moneygram, mpesa)")
+
+	mpesaLoanRunner, err := adapters.NewMpesaSTKLoanRunner(adapters.MpesaSTKLoanDriverDeps{
+		Client:    mpesaClient,
+		MpesaRepo: coreRepos.Mpesa,
+		Repo:      repos.Loan,
+		LoanSvc:   loanSvc,
+		Config:    cfg.Payments.Mpesa,
+		Logger:    logger,
+	})
+	if err != nil {
+		log.Fatalf("M-Pesa STK loan poller construction failed: %v", err)
+	}
+	go mpesaLoanRunner.Start(pollerCtx)
+	log.Println("M-Pesa STK loan poller started")
+
+	// Pull reconciliation sweep and Account Balance poll — both wall-clock
+	// tickers, not Runner[T] drivers, since neither is a queue of due rows;
+	// see pkg/services/mpesapoller/doc.go. Both run from this process because
+	// the Daraja client they need is constructed here, not in core, even
+	// though the package they're defined in is core's.
+	pullSweeper := mpesapoller.NewPullSweeper(mpesapoller.PullSweeperDeps{
+		Client:    mpesaClient,
+		Repo:      coreRepos.Mpesa,
+		Cursor:    coreRepos.MpesaPullCursor,
+		Shortcode: cfg.Payments.Mpesa.CollectionShortcode,
+		Interval:  cfg.Payments.Mpesa.PullSweepInterval,
+		Logger:    logger,
+	})
+	go pullSweeper.Start(pollerCtx)
+	log.Println("M-Pesa pull sweeper started")
+
+	balancePoller := mpesapoller.NewBalancePoller(mpesapoller.BalancePollerDeps{
+		Client:                mpesaClient,
+		Queries:               coreRepos.MpesaBalance,
+		CollectionShortcode:   cfg.Payments.Mpesa.CollectionShortcode,
+		DisbursementShortcode: cfg.Payments.Mpesa.DisbursementShortcode,
+		Interval:              cfg.Payments.Mpesa.BalancePollInterval,
+		Logger:                logger,
+	})
+	go balancePoller.Start(pollerCtx)
+	log.Println("M-Pesa balance poller started")
+
 	// ---- 16. Fiber app + middleware + routes ----
-	app := fiber.New()
+	// The proxy header is read only from a trusted hop: without the
+	// trusted-proxy check, any client reaching the port could set
+	// X-Forwarded-For and choose the address the Daraja allowlist sees.
+	app := fiber.New(fiber.Config{
+		ProxyHeader:             fiber.HeaderXForwardedFor,
+		EnableTrustedProxyCheck: true,
+		TrustedProxies:          cfg.Server.TrustedProxyCIDRs,
+	})
 
 	healthCheck := health.NewCheckerWithoutStellar("credit", "credit")
 	middleware.FiberMiddleware(app, healthCheck)
@@ -692,6 +817,21 @@ func main() {
 
 	// Webhook routes
 	api.Post("/webhooks/yellowcard", webhookCtrl.HandleYellowCardWebhook)
+
+	// Daraja callbacks — the STK result URL the prompt adapter builds is
+	// CallbackBaseURL + /api/v1/callbacks/daraja/{slug}/stk/result, and that
+	// base (MPESA_CALLBACK_BASE_URL) is the bare host for this server. The
+	// adapter adds the /api/v1 prefix, so these mount on the /api/v1 group.
+	// Unauthenticated by design: Daraja signs nothing, so the unguessable slug
+	// and the source-IP allowlist are the controls.
+	if cfg.Payments.Mpesa.CallbackSlug != "" {
+		resolveLoan := func(ctx context.Context, reference string) (string, error) {
+			return coreRepos.Mpesa.GetLoanIDByReference(ctx, reference)
+		}
+		darajaCtrl := controllers.NewDarajaCallbackController(
+			coreRepos.Mpesa, cfg.Payments.Mpesa, cfg.Server.ServerEnvironment, resolveLoan)
+		darajaCtrl.Register(api)
+	}
 
 	// Cash-pickup SMS short-link → MoneyGram interactive URL redirect.
 	//

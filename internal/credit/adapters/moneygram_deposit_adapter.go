@@ -2,7 +2,6 @@ package adapters
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -20,6 +19,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
+	"github.com/Shamba-Records-Limited/microvault/pkg/utils"
 )
 
 // Compile-time checks.
@@ -404,7 +404,7 @@ func (a *MoneyGramDepositAdapter) recordCashInTransactions(ctx context.Context, 
 	// Falls back to the payoff only when amount_out is unreadable.
 	depositDesc := "USDC credited to treasury by MoneyGram for a borrower repayment"
 	creditedStroops := payoff
-	if stroops, ok := usdcDecimalToStroops(tx.AmountOut); ok && stroops > 0 {
+	if stroops, ok := utils.ParseDecimalStroops(tx.AmountOut); ok && stroops > 0 {
 		creditedStroops = stroops
 	}
 	var stellarHash *string
@@ -440,7 +440,18 @@ func (a *MoneyGramDepositAdapter) recordVaultRepayTransaction(ctx context.Contex
 		amount = *loanRow.RepaymentPayoffStroops
 	}
 	desc := "USDC returned to the vault for a borrower repayment, attributed via repay_for"
-	provider := "moneygram"
+	// This method is reached by any rail's settlement, not just MoneyGram's —
+	// the manual M-Pesa settle command calls it too, via the same
+	// RepayForBorrower/MarkSettled pair. The provider label must follow the
+	// loan, not the type this method happens to be defined on.
+	provider := loanRow.RepaymentProvider
+	if provider == "" {
+		provider = "moneygram"
+	}
+	externalID := loanRow.RepaymentMGTxID
+	if externalID == nil {
+		externalID = loanRow.RepaymentMpesaTransID
+	}
 
 	txnResp, err := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
 		UserID:           &loanRow.UserID,
@@ -450,7 +461,7 @@ func (a *MoneyGramDepositAdapter) recordVaultRepayTransaction(ctx context.Contex
 		Amount:           amount,
 		Asset:            "USDC",
 		StellarTxHash:    &txHash,
-		ExternalID:       loanRow.RepaymentMGTxID,
+		ExternalID:       externalID,
 		ExternalProvider: &provider,
 		Description:      &desc,
 	})
@@ -483,22 +494,6 @@ func (a *MoneyGramDepositAdapter) settleTransaction(ctx context.Context, txnID, 
 			return
 		}
 	}
-}
-
-// usdcDecimalToStroops parses a SEP-24 decimal amount into USDC stroops.
-//
-// Separate from decimalToCents: USDC carries seven decimals on Stellar, and
-// treating a USDC figure as cents would understate it by five orders of
-// magnitude.
-func usdcDecimalToStroops(s string) (int64, bool) {
-	var v float64
-	if _, err := fmt.Sscanf(strings.TrimSpace(s), "%f", &v); err != nil {
-		return 0, false
-	}
-	if v < 0 {
-		return 0, false
-	}
-	return int64(v * 1e7), true
 }
 
 // projectRepaymentRecord maps a loan row into the deposit driver's projection.

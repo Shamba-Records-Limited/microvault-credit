@@ -81,10 +81,10 @@ run:
 # Docker commands. The build context is the workspace root, so the sibling
 # microvault checkout must be present.
 up:
-	@$(COMPOSE) up -d
+	@$(COMPOSE) up
 
 up-build:
-	@$(COMPOSE) up -d --build
+	@$(COMPOSE) up --build
 
 down:
 	@$(COMPOSE) down

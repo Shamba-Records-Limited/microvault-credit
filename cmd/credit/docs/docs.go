@@ -110,6 +110,319 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/callbacks/daraja/{slug}/c2b/confirmation": {
+            "post": {
+                "description": "Record a settled C2B payment as an observation for the poller to confirm",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Daraja"
+                ],
+                "summary": "Record a C2B confirmation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Callback slug",
+                        "name": "slug",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Confirmation notification",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/mpesa.C2BNotificationWire"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Recorded",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Undecodable confirmation",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Source not permitted",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to record the observation",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/callbacks/daraja/{slug}/c2b/validation": {
+            "post": {
+                "description": "Decide whether to accept an incoming C2B payment. Any answer other than ResultCode 0 rejects it.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Daraja"
+                ],
+                "summary": "Validate a C2B payment",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Callback slug",
+                        "name": "slug",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Validation notification",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/mpesa.C2BNotificationWire"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Accept/reject decision",
+                        "schema": {
+                            "$ref": "#/definitions/mpesa.ValidationResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Undecodable notification",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Source not permitted",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/callbacks/daraja/{slug}/stk/result": {
+            "post": {
+                "description": "M-Pesa Express payment callback",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Daraja"
+                ],
+                "summary": "Record an STK push result",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Callback slug",
+                        "name": "slug",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Express result delivery",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/mpesa.ExpressCallbackEnvelope"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Recorded or dropped",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Undecodable callback",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Source not permitted",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to record the observation",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/callbacks/daraja/{slug}/{kind}/result": {
+            "post": {
+                "description": "Record the result of an asynchronous Daraja query",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Daraja"
+                ],
+                "summary": "Record an async query result",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Callback slug",
+                        "name": "slug",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "enum": [
+                            "status",
+                            "balance",
+                            "reversal"
+                        ],
+                        "type": "string",
+                        "description": "Query family",
+                        "name": "kind",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Result delivery",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/mpesa.ResultEnvelope"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Recorded",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Undecodable result",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Source not permitted",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to record the observation",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/callbacks/daraja/{slug}/{kind}/timeout": {
+            "post": {
+                "description": "Record a queue-timeout delivery as unknown for the poller to resolve",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Daraja"
+                ],
+                "summary": "Record an async queue timeout",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Callback slug",
+                        "name": "slug",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "enum": [
+                            "status",
+                            "balance",
+                            "reversal"
+                        ],
+                        "type": "string",
+                        "description": "Query family",
+                        "name": "kind",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Timeout delivery",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/mpesa.ResultEnvelope"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Recorded",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Undecodable result",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Source not permitted",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to record the observation",
+                        "schema": {
+                            "$ref": "#/definitions/fiber.Error"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/mobile/sms/{provider}/delivery": {
             "post": {
                 "description": "Handle incoming SMS delivery report callbacks from Africa's Talking",
@@ -370,6 +683,203 @@ const docTemplate = `{
                     "type": "string"
                 }
             }
+        },
+        "mpesa.C2BNotificationWire": {
+            "type": "object",
+            "properties": {
+                "BillRefNumber": {
+                    "type": "string"
+                },
+                "BusinessShortCode": {
+                    "type": "string"
+                },
+                "FirstName": {
+                    "type": "string"
+                },
+                "InvoiceNumber": {
+                    "type": "string"
+                },
+                "LastName": {
+                    "type": "string"
+                },
+                "MSISDN": {
+                    "type": "string"
+                },
+                "MiddleName": {
+                    "type": "string"
+                },
+                "OrgAccountBalance": {
+                    "type": "string"
+                },
+                "ThirdPartyTransID": {
+                    "type": "string"
+                },
+                "TransAmount": {
+                    "type": "string"
+                },
+                "TransID": {
+                    "type": "string"
+                },
+                "TransTime": {
+                    "type": "string"
+                },
+                "TransactionType": {
+                    "type": "string"
+                }
+            }
+        },
+        "mpesa.ExpressCallbackBody": {
+            "type": "object",
+            "properties": {
+                "stkCallback": {
+                    "$ref": "#/definitions/mpesa.ExpressCallbackResult"
+                }
+            }
+        },
+        "mpesa.ExpressCallbackEnvelope": {
+            "type": "object",
+            "properties": {
+                "Body": {
+                    "$ref": "#/definitions/mpesa.ExpressCallbackBody"
+                }
+            }
+        },
+        "mpesa.ExpressCallbackMetadataHolder": {
+            "type": "object",
+            "properties": {
+                "Item": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/mpesa.ExpressCallbackMetadataItem"
+                    }
+                }
+            }
+        },
+        "mpesa.ExpressCallbackMetadataItem": {
+            "type": "object",
+            "properties": {
+                "Name": {
+                    "type": "string"
+                },
+                "Value": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                }
+            }
+        },
+        "mpesa.ExpressCallbackResult": {
+            "type": "object",
+            "properties": {
+                "CallbackMetadata": {
+                    "$ref": "#/definitions/mpesa.ExpressCallbackMetadataHolder"
+                },
+                "CheckoutRequestID": {
+                    "type": "string"
+                },
+                "MerchantRequestID": {
+                    "type": "string"
+                },
+                "ResultCode": {
+                    "type": "integer"
+                },
+                "ResultDesc": {
+                    "type": "string"
+                }
+            }
+        },
+        "mpesa.RawResult": {
+            "type": "object",
+            "properties": {
+                "ConversationID": {
+                    "type": "string"
+                },
+                "OriginatorConversationID": {
+                    "type": "string"
+                },
+                "ReferenceData": {
+                    "type": "object",
+                    "properties": {
+                        "ReferenceItem": {
+                            "type": "array",
+                            "items": {
+                                "type": "integer"
+                            }
+                        }
+                    }
+                },
+                "ResultCode": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "ResultDesc": {
+                    "type": "string"
+                },
+                "ResultParameters": {
+                    "type": "object",
+                    "properties": {
+                        "ResultParameter": {
+                            "type": "array",
+                            "items": {
+                                "type": "integer"
+                            }
+                        }
+                    }
+                },
+                "ResultType": {
+                    "type": "integer"
+                },
+                "TransactionID": {
+                    "type": "string"
+                }
+            }
+        },
+        "mpesa.ResultEnvelope": {
+            "type": "object",
+            "properties": {
+                "Result": {
+                    "$ref": "#/definitions/mpesa.RawResult"
+                }
+            }
+        },
+        "mpesa.ValidationResponse": {
+            "type": "object",
+            "properties": {
+                "ResultCode": {
+                    "$ref": "#/definitions/mpesa.ValidationResultCode"
+                },
+                "ResultDesc": {
+                    "type": "string"
+                },
+                "ThirdPartyTransID": {
+                    "description": "ThirdPartyTransID is echoed back on the matching confirmation, which is\nthe only way to correlate the two callbacks.",
+                    "type": "string"
+                }
+            }
+        },
+        "mpesa.ValidationResultCode": {
+            "type": "string",
+            "enum": [
+                "0",
+                "C2B00011",
+                "C2B00012",
+                "C2B00013",
+                "C2B00014",
+                "C2B00015",
+                "C2B00016"
+            ],
+            "x-enum-varnames": [
+                "ValidationAccepted",
+                "ValidationInvalidMSISDN",
+                "ValidationInvalidAccountNumber",
+                "ValidationInvalidAmount",
+                "ValidationInvalidKYC",
+                "ValidationInvalidShortcode",
+                "ValidationOtherError"
+            ]
         },
         "yellowcard.SettlementInfo": {
             "type": "object",
