@@ -8,18 +8,27 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/samber/oops"
+
+	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
+
+	creditmodels "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd"
 	"github.com/Shamba-Records-Limited/microvault/pkg/models"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/cashin"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/relay"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/stellaranchor"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
+	"github.com/Shamba-Records-Limited/microvault/pkg/utils"
+
 	"github.com/Shamba-Records-Limited/microvault/pkg/urlshortener"
 )
 
@@ -28,8 +37,12 @@ import (
 // inherited from the integration plan; override via FXConfig if needed.
 const DefaultFXBufferPct = 0.02
 
-// Compile-time check.
-var _ ussd.LoanService = (*LoanServiceAdapter)(nil)
+// Compile-time checks.
+var (
+	_ ussd.LoanService    = (*LoanServiceAdapter)(nil)
+	_ cashin.Collector    = (*LoanServiceAdapter)(nil)
+	_ cashin.StatusReader = (*LoanServiceAdapter)(nil)
+)
 
 // LoanServiceAdapter implements [ussd.LoanService] by orchestrating credit's
 // loan service, Stellar vault, YellowCard off-ramp, and SMS notifications.
@@ -41,6 +54,7 @@ type LoanServiceAdapter struct {
 	productSvc     loanproduct.Service
 	stellarSvc     stellar.Service
 	offRamps       *offramp.Registry
+	relayRouter    *relay.Router
 	loanNotifier   contracts.LoanNotifier
 	txnSvc         transaction.Service
 	logger         *slog.Logger
@@ -51,6 +65,99 @@ type LoanServiceAdapter struct {
 	publicBaseURL  string                    // origin for SMS short-links; optional
 	shortener      urlshortener.Shortener    // optional; further shortens the SMS link
 	accountEnsurer AccountEnsurer            // ensures the child on-chain identity exists before lending
+
+	// roundAnchorAmounts gates cent-rounding of mobile-money cash-out
+	// principals. MoneyGram cash-out and cash-in always round; this toggle
+	// covers only the other rails. Off carries full stroop precision through
+	// Create, Borrow, and Initiate.
+	roundAnchorAmounts bool
+
+	repayAnchor         *stellaranchor.Client // memo-scoped SEP-24 client for borrower cash deposits
+	repayTreasuryPubkey string                // deposit destination
+	repayAuthPubkey     string                // SEP-10 signer, and the child-memo namespace
+	repayWindow         time.Duration         // how long an opened deposit stays valid
+	cashIn              *cashin.Registry      // prompt-capable collection providers; nil disables prompting
+}
+
+// repaymentWindow is how long a borrower has to complete a cash deposit.
+//
+// Days, not minutes: committing in the webview and then walking to an agent
+// over the following days is the normal case, not an edge one.
+func (a *LoanServiceAdapter) repaymentWindow() time.Duration {
+	if a.repayWindow > 0 {
+		return a.repayWindow
+	}
+	return defaultRepaymentWindow
+}
+
+// defaultRepaymentWindow matches the deposit poller's expiry expectations.
+const defaultRepaymentWindow = 96 * time.Hour
+
+// repaymentStatusInitiated mirrors models.LoanRepaymentStatusInitiated. Named
+// here so this file does not import the model package for one constant.
+const repaymentStatusInitiated = "initiated"
+
+// repaymentStatusFundsReceived and repaymentStatusSettled mirror
+// models.LoanRepaymentStatusFundsReceived and models.LoanRepaymentStatusSettled,
+// for the same reason as repaymentStatusInitiated above.
+const (
+	repaymentStatusFundsReceived = "funds_received"
+	repaymentStatusSettled       = "settled"
+)
+
+// sendRepaymentLink delivers the interactive URL by SMS. Best effort: the
+// deposit and quote lock stand whether or not the SMS lands.
+func (a *LoanServiceAdapter) sendRepaymentLink(ctx context.Context, loanRow *loan.LoanResponse, phoneNumber, interactiveURL string, quote *ussd.RepaymentQuote, expiresAt time.Time) {
+	if a.loanNotifier == nil {
+		a.logger.Warn("no loan notifier wired; repayment link not delivered",
+			"loan_id", loanRow.ID)
+		return
+	}
+
+	// Same ladder as the cash-pickup link: dub first, and mint a /r/{code}
+	// bearer redirect only when dub produced nothing.
+	link, err := shortenedLink(ctx, a.shortener, interactiveURL, "")
+	if err != nil {
+		a.logger.Warn("shorten failed for repayment link; falling back",
+			"loan_id", loanRow.ID, "error", err)
+	}
+	if link == "" {
+		link = interactiveURL
+		if a.publicBaseURL != "" {
+			link = a.mintRedirectLink(ctx, loanRow.ID, interactiveURL)
+		}
+	}
+
+	displayAmount := float64(quote.AmountUSDCStroops) / 1e7
+	displayCurrency := "USDC"
+	if quote.AmountLocalCents > 0 && quote.LocalCurrency != "" {
+		displayAmount = float64(quote.AmountLocalCents) / 100.0
+		displayCurrency = quote.LocalCurrency
+	}
+
+	n := contracts.LoanNotification{
+		LoanID:      loanRow.ID,
+		UserID:      loanRow.UserID,
+		PhoneNumber: phoneNumber,
+		Amount:      quote.AmountUSDCStroops,
+		// Local currency, matching what the USSD screen quoted. The borrower
+		// works from one figure; the deposit settles in USDC regardless, and
+		// MoneyGram converts at its own counter rate either way.
+		DisplayAmount:   displayAmount,
+		DisplayCurrency: displayCurrency,
+		InteractiveURL:  link,
+		// The copy quotes how long the borrower has; without this it falls
+		// back to a vague "soon".
+		RepaymentExpiresAt: &expiresAt,
+	}
+	if loanRow.LoanReference != nil {
+		n.LoanReference = *loanRow.LoanReference
+	}
+
+	if err := a.loanNotifier.NotifyRepaymentInitiated(ctx, n); err != nil {
+		a.logger.Error("failed to send repayment link",
+			"loan_id", loanRow.ID, "error", err)
+	}
 }
 
 // AccountEnsurer guarantees a user's child Stellar account exists on-chain
@@ -60,29 +167,12 @@ type AccountEnsurer interface {
 	EnsureOnChainAccount(ctx context.Context, accountIndex int, address string) error
 }
 
-// notifyLeakGuard is a backstop, not a delivery deadline.
-//
-// The notifier decides when to give up: its retry sequence is finite and every
-// attempt is bounded by the provider's own per-request timeout, so the
-// goroutine always terminates on its own. This only catches a notifier that
-// fails to self-bound.
-//
-// It must therefore never be the binding constraint — if it cancels a send
-// mid-sequence it suppresses retries that were meant to run, which is the
-// failure it exists to prevent. Sized well above any plausible sequence
-// (AT_HTTP_TIMEOUT seconds x 3 attempts, plus backoff).
+// notifyLeakGuard catches a notifier that fails to self-bound. Sized well
+// above any real retry sequence so it never cancels one mid-flight.
 const notifyLeakGuard = 10 * time.Minute
 
-// notifyAsync sends a borrower notification off the disbursement path.
-//
-// Nothing downstream reads the result: the pipeline treats every send as best
-// effort and only logs failures. Sending inline therefore bought nothing while
-// putting a slow SMS gateway directly between the vault borrow and the
-// off-ramp initiate — with provider retries a stalled gateway could hold the
-// pipeline for minutes, staling the entry FX rate quoted before approval.
-//
-// Uses a detached context: the pipeline's own context may be cancelled, and a
-// notification outliving it is correct.
+// notifyAsync sends a borrower notification off the disbursement path, on a
+// detached context so it outlives a cancelled pipeline.
 func (a *LoanServiceAdapter) notifyAsync(label, loanID string, send func(ctx context.Context) error) {
 	if a.loanNotifier == nil {
 		return
@@ -96,32 +186,239 @@ func (a *LoanServiceAdapter) notifyAsync(label, loanID string, send func(ctx con
 	}()
 }
 
-// SetPublicBaseURL sets the externally-reachable origin used to build the
-// cash-pickup SMS short-link (e.g. https://microvault.outray.app). When empty,
-// the raw MoneyGram interactive URL is sent instead.
-func (a *LoanServiceAdapter) SetPublicBaseURL(url string) {
-	a.publicBaseURL = url
+// InitiateRepayment opens a MoneyGram cash deposit for the loan via the
+// cashin registry — the ussd.LoanService entry point kept call-site
+// compatible while routing MoneyGram through the same resolve-then-call
+// shape PromptRepayment already uses for M-Pesa. The guard checks and the
+// async deposit-opening live in Collect, the registry-facing implementation.
+func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phoneNumber string) error {
+	if a.cashIn == nil {
+		return lendingErr("initiate_repayment").With(pkgErrors.AttrLoanID, loanID).
+			Code(pkgErrors.CodeAnchorNotWired).Errorf("no cash-in provider is configured")
+	}
+	req := cashin.Request{
+		LoanID:           loanID,
+		Payer:            phoneNumber,
+		CollectionMethod: cashin.CollectionMethodCash,
+	}
+	provider, err := a.cashIn.Resolve(req)
+	if err != nil {
+		return lendingErr("initiate_repayment").With(pkgErrors.AttrLoanID, loanID).
+			Wrapf(err, "could not resolve a cash provider")
+	}
+	// No type assertion needed: cashin.Provider is a type alias for
+	// cashin.Collector (unlike Prompter/StatusReader/etc., which are genuinely
+	// optional capabilities), so Resolve's return value already satisfies it.
+	_, err = provider.Collect(ctx, req)
+	return err
 }
 
-// SetShortener injects an external URL shortener applied to the final
-// cash-pickup SMS link. When publicBaseURL is set it shortens the /r/{code}
-// redirect (no token exposed); otherwise it shortens the raw MoneyGram URL.
-func (a *LoanServiceAdapter) SetShortener(s urlshortener.Shortener) {
-	a.shortener = s
+// routeMobileMoney returns a payout-method alias to pin, or "" to leave
+// dispatch alone. Mobile money only — cash pickup is the borrower's choice.
+func (a *LoanServiceAdapter) routeMobileMoney(ctx context.Context, req offramp.Request, amountUSD float64) string {
+	if a.relayRouter == nil || !a.relayRouter.Enabled() {
+		return ""
+	}
+	if req.PayoutMethod != offramp.PayoutMethodMobileMoney || req.Options != nil {
+		return ""
+	}
+
+	quote, err := a.relayRouter.Best(ctx, relay.RateRequest{
+		Direction:    relay.DirectionOffRamp,
+		FiatCurrency: offramp.LocalCurrency(req.CountryCode),
+		CountryCode:  req.CountryCode,
+		CryptoAmount: amountUSD,
+	})
+	if err != nil {
+		a.logger.Warn("relay could not route this disbursement, using the default provider",
+			pkgErrors.AttrLoanID, req.LoanID, "error", err)
+		return ""
+	}
+
+	alias := payoutAliasFor(quote.Provider)
+	if alias == "" {
+		a.logger.Warn("relay picked a provider with no payout alias, using the default",
+			pkgErrors.AttrLoanID, req.LoanID, pkgErrors.AttrProvider, quote.Provider)
+		return ""
+	}
+
+	a.logger.Info("relay routed disbursement",
+		pkgErrors.AttrLoanID, req.LoanID,
+		pkgErrors.AttrProvider, quote.Provider,
+		"effective_rate", quote.EffectiveRate,
+		"amount_usd", amountUSD)
+	return alias
 }
 
-// SetAccountEnsurer injects the on-chain account guarantor consulted before
-// each vault borrow.
-func (a *LoanServiceAdapter) SetAccountEnsurer(e AccountEnsurer) {
-	a.accountEnsurer = e
+// payoutAliasFor maps a routed provider onto the payout method the off-ramp
+// registry resolves it by.
+func payoutAliasFor(provider string) string {
+	switch offramp.ProviderID(provider) {
+	case offramp.ProviderYellowCard:
+		return offramp.PayoutMethodMobileMoney
+	case offramp.ProviderFonbnk:
+		return PayoutMethodFonbnkMobileMoney
+	}
+	return ""
 }
 
-// SetFXOrchestrator attaches a MoneyGram FXOrchestrator after construction.
-// When set, the orchestrator's cascade (MG primary to YC fallback to stale
-// cache) is preferred over the per-provider Quoter for entry-rate quoting.
-// Pass nil to detach.
-func (a *LoanServiceAdapter) SetFXOrchestrator(orch *moneygram.FXOrchestrator) {
-	a.fxOrch = orch
+// PayoutMethodFonbnkMobileMoney is the off-ramp registry alias Fonbnk is
+// registered under. Distinct from offramp.PayoutMethodMobileMoney so the
+// unrouted default keeps resolving to YellowCard.
+const PayoutMethodFonbnkMobileMoney = "mobile_money_fonbnk"
+
+// depositMemoFor is the memo MoneyGram stamps on the inbound payment: the loan
+// reference, else the loan ID, truncated to MEMO_TEXT's 28 bytes.
+func depositMemoFor(loanRow *loan.LoanResponse, loanID string) string {
+	memo := loanID
+	if loanRow.LoanReference != nil && *loanRow.LoanReference != "" {
+		memo = *loanRow.LoanReference
+	}
+	if len(memo) > 28 {
+		memo = memo[:28]
+	}
+	return memo
+}
+
+// depositCorridorErr rejects a payoff outside MoneyGram's cash-in corridor.
+// The two ends carry different codes because they are actioned differently.
+func depositCorridorErr(errb oops.OopsErrorBuilder, payoffStroops int64) error {
+	switch {
+	case payoffStroops < ussd.MinMoneyGramDepositStroops:
+		return errb.
+			Code(pkgErrors.CodeBelowAnchorMinimum).
+			With("payoff_stroops", payoffStroops).
+			With("minimum_stroops", ussd.MinMoneyGramDepositStroops).
+			Errorf("payoff is below MoneyGram's deposit floor")
+	case payoffStroops > ussd.MaxMoneyGramDepositStroops:
+		return errb.
+			Code(pkgErrors.CodeAboveAnchorMaximum).
+			With("payoff_stroops", payoffStroops).
+			With("maximum_stroops", ussd.MaxMoneyGramDepositStroops).
+			Errorf("payoff is above MoneyGram's deposit ceiling")
+	}
+	return nil
+}
+
+// runRepaymentInitiation does the slow half of opening a cash deposit. Every
+// exit path SMSes the outcome — the USSD session is already gone.
+func (a *LoanServiceAdapter) runRepaymentInitiation(loanID, phoneNumber string) {
+	ctx, cancel := context.WithTimeout(context.Background(), repaymentInitiationTimeout)
+	defer cancel()
+
+	errb := oops.In(pkgErrors.DomainRepaymentCashIn).Tags("moneygram", "sep24").With(pkgErrors.AttrLoanID, loanID)
+
+	fail := func(err error) {
+		a.logger.Error("repayment initiation failed",
+			pkgErrors.AttrLoanID, loanID, "error", err)
+		a.sendRepaymentFailed(ctx, loanID, phoneNumber)
+	}
+
+	quote, err := a.GetRepaymentQuote(ctx, loanID)
+	if err != nil {
+		fail(errb.Code(pkgErrors.CodeQuoteFailed).Wrapf(err, "could not quote the payoff"))
+		return
+	}
+	// MoneyGram always reconciles at 2 decimals, so the frozen payoff is
+	// rounded to whole cents: the SEP-24 POST below always formats 2dp, and a
+	// 7-decimal on-chain repayment against a 2-decimal expectation is the same
+	// confirmation mismatch that stalls payouts.
+	if rounded := utils.RoundToCentStroops(quote.AmountUSDCStroops); rounded != quote.AmountUSDCStroops {
+		a.logger.Info("payoff rounded to whole cents",
+			pkgErrors.AttrLoanID, loanID,
+			"original_stroops", quote.AmountUSDCStroops,
+			"rounded_stroops", rounded,
+		)
+		quote.AmountUSDCStroops = rounded
+	}
+	if err := depositCorridorErr(errb, quote.AmountUSDCStroops); err != nil {
+		fail(err)
+		return
+	}
+
+	loanRow, err := a.loanSvc.GetByID(ctx, loanID)
+	if err != nil {
+		fail(errb.Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not load the loan"))
+		return
+	}
+	if loanRow.RampChildAccountIndex == nil {
+		fail(errb.Code(pkgErrors.CodeMissingAccountIndex).Errorf("loan has no child account index to scope the SEP-10 session"))
+		return
+	}
+
+	// Derived from the auth wallet, not the treasury. ChildAccountMemo is
+	// namespaced by the key it is seeded with, and the poller seeds it with
+	// the anchor client's auth address — seeding it differently here would put
+	// the deposit in a memo space the poller never queries, so the borrower
+	// could pay and nothing would ever see it.
+	childMemo := stellaranchor.ChildAccountMemo(a.repayAuthPubkey, uint32(*loanRow.RampChildAccountIndex))
+
+	resp, err := a.repayAnchor.InitiateDeposit(ctx, childMemo, stellaranchor.DepositRequest{
+		AssetCode: "USDC",
+		Amount:    fmt.Sprintf("%.2f", float64(quote.AmountUSDCStroops)/1e7),
+		Lang:      "en",
+		// Destination is the treasury: child accounts hold no USDC trustline,
+		// and adding one per borrower would cost a sponsored reserve for an
+		// account that only ever passes funds through.
+		Account: a.repayTreasuryPubkey,
+		// SEP-10's memo identifies the borrower; this identifies which loan.
+		// Optional in the spec — deposit_memo reports what was attached.
+		Memo:     depositMemoFor(loanRow, loanID),
+		MemoType: "text",
+	})
+	if err != nil {
+		fail(errb.Code(pkgErrors.CodeDepositInitFailed).With("child_memo", childMemo).Wrapf(err, "anchor refused the deposit"))
+		return
+	}
+
+	now := time.Now()
+	expiresAt := now.Add(a.repaymentWindow())
+	status := repaymentStatusInitiated
+	if _, err := a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
+		RepaymentStatus:        &status,
+		RepaymentPayoffStroops: &quote.AmountUSDCStroops,
+		RepaymentLockedAt:      &now,
+		RepaymentExpiresAt:     &expiresAt,
+		RepaymentMGTxID:        &resp.ID,
+	}); err != nil {
+		// The deposit exists at MoneyGram but we have no record of it, so the
+		// poller will never drive it and a borrower who pays is unreconciled.
+		// Louder than the other failures for that reason.
+		a.logger.Error("CRITICAL: deposit opened but the quote lock was not recorded",
+			pkgErrors.AttrLoanID, loanID,
+			pkgErrors.AttrMoneyGramTxID, resp.ID,
+			"error", err)
+		a.sendRepaymentFailed(ctx, loanID, phoneNumber)
+		return
+	}
+
+	a.sendRepaymentLink(ctx, loanRow, phoneNumber, resp.URL, quote, expiresAt)
+}
+
+// repaymentInitiationTimeout bounds the background initiation. Generous
+// because it spans two MoneyGram round trips and a link shortener, but finite
+// so a hung provider cannot leak a goroutine per repayment attempt.
+const repaymentInitiationTimeout = 2 * time.Minute
+
+// sendRepaymentFailed tells the borrower no deposit was opened.
+//
+// Best effort, and deliberately vague: the borrower can act on "try again",
+// not on which leg of the anchor handshake failed.
+func (a *LoanServiceAdapter) sendRepaymentFailed(ctx context.Context, loanID, phoneNumber string) {
+	if a.loanNotifier == nil || phoneNumber == "" {
+		return
+	}
+	n := contracts.LoanNotification{
+		LoanID:      loanID,
+		PhoneNumber: phoneNumber,
+	}
+	if loanRow, err := a.loanSvc.GetByID(ctx, loanID); err == nil && loanRow.LoanReference != nil {
+		n.LoanReference = *loanRow.LoanReference
+	}
+	if err := a.loanNotifier.NotifyRepaymentFailed(ctx, n); err != nil {
+		a.logger.Error("failed to send the repayment failure notice",
+			pkgErrors.AttrLoanID, loanID, "error", err)
+	}
 }
 
 // FXBufferPct reports the buffer applied on the provider-Quoter path, after
@@ -135,37 +432,88 @@ func (a *LoanServiceAdapter) FXBufferPct() float64 { return a.fxBuffer.Pct() }
 type FXConfig struct {
 	// BufferPct is a fraction (0.02 = 2 %). Nil defaults to
 	// DefaultFXBufferPct; an explicit 0 persists the quoted rate unbuffered.
-	//
-	// A pointer because zero is a meaningful setting here and has to stay
-	// distinguishable from "not configured".
 	BufferPct *float64
 }
 
-// NewLoanServiceAdapter creates a new [LoanServiceAdapter].
-//
-// It loads the highest-priority active loan product from the database and
-// caches its configuration. Returns an error if no active product is found.
-func NewLoanServiceAdapter(
-	ctx context.Context,
-	loanSvc loan.Service,
-	productSvc loanproduct.Service,
-	stellarSvc stellar.Service,
-	offRamps *offramp.Registry,
-	loanNotifier contracts.LoanNotifier,
-	txnSvc transaction.Service,
-	fxCfg FXConfig,
-	logger *slog.Logger,
-) (*LoanServiceAdapter, error) {
+// lendingErr starts an error builder for loan origination and disbursement.
+func lendingErr(op string) oops.OopsErrorBuilder {
+	return oops.In(pkgErrors.DomainLending).Tags("loan").With(pkgErrors.AttrOperation, op)
+}
+
+// quoteErr starts an error builder for repayment quoting. The quote hard-fails
+// rather than serving a stale figure, so every error here means the borrower
+// was shown nothing rather than something wrong.
+func quoteErr(loanID string) oops.OopsErrorBuilder {
+	return oops.In(pkgErrors.DomainLending).
+		Tags("repayment", "quote").
+		With(pkgErrors.AttrOperation, "repayment_quote").
+		With(pkgErrors.AttrLoanID, loanID)
+}
+
+// LoanAdapterDeps are the collaborators and settings the loan adapter needs.
+// Optional members live here rather than in Set* so no half-built adapter exists.
+type LoanAdapterDeps struct {
+	LoanSvc      loan.Service
+	ProductSvc   loanproduct.Service
+	StellarSvc   stellar.Service
+	OffRamps     *offramp.Registry
+	LoanNotifier contracts.LoanNotifier
+	TxnSvc       transaction.Service
+	FXConfig     FXConfig
+	Logger       *slog.Logger
+
+	// Optional.
+	FXOrchestrator  *moneygram.FXOrchestrator
+	PublicBaseURL   string
+	Shortener       urlshortener.Shortener
+	AccountEnsurer  AccountEnsurer
+	RepaymentAnchor *stellaranchor.Client
+	// TreasuryAddress is where borrower cash deposits are credited. Required
+	// alongside RepaymentAnchor; either alone leaves repayment unavailable.
+	TreasuryAddress string
+	// AnchorAuthAddress signs SEP-10 and seeds the child memo. Separate from
+	// TreasuryAddress: where money lands vs which memo namespace it belongs to.
+	AnchorAuthAddress string
+	RepaymentWindow   time.Duration
+
+	// RelayRouter routes a mobile-money disbursement to whichever provider
+	// prices it best. Nil, or a router with routing off, leaves dispatch to
+	// the off-ramp registry's own aliases.
+	RelayRouter *relay.Router
+
+	// CashIn resolves payment prompts. Nil, or a registry with no prompt
+	// alias, disables PromptRepayment.
+	CashIn *cashin.Registry
+
+	// RoundAnchorAmounts rounds mobile-money cash-out principals to whole USDC
+	// cents before they are stored, borrowed, or sent on-chain. MoneyGram
+	// (cash-out and cash-in) always rounds; this toggle covers only the other
+	// rails. Off carries full stroop precision on those rails.
+	RoundAnchorAmounts bool
+}
+
+func NewLoanServiceAdapter(ctx context.Context, deps LoanAdapterDeps) (*LoanServiceAdapter, error) {
+	loanSvc, productSvc, stellarSvc := deps.LoanSvc, deps.ProductSvc, deps.StellarSvc
+	offRamps, loanNotifier, txnSvc := deps.OffRamps, deps.LoanNotifier, deps.TxnSvc
+	fxCfg, logger := deps.FXConfig, deps.Logger
+
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if offRamps == nil {
-		return nil, fmt.Errorf("offramp registry is required")
+		return nil, lendingErr("new").With(pkgErrors.AttrDependency, "offramp_registry").
+			Code(pkgErrors.CodeMissingDependency).Errorf("required dependency is missing")
 	}
 	// Load the highest-priority active product (ordered by priority_order ASC).
 	products, err := productSvc.GetActive(ctx, services.Pagination{Page: 1, PageSize: 1})
 	if err != nil {
-		return nil, fmt.Errorf("load active loan product: %w", err)
+		return nil, lendingErr("new").Code(pkgErrors.CodeLoanLoadFailed).
+			Wrapf(err, "could not load the active loan product")
 	}
 	if len(products.Data) == 0 {
-		return nil, fmt.Errorf("no active loan product found; run the 000006 migration to seed one")
+		return nil, lendingErr("new").Code(pkgErrors.CodeNotFound).
+			Hint("run the 000006 migration to seed a loan product").
+			Errorf("no active loan product is configured")
 	}
 	p := products.Data[0]
 
@@ -203,12 +551,24 @@ func NewLoanServiceAdapter(
 		productSvc:    productSvc,
 		stellarSvc:    stellarSvc,
 		offRamps:      offRamps,
+		relayRouter:   deps.RelayRouter,
 		loanNotifier:  loanNotifier,
 		txnSvc:        txnSvc,
 		logger:        logger,
 		productConfig: cfg,
 		fxBuffer:      offramp.NewRateBuffer(fxCfg.BufferPct, DefaultFXBufferPct),
 		dedupe:        newDedupeGate(60 * time.Second),
+
+		fxOrch:              deps.FXOrchestrator,
+		publicBaseURL:       deps.PublicBaseURL,
+		shortener:           deps.Shortener,
+		accountEnsurer:      deps.AccountEnsurer,
+		repayAnchor:         deps.RepaymentAnchor,
+		repayTreasuryPubkey: deps.TreasuryAddress,
+		repayAuthPubkey:     deps.AnchorAuthAddress,
+		repayWindow:         deps.RepaymentWindow,
+		cashIn:              deps.CashIn,
+		roundAnchorAmounts:  deps.RoundAnchorAmounts,
 	}, nil
 }
 
@@ -232,13 +592,29 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		payoutMethod = offramp.PayoutMethodMobileMoney
 	}
 
+	// MoneyGram always reconciles at 2 decimals, so a cash-out principal is
+	// rounded to whole cents before Create, BorrowFromVault and Initiate — a
+	// 7-decimal amount leaves the anchor stuck. Other rails round only when
+	// the anchor-rounding toggle is on.
+	if a.roundAnchorAmounts || payoutMethod == offramp.PayoutMethodCashPickup {
+		if rounded := utils.RoundToCentStroops(req.PrincipalAmount); rounded != req.PrincipalAmount {
+			a.logger.Info("principal rounded to whole cents",
+				"user_id", req.UserID,
+				"original_stroops", req.PrincipalAmount,
+				"rounded_stroops", rounded,
+			)
+			req.PrincipalAmount = rounded
+		}
+	}
+
 	// Cash-pickup needs a recipient name for SEP-9 prefill — fail before any
 	// vault mutation rather than after MoneyGram rejects the withdraw call.
 	if payoutMethod == offramp.PayoutMethodCashPickup && req.RecipientName == "" {
 		a.logger.Error("cash-pickup loan rejected: recipient name missing",
 			"user_id", req.UserID,
 		)
-		return nil, fmt.Errorf("cash-pickup requires recipient name (user has no full_name on file)")
+		return nil, lendingErr("request_loan").Code(pkgErrors.CodeMissingAccount).
+			Errorf("cash pickup needs a recipient name and the user has none on file")
 	}
 
 	// Dedupe gate — same (user, method, amount) within 60s is treated as a
@@ -306,7 +682,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	})
 	if err != nil {
 		a.logger.Error("failed to create loan record", "user_id", req.UserID, "error", err)
-		return nil, fmt.Errorf("create loan: %w", err)
+		return nil, lendingErr("request_loan").Code(pkgErrors.CodeStateWriteFailed).
+			Wrapf(err, "could not create the loan")
 	}
 	loanID := createResp.ID
 	a.logger.Info("loan record created",
@@ -326,7 +703,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	_, err = a.loanSvc.Approve(ctx, loanID, loan.ApproveLoanRequest{ApprovedBy: "00000000-0000-0000-0000-000000000000"})
 	if err != nil {
 		a.logger.Error("failed to approve loan", "loan_id", loanID, "error", err)
-		return nil, fmt.Errorf("approve loan: %w", err)
+		return nil, lendingErr("request_loan").Code(pkgErrors.CodeStateWriteFailed).
+			Wrapf(err, "could not approve the loan")
 	}
 	a.logger.Info("loan auto-approved", "loan_id", loanID)
 
@@ -365,7 +743,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 				"loan_id", loanID, "address", req.StellarAddress, "error", err)
 			cancelStatus := "cancelled"
 			_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{VaultTxStatus: &cancelStatus})
-			return nil, fmt.Errorf("ensure on-chain account: %w", err)
+			return nil, lendingErr("request_loan").Code(pkgErrors.CodeSubmitFailed).
+				Wrapf(err, "could not ensure the borrower has an on-chain account")
 		}
 	}
 
@@ -381,7 +760,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
 			VaultTxStatus: &cancelStatus,
 		})
-		return nil, fmt.Errorf("vault borrow: %w", err)
+		return nil, lendingErr("request_loan").Code(pkgErrors.CodeVaultRepayFailed).
+			Wrapf(err, "vault borrow failed")
 	}
 	a.logger.Info("vault borrow succeeded",
 		"loan_id", loanID,
@@ -429,14 +809,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		}
 	}
 
-	// Step 5: Mark loan as disbursed.
 	// Settlement method and disbursement status are written by
-	// recordSuccessfulInitiate once Initiate returns with the real values.
-	// Pre-stamping "direct" here used to race with the YC webhook: when the
-	// adapter pivots direct to fiat inside Initiate and YC fires
-	// DisbursementComplete before recordSuccessfulInitiate updates the row,
-	// the webhook handler saw settlement_method="direct" and skipped the
-	// vault repay.
+	// recordSuccessfulInitiate; pre-stamping here raced the YC webhook.
 	vaultTxStatus := "success"
 	_, err = a.loanSvc.Disburse(ctx, loanID, loan.DisburseLoanRequest{
 		VaultTxHash:   &borrowResp.TxHash,
@@ -465,6 +839,9 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		PayoutMethod:     payoutMethod,
 		Options:          providerOpts,
 	}
+	if routed := a.routeMobileMoney(ctx, offrampReq, amountUSD); routed != "" {
+		offrampReq.PayoutMethod = routed
+	}
 	provider, resolveErr := a.offRamps.Resolve(offrampReq)
 	if resolveErr != nil {
 		a.logger.Error("off-ramp registry resolve failed",
@@ -472,7 +849,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			"payout_method", payoutMethod,
 			"error", resolveErr,
 		)
-		return nil, fmt.Errorf("resolve off-ramp provider: %w", resolveErr)
+		return nil, lendingErr("request_loan").Code(pkgErrors.CodeNotFound).
+			Wrapf(resolveErr, "could not resolve an off-ramp provider")
 	}
 	offRampResult, err := provider.Initiate(ctx, offrampReq)
 	offRampFailed := err != nil
@@ -523,14 +901,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		)
 		a.recordSuccessfulInitiate(ctx, loanID, payoutMethod, provider.ID(), offRampResult, req, createResp)
 
-		// Mobile-money requests default to direct settlement (USDC pushed to
-		// YC's wallet). If the result comes back as fiat, the YC adapter
-		// pivoted direct to fiat internally — USDC is still in treasury and
-		// YC will front the fiat from their pool. Repay the vault now rather
-		// than waiting for the DisbursementComplete webhook: it's racy and
-		// leaves the USDC idle in the interim. repayVaultAfterInitiate is
-		// idempotent via VaultRepayTxHash, so the eventual fiat-complete
-		// repay branch in the webhook handler will no-op.
+		// A fiat result means the YC adapter pivoted internally: the USDC is
+		// still in treasury, so repay now rather than await the racy webhook.
 		if payoutMethod == offramp.PayoutMethodMobileMoney &&
 			offRampResult.SettlementMethod == string(yellowcard.SettlementMethodFiat) {
 			a.repayVaultAfterInitiate(ctx, loanID, req.UserID, borrowResp.AmountBorrowed, "direct_to_fiat_pivot")
@@ -601,17 +973,13 @@ func (a *LoanServiceAdapter) buildProviderOptions(payoutMethod string, req *ussd
 			ChildAccountIndex:  req.ChildAccountIndex,
 		}, nil
 	default:
-		return nil, fmt.Errorf("unsupported payout method %q", payoutMethod)
+		return nil, lendingErr("request_loan").With("payout_method", string(payoutMethod)).
+			Code(pkgErrors.CodeNotFound).Errorf("payout method is not supported")
 	}
 }
 
-// requoteEntryRate asks for a fresh rate and bakes the safety buffer in.
-// Returns (rate, source, bufferPct). The FXOrchestrator path is preferred
-// when wired: it cascades MG primary to YC fallback to stale cache and
-// applies its own buffers (different for primary vs fallback). When the
-// orchestrator isn't set, we fall back to the resolved provider's Quoter
-// and the adapter's flat fxBuffer. A zero rate signals "no usable
-// quote" — callers should skip persistence.
+// requoteEntryRate returns (rate, source, bufferPct) with the safety buffer
+// applied. A zero rate means no usable quote; callers skip persistence.
 func (a *LoanServiceAdapter) requoteEntryRate(
 	ctx context.Context,
 	opts offramp.ProviderOptions,
@@ -662,11 +1030,8 @@ func (a *LoanServiceAdapter) requoteEntryRate(
 	return a.fxBuffer.Apply(q.SellRate), string(p.ID()), a.fxBuffer.Pct()
 }
 
-// persistEntryRate writes the entry-rate audit fields and the requested
-// local amount + child-account index onto the freshly created loan. Each
-// field is optional; nil values are skipped via the UpdateLoanRequest's
-// pointer semantics. Errors are logged, not returned — this is audit data,
-// not load-bearing for the disbursement path.
+// persistEntryRate writes the entry-rate audit fields onto a fresh loan.
+// Errors are logged, not returned: audit data, not load-bearing.
 func (a *LoanServiceAdapter) persistEntryRate(
 	ctx context.Context,
 	loanID string,
@@ -678,9 +1043,8 @@ func (a *LoanServiceAdapter) persistEntryRate(
 ) {
 	req := loan.UpdateLoanRequest{}
 	any := false
-	if entryRate > 0 {
-		v := entryRate
-		req.EntryRateBuffered = &v
+	if e8 := creditmodels.RateE8(entryRate); e8 != nil {
+		req.EntryRateBuffered = e8
 		any = true
 	}
 	if entryRateSource != "" {
@@ -688,9 +1052,8 @@ func (a *LoanServiceAdapter) persistEntryRate(
 		req.EntryRateSource = &v
 		any = true
 	}
-	if entryBufferPct > 0 {
-		v := entryBufferPct
-		req.EntryBufferPct = &v
+	if bps := creditmodels.BufferBps(entryBufferPct); bps != nil {
+		req.EntryBufferBps = bps
 		any = true
 	}
 	if localAmountCents > 0 {
@@ -788,12 +1151,8 @@ func (a *LoanServiceAdapter) repayVaultAfterInitiate(
 // staying resolvable forever on a loan that never reaches a terminal state.
 const shortCodeTTL = 24 * time.Hour
 
-// mintRedirectLink generates a /r/{code} redirect for rawURL and persists the
-// code with its expiry. Returns rawURL unchanged when either step fails: a long
-// link still resolves, a 404 does not.
-//
-// Called only when the shortener produced nothing, so a pickup carries one
-// unauthenticated bearer code rather than one per shortener.
+// mintRedirectLink generates a /r/{code} redirect and persists it. Returns
+// rawURL unchanged on failure: a long link resolves, a 404 does not.
 func (a *LoanServiceAdapter) mintRedirectLink(ctx context.Context, loanID, rawURL string) string {
 	code, err := newShortCode()
 	if err != nil {
@@ -910,9 +1269,8 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 		}
 
 		// Persist conversion data when local currency info is available.
-		if req.ConversionRate > 0 {
-			rate := req.ConversionRate
-			updateReq.DisbursementRate = &rate
+		if e8 := creditmodels.RateE8(req.ConversionRate); e8 != nil {
+			updateReq.DisbursementRate = e8
 		}
 
 		if _, err := a.loanSvc.Update(ctx, loanID, updateReq); err != nil {
@@ -963,6 +1321,8 @@ func (a *LoanServiceAdapter) GetUserLoans(ctx context.Context, userID string) ([
 			"id":                     l.ID,
 			"loan_reference":         l.LoanReference,
 			"status":                 l.Status,
+			"repayment_status":       l.RepaymentStatus,
+			"repayment_provider":     l.RepaymentProvider,
 			"due_date":               l.DueDate,
 			"delivered_amount_local": l.DeliveredAmountLocal,
 			"borrow_index":           l.BorrowIndex,
@@ -974,11 +1334,8 @@ func (a *LoanServiceAdapter) GetUserLoans(ctx context.Context, userID string) ([
 	return results, nil
 }
 
-// CheckLoanEligibility implements ussd.LoanService.
-//
-// Fiat-denominated limit checks are performed by the USSD handler using
-// [GetProductConfig]. This method fetches the dynamic vault APR and always
-// approves the request (the amount has already been validated).
+// CheckLoanEligibility implements ussd.LoanService. Fiat limits are checked by
+// the USSD handler; this fetches the vault APR and approves.
 func (a *LoanServiceAdapter) CheckLoanEligibility(ctx context.Context, userID string, amount int64, duration int) (*ussd.LoanApproval, error) {
 	// Fetch dynamic APR from vault; fall back to product rate.
 	fallbackRate := float64(a.productConfig.InterestRateBps) / 10000.0 // bps to decimal
@@ -1004,10 +1361,8 @@ func (a *LoanServiceAdapter) CheckLoanEligibility(ctx context.Context, userID st
 	}, nil
 }
 
-// GetRepaymentQuote implements ussd.LoanService. It recomputes the live
-// amount owed on a loan from the vault's current borrow_index and the
-// latest FX rate. Hard-fails on either dependency being unavailable — the
-// USSD screen should surface "service unavailable" rather than show a stale
+// GetRepaymentQuote recomputes the amount owed from the vault's current
+// borrow_index and the latest FX rate. Hard-fails rather than serve a stale
 // number the borrower might act on.
 //
 // Math:
@@ -1019,28 +1374,34 @@ func (a *LoanServiceAdapter) CheckLoanEligibility(ctx context.Context, userID st
 func (a *LoanServiceAdapter) GetRepaymentQuote(ctx context.Context, loanID string) (*ussd.RepaymentQuote, error) {
 	resp, err := a.loanSvc.GetByID(ctx, loanID)
 	if err != nil {
-		return nil, fmt.Errorf("repayment quote: load loan %s: %w", loanID, err)
+		return nil, quoteErr(loanID).Code(pkgErrors.CodeLoanLoadFailed).
+			Wrapf(err, "could not load the loan")
 	}
 	if resp.BorrowIndex == nil || *resp.BorrowIndex <= 0 {
-		return nil, fmt.Errorf("repayment quote: loan %s has no origination borrow_index", loanID)
+		return nil, quoteErr(loanID).Code(pkgErrors.CodeIncompleteResponse).
+			Errorf("loan has no origination borrow index to quote against")
 	}
 	originIndex := *resp.BorrowIndex
 
 	currentIndex, err := a.stellarSvc.GetBorrowIndex(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("repayment quote: read vault borrow_index: %w", err)
+		return nil, quoteErr(loanID).Code(pkgErrors.CodeQuoteFailed).
+			Wrapf(err, "could not read the vault borrow index")
 	}
 	if currentIndex < originIndex {
 		// Index only grows; this would mean we read a stale or wrong value.
-		return nil, fmt.Errorf("repayment quote: current borrow_index %d < origination %d",
-			currentIndex, originIndex)
+		return nil, quoteErr(loanID).
+			With("current_index", currentIndex).
+			With("origination_index", originIndex).
+			Code(pkgErrors.CodeQuoteFailed).
+			Errorf("vault borrow index went backwards, which means a stale or wrong read")
 	}
 
 	// principal * current / origin, rounded up — favors the protocol.
 	amountUSDC := mulDivCeil(resp.PrincipalAmount, currentIndex, originIndex)
 
 	if resp.ServiceFeeUSD != nil && *resp.ServiceFeeUSD > 0 {
-		amountUSDC += *resp.ServiceFeeUSD * 1e5
+		amountUSDC += *resp.ServiceFeeUSD * utils.CentStroops
 	}
 
 	currency := "KES"
@@ -1050,7 +1411,8 @@ func (a *LoanServiceAdapter) GetRepaymentQuote(ctx context.Context, loanID strin
 
 	fxRate, fxSource, fxErr := a.fetchFXForQuote(ctx, currency)
 	if fxErr != nil {
-		return nil, fmt.Errorf("repayment quote: fetch FX %s: %w", currency, fxErr)
+		return nil, quoteErr(loanID).With(pkgErrors.AttrCurrency, currency).
+			Code(pkgErrors.CodeRateUnavailable).Wrapf(fxErr, "could not fetch an FX rate")
 	}
 
 	amountLocalCents := int64(0)
@@ -1072,6 +1434,134 @@ func (a *LoanServiceAdapter) GetRepaymentQuote(ctx context.Context, loanID strin
 	}, nil
 }
 
+// PromptRepayment implements ussd.RepaymentPrompter. It pushes a prompt at
+// the borrower's handset for the full payoff, converted to whole shillings
+// rounded up — M-Pesa accepts whole KES only, and a shilling short is a loan
+// that never settles.
+func (a *LoanServiceAdapter) PromptRepayment(ctx context.Context, loanID, phoneNumber string) error {
+	if a.cashIn == nil {
+		return lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
+			Code(pkgErrors.CodeAnchorNotWired).Errorf("no cash-in provider is configured")
+	}
+
+	quote, err := a.GetRepaymentQuote(ctx, loanID)
+	if err != nil {
+		return err
+	}
+	if quote.LocalCurrency != "KES" {
+		return lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
+			With(pkgErrors.AttrCurrency, quote.LocalCurrency).
+			Code(pkgErrors.CodeUnsupportedOperation).Errorf("prompts push M-Pesa, which collects in KES")
+	}
+	amountKES := (quote.AmountLocalCents + 99) / 100
+
+	provider, err := a.cashIn.Resolve(cashin.Request{
+		LoanID:           loanID,
+		CollectionMethod: cashin.CollectionMethodPrompt,
+	})
+	if err != nil {
+		return lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
+			Wrapf(err, "could not resolve a prompt provider")
+	}
+	prompter, ok := provider.(cashin.Prompter)
+	if !ok {
+		return lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
+			Code(pkgErrors.CodeUnsupportedOperation).Errorf("the resolved provider cannot push prompts")
+	}
+	if _, err := prompter.Prompt(ctx, cashin.PromptRequest{
+		LoanID:    loanID,
+		Payer:     phoneNumber,
+		AmountKES: amountKES,
+	}); err != nil {
+		return lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
+			With(pkgErrors.AttrAmountLocal, amountKES).
+			Wrapf(err, "the prompt was refused")
+	}
+	return nil
+}
+
+// ID names the provider. LoanServiceAdapter is MoneyGram's cashin.Collector:
+// it already owns the anchor, treasury and loan-service dependencies Collect
+// needs, so implementing the interface directly is simpler than a separate
+// adapter type duplicating those fields.
+func (a *LoanServiceAdapter) ID() cashin.ProviderID { return cashin.ProviderMoneyGram }
+
+// Collect opens a MoneyGram cash deposit for the loan — freezing the payoff
+// in USDC and opening a cash deposit under the borrower's own SEP-10 memo.
+// Returns once the request is accepted, not once the deposit exists: the
+// SEP-24 handshake runs in the background and reports outcome by SMS. See
+// runRepaymentInitiation. InitiateRepayment is the ussd.LoanService entry
+// point onto this method, resolved through the cashin registry.
+func (a *LoanServiceAdapter) Collect(ctx context.Context, req cashin.Request) (*cashin.Result, error) {
+	errb := oops.In(pkgErrors.DomainRepaymentCashIn).Tags("moneygram", "sep24").With(pkgErrors.AttrLoanID, req.LoanID)
+
+	// Synchronous, because a USSD screen that promises an SMS must not be shown
+	// when the request could never have produced one. All four checks are local.
+	if req.LoanID == "" || req.Payer == "" {
+		return nil, errb.Code(pkgErrors.CodeMissingAccount).Errorf("loan id and payer phone number are both required")
+	}
+	if a.repayAnchor == nil || a.repayTreasuryPubkey == "" || a.repayAuthPubkey == "" {
+		return nil, errb.Code(pkgErrors.CodeAnchorNotWired).Errorf("repayment anchor is not configured")
+	}
+
+	loanRow, err := a.loanSvc.GetByID(ctx, req.LoanID)
+	if err != nil {
+		return nil, errb.Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not load loan")
+	}
+
+	// Everything past here talks to MoneyGram and took over fifteen seconds
+	// against the sandbox — past the point Africa's Talking abandons the
+	// session. It runs on its own context so it outlives the USSD turn.
+	go a.runRepaymentInitiation(req.LoanID, req.Payer)
+
+	reference := req.LoanID
+	if loanRow.LoanReference != nil && *loanRow.LoanReference != "" {
+		reference = *loanRow.LoanReference
+	}
+	return &cashin.Result{
+		LoanID:    req.LoanID,
+		Reference: reference,
+		Amount:    req.AmountMinor,
+		At:        time.Now(),
+		Provider:  moneygram.RepaymentPayload{},
+	}, nil
+}
+
+// Status resolves a MoneyGram collection from the loan row. ref.ID is the
+// loan ID — MoneyGram's deposit isn't independently addressable, only
+// reachable through the loan it was opened against.
+func (a *LoanServiceAdapter) Status(ctx context.Context, ref cashin.ProviderRef) (*cashin.Status, error) {
+	loanRow, err := a.loanSvc.GetByID(ctx, ref.ID)
+	if err != nil {
+		return nil, lendingErr("moneygram_status").With(pkgErrors.AttrLoanID, ref.ID).
+			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not load loan")
+	}
+
+	reference := ref.ID
+	if loanRow.LoanReference != nil && *loanRow.LoanReference != "" {
+		reference = *loanRow.LoanReference
+	}
+	var amount int64
+	if loanRow.RepaymentPayoffStroops != nil {
+		amount = *loanRow.RepaymentPayoffStroops
+	}
+	var mgTxID string
+	if loanRow.RepaymentMGTxID != nil {
+		mgTxID = *loanRow.RepaymentMGTxID
+	}
+
+	return &cashin.Status{
+		Reference: reference,
+		// funds_received is the collection succeeding — cash reached the
+		// treasury. settled is the on-chain leg completing afterward; either
+		// implies the collection itself did not fail.
+		Succeeded: loanRow.RepaymentStatus == repaymentStatusFundsReceived || loanRow.RepaymentStatus == repaymentStatusSettled,
+		Amount:    amount,
+		At:        time.Now(),
+		Provider:  moneygram.RepaymentPayload{MGTxID: mgTxID},
+	}, nil
+}
+
 // fetchFXForQuote sources a current FX rate using the orchestrator cascade
 // (MG primary → YC fallback → stale cache). Returns rate + source label.
 func (a *LoanServiceAdapter) fetchFXForQuote(ctx context.Context, currency string) (float64, string, error) {
@@ -1085,7 +1575,8 @@ func (a *LoanServiceAdapter) fetchFXForQuote(ctx context.Context, currency strin
 		if err == nil && res != nil && res.Rate > 0 {
 			return res.Rate, res.Source, nil
 		}
-		return 0, "", fmt.Errorf("fx orchestrator: %w", err)
+		return 0, "", lendingErr("quote_fx").Code(pkgErrors.CodeRateUnavailable).
+			Wrapf(err, "FX orchestrator produced no rate")
 	}
 	// No orchestrator wired — try the YC adapter's Quoter directly.
 	provider, err := a.offRamps.Resolve(offramp.Request{
@@ -1093,11 +1584,13 @@ func (a *LoanServiceAdapter) fetchFXForQuote(ctx context.Context, currency strin
 		Options:      yellowcard.Options{SettlementMethod: yellowcard.SettlementMethodDirect},
 	})
 	if err != nil {
-		return 0, "", fmt.Errorf("resolve fx provider: %w", err)
+		return 0, "", lendingErr("quote_fx").Code(pkgErrors.CodeNotFound).
+			Wrapf(err, "could not resolve an FX provider")
 	}
 	quoter, ok := provider.(offramp.Quoter)
 	if !ok {
-		return 0, "", fmt.Errorf("provider %s exposes no Quoter", provider.ID())
+		return 0, "", lendingErr("quote_fx").With(pkgErrors.AttrProvider, string(provider.ID())).
+			Code(pkgErrors.CodeRateUnavailable).Errorf("provider exposes no quoter")
 	}
 	q, err := quoter.Quote(ctx, offramp.QuoteRequest{Currency: currency})
 	if err != nil {
@@ -1106,7 +1599,8 @@ func (a *LoanServiceAdapter) fetchFXForQuote(ctx context.Context, currency strin
 	// Sell only — see requoteEntryRate. A repayment quoted at the buy rate is
 	// wrong by the spread, and silently so.
 	if q.SellRate <= 0 {
-		return 0, "", fmt.Errorf("quoter returned no sell rate for %s", currency)
+		return 0, "", lendingErr("quote_fx").With(pkgErrors.AttrCurrency, currency).
+			Code(pkgErrors.CodeRateUnavailable).Errorf("quoter returned no sell rate")
 	}
 	return q.SellRate, string(provider.ID()), nil
 }

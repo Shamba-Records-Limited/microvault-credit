@@ -3,9 +3,10 @@ package adapters
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
-	"github.com/stretchr/testify/assert"
 )
 
 // The two providers disagreed on the wire: YellowCard sends "complete",

@@ -38,12 +38,6 @@ func NewInteractiveRedirectHandler(loans ShortCodeResolver, logger *slog.Logger)
 }
 
 // Handle resolves :code and redirects. Unknown codes 404.
-//
-// A loan carries two short-links with opposite lifetimes. The interactive
-// webview must stop working once the withdrawal settles, so a leaked link
-// cannot reopen a completed session — that one 410s when terminal. MoneyGram's
-// support deep-link is the opposite: it only matters after settlement, when
-// the borrower has a problem at the agent, so it never expires.
 func (h *InteractiveRedirectHandler) Handle(c *fiber.Ctx) error {
 	code := c.Params("code")
 	if code == "" {

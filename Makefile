@@ -1,7 +1,6 @@
-.PHONY: help migrate-up migrate-down migrate-version migrate-force build build-credit build-migrate build-admin run run-admin admin-assets admin-generate admin-watch test test-integration test-integration-down docs clean
+.PHONY: help migrate-up migrate-down migrate-version migrate-force build build-credit build-migrate run up up-build down test test-integration test-integration-down docs clean lint lint-new lint-fix fmt
 
-ADMIN_ASSETS := internal/admin/assets
-
+COMPOSE := docker compose
 COMPOSE_TEST := docker compose -f docker-compose.test.yml
 
 help:
@@ -28,10 +27,21 @@ help:
 	@echo "  make admin-assets        - Rebuild the admin stylesheet"
 	@echo "  make admin-watch         - Rebuild the stylesheet on change"
 	@echo ""
+	@echo "Docker Commands:"
+	@echo "  make up                  - Start the dev stack in the background"
+	@echo "  make up-build            - Rebuild images, then start the dev stack"
+	@echo "  make down                - Stop the dev stack"
+	@echo ""
 	@echo "Test Commands:"
 	@echo "  make test                - Run all tests"
 	@echo "  make test-integration    - Run DB-backed tests in an ephemeral Postgres"
 	@echo "  make test-integration-down - Tear down the test stack"
+	@echo ""
+	@echo "Lint Commands:"
+	@echo "  make lint                - Report every lint issue"
+	@echo "  make lint-new            - Report only issues in code changed against main"
+	@echo "  make lint-fix            - Apply the auto-fixable subset"
+	@echo "  make fmt                 - Format with gofumpt + goimports"
 	@echo ""
 	@echo "Documentation Commands:"
 	@echo "  make docs                - Generate API documentation"
@@ -91,10 +101,41 @@ admin-watch:
 run:
 	@go run cmd/credit/main.go
 
-run-admin: admin-generate admin-assets
-	@go run ./cmd/admin
+# Docker commands. The build context is the workspace root, so the sibling
+# microvault checkout must be present.
+up:
+	@$(COMPOSE) up
+
+up-build:
+	@$(COMPOSE) up --build
+
+down:
+	@$(COMPOSE) down
 
 # Test commands
+# Linting. golangci-lint must be built with the same Go version the modules
+# target, or it refuses to load the config; `go install` picks that up from the
+# local toolchain.
+GOLANGCI := golangci-lint
+
+lint:
+	@echo "Linting..."
+	@$(GOLANGCI) run ./...
+
+# What a pull request should be held to while the pre-existing backlog is worked
+# down: only code that differs from main is reported.
+lint-new:
+	@echo "Linting changes against main..."
+	@$(GOLANGCI) run --new-from-rev=main ./...
+
+lint-fix:
+	@echo "Applying auto-fixes..."
+	@$(GOLANGCI) run --fix ./...
+
+fmt:
+	@echo "Formatting..."
+	@$(GOLANGCI) fmt ./...
+
 test:
 	@echo "Running all tests..."
 	@go test -v ./...

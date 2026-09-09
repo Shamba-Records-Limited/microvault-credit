@@ -7,84 +7,136 @@ import (
 	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
 )
 
-// CreditNotificationService handles credit-specific notifications that are not
-// part of the core loan lifecycle (those live in pkg/notifications in microvault).
+// CreditNotification carries the data for credit-specific messages — the ones
+// outside the loan and account lifecycles the platform owns.
+type CreditNotification struct {
+	PhoneNumber string
+	FullName    string
+	// Score and MaxLoanAmount back the credit score update. MaxLoanAmount is
+	// display-ready in Currency units, not minor units.
+	Score         int
+	MaxLoanAmount float64
+	Currency      string
+	// Reason explains a suspension; Alert describes a security event;
+	// Promotion carries marketing copy supplied by the caller.
+	Reason    string
+	Alert     string
+	Promotion string
+	// Language pins the SMS language (en/sw/fr). Empty resolves through the
+	// service's LanguageResolver, then falls back to English.
+	Language string
+}
+
+// CreditMessage renders one credit notification.
+type CreditMessage func(n CreditNotification) string
+
+// CreditTemplates holds one renderer per credit-specific event.
+type CreditTemplates struct {
+	ScoreUpdate      CreditMessage
+	AccountSuspended CreditMessage
+	Welcome          CreditMessage
+	KYCVerified      CreditMessage
+	KYCRejected      CreditMessage
+	KYCPending       CreditMessage
+	SecurityAlert    CreditMessage
+	PromotionalOffer CreditMessage
+}
+
+// CreditNotificationService sends credit-specific notifications. Loan lifecycle
+// and account/PIN messages are handled by the platform notifiers in
+// microvault/pkg/notifications.
 type CreditNotificationService struct {
-	notifier mvnotifications.Notifier
+	notifier    mvnotifications.Notifier
+	templates   map[string]*CreditTemplates
+	resolveLang mvnotifications.LanguageResolver
 }
 
-// NewCreditNotificationService creates a new CreditNotificationService.
-func NewCreditNotificationService(notifier mvnotifications.Notifier) *CreditNotificationService {
-	return &CreditNotificationService{notifier: notifier}
-}
-
-// SendCreditScoreUpdate sends credit score update notification
-func (s *CreditNotificationService) SendCreditScoreUpdate(ctx context.Context, phoneNumber string, score int, maxLoanAmount int64) error {
-	message := fmt.Sprintf(
-		"Your credit score has been updated to %d. Maximum loan amount: KES %.2f. Keep up the good work!",
-		score,
-		float64(maxLoanAmount)/100,
-	)
-	return s.notifier.Send(ctx, phoneNumber, message)
-}
-
-// SendAccountSuspensionNotification sends account suspension notification
-func (s *CreditNotificationService) SendAccountSuspensionNotification(ctx context.Context, phoneNumber string, reason string) error {
-	message := fmt.Sprintf(
-		"Your microvault account has been suspended. Reason: %s. Please contact support.",
-		reason,
-	)
-	return s.notifier.Send(ctx, phoneNumber, message)
-}
-
-// SendWelcomeMessage sends welcome message to new users
-func (s *CreditNotificationService) SendWelcomeMessage(ctx context.Context, phoneNumber string, name string) error {
-	message := fmt.Sprintf(
-		"Welcome to microvault, %s! Dial *384*1234# to access your account and request loans. Need help? Visit https://microvault.com/support",
-		name,
-	)
-	return s.notifier.Send(ctx, phoneNumber, message)
-}
-
-// SendKYCVerificationNotification sends KYC verification notification
-func (s *CreditNotificationService) SendKYCVerificationNotification(ctx context.Context, phoneNumber string, status string) error {
-	var message string
-	switch status {
-	case "verified":
-		message = "Your identity has been verified! You can now request higher loan amounts. Dial *384*1234# to get started."
-	case "rejected":
-		message = "Your identity verification was not successful. Please contact support for assistance."
-	default:
-		message = "Your identity is being verified. You will be notified once the process is complete."
+// NewCreditNotificationService creates a service over the Shamba Records credit
+// copy. dialString is the dialled USSD string for this deployment; resolve may
+// be nil, in which case notifications without a pinned language render in
+// English.
+func NewCreditNotificationService(
+	notifier mvnotifications.Notifier,
+	dialString string,
+	resolve mvnotifications.LanguageResolver,
+) (*CreditNotificationService, error) {
+	set := creditTemplates(dialString)
+	for lang, tmpl := range set {
+		if err := validateCreditTemplates(lang, tmpl); err != nil {
+			return nil, err
+		}
 	}
-	return s.notifier.Send(ctx, phoneNumber, message)
+	return &CreditNotificationService{notifier: notifier, templates: set, resolveLang: resolve}, nil
 }
 
-// SendSecurityAlert sends security alert
-func (s *CreditNotificationService) SendSecurityAlert(ctx context.Context, phoneNumber string, alert string) error {
-	message := fmt.Sprintf(
-		"Security Alert: %s. If this wasn't you, please contact support immediately.",
-		alert,
-	)
-	return s.notifier.Send(ctx, phoneNumber, message)
+// tmpl selects the template set for a notification: its pinned Language, else
+// the resolved recipient preference, else English.
+func (s *CreditNotificationService) tmpl(ctx context.Context, n CreditNotification) *CreditTemplates {
+	lang := n.Language
+	if lang == "" && s.resolveLang != nil {
+		lang = s.resolveLang(ctx, n.PhoneNumber)
+	}
+	if t, ok := s.templates[lang]; ok {
+		return t
+	}
+	return s.templates["en"]
 }
 
-// SendPromotionalMessage sends promotional message
-func (s *CreditNotificationService) SendPromotionalMessage(ctx context.Context, phoneNumber string, promotion string) error {
-	message := fmt.Sprintf(
-		"microvault: %s Dial *384*1234# to take advantage of this offer!",
-		promotion,
-	)
-	return s.notifier.Send(ctx, phoneNumber, message)
+func (s *CreditNotificationService) send(ctx context.Context, n CreditNotification, event string, msg CreditMessage) error {
+	if err := s.notifier.Send(ctx, n.PhoneNumber, msg(n)); err != nil {
+		return fmt.Errorf("notify %s: %w", event, err)
+	}
+	return nil
 }
 
-// SendBulkNotification sends notification to multiple recipients.
-// Note: this sends individual messages via the Notifier interface. For true
-// bulk SMS, consumers should use the SMS provider directly.
+// SendCreditScoreUpdate tells a user their score and new borrowing ceiling.
+func (s *CreditNotificationService) SendCreditScoreUpdate(ctx context.Context, n CreditNotification) error {
+	return s.send(ctx, n, "credit score update", s.tmpl(ctx, n).ScoreUpdate)
+}
+
+// SendAccountSuspension tells a user their account has been suspended.
+func (s *CreditNotificationService) SendAccountSuspension(ctx context.Context, n CreditNotification) error {
+	return s.send(ctx, n, "account suspension", s.tmpl(ctx, n).AccountSuspended)
+}
+
+// SendWelcomeMessage greets a newly onboarded user.
+func (s *CreditNotificationService) SendWelcomeMessage(ctx context.Context, n CreditNotification) error {
+	return s.send(ctx, n, "welcome", s.tmpl(ctx, n).Welcome)
+}
+
+// SendKYCVerified confirms a successful identity check.
+func (s *CreditNotificationService) SendKYCVerified(ctx context.Context, n CreditNotification) error {
+	return s.send(ctx, n, "KYC verified", s.tmpl(ctx, n).KYCVerified)
+}
+
+// SendKYCRejected reports a failed identity check.
+func (s *CreditNotificationService) SendKYCRejected(ctx context.Context, n CreditNotification) error {
+	return s.send(ctx, n, "KYC rejected", s.tmpl(ctx, n).KYCRejected)
+}
+
+// SendKYCPending acknowledges an identity check still in progress.
+func (s *CreditNotificationService) SendKYCPending(ctx context.Context, n CreditNotification) error {
+	return s.send(ctx, n, "KYC pending", s.tmpl(ctx, n).KYCPending)
+}
+
+// SendSecurityAlert warns a user about activity on their account.
+func (s *CreditNotificationService) SendSecurityAlert(ctx context.Context, n CreditNotification) error {
+	return s.send(ctx, n, "security alert", s.tmpl(ctx, n).SecurityAlert)
+}
+
+// SendPromotionalMessage sends marketing copy supplied by the caller.
+func (s *CreditNotificationService) SendPromotionalMessage(ctx context.Context, n CreditNotification) error {
+	return s.send(ctx, n, "promotional offer", s.tmpl(ctx, n).PromotionalOffer)
+}
+
+// SendBulkNotification sends one already-rendered message to many recipients.
+// It loops over the Notifier rather than using a provider bulk endpoint, so it
+// is unsuitable for large lists; callers needing true bulk SMS should reach for
+// the SMS provider directly.
 func (s *CreditNotificationService) SendBulkNotification(ctx context.Context, phoneNumbers []string, message string) error {
 	for _, phone := range phoneNumbers {
 		if err := s.notifier.Send(ctx, phone, message); err != nil {
-			return fmt.Errorf("failed to send to %s: %w", phone, err)
+			return fmt.Errorf("send bulk notification: %w", err)
 		}
 	}
 	return nil

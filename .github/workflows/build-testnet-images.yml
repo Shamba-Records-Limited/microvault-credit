@@ -1,0 +1,184 @@
+name: Build & Deploy Testnet
+
+on:
+  push:
+    branches: ["testnet"]
+    paths-ignore:
+      - "web/**"
+      - "docs/**"
+      - "**.md"
+      - "LICENSE"
+      - "cliff.toml"
+      - ".gitleaks.toml"
+      - ".pre-commit-config.yaml"
+      - ".github/dependabot.yml"
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * *"
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: build-testnet-${{ github.ref }}
+      cancel-in-progress: true
+    outputs:
+      credit_image: ${{ steps.vars.outputs.credit_image }}
+      migrate_image: ${{ steps.vars.outputs.migrate_image }}
+      core_sha: ${{ steps.vars.outputs.core_sha }}
+
+    steps:
+      - name: Resolve image namespace
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Checkout microvault-credit
+        uses: actions/checkout@v7
+        with:
+          path: microvault-credit
+
+      - name: Checkout microvault
+        uses: actions/checkout@v7
+        with:
+          repository: Shamba-Records-Limited/microvault
+          ref: testnet
+          path: microvault
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: microvault-credit/go.mod
+          cache: false
+
+      - name: Assemble workspace
+        run: |
+          cat > go.work <<'EOF'
+          go 1.26.0
+
+          use (
+          	./microvault
+          	./microvault-credit
+          )
+          EOF
+          go work sync
+          cp microvault-credit/deploy/workspace.dockerignore .dockerignore
+
+      - id: vars
+        run: |
+          sha7="${GITHUB_SHA:0:7}"
+          core_sha="$(git -C microvault rev-parse --short=7 HEAD)"
+          echo "sha7=$sha7" >> "$GITHUB_OUTPUT"
+          echo "core_sha=$core_sha" >> "$GITHUB_OUTPUT"
+          echo "credit_image=${REGISTRY}/${IMAGE_NAME}/credit:testnet-${sha7}" >> "$GITHUB_OUTPUT"
+          echo "migrate_image=${REGISTRY}/${IMAGE_NAME}/migrate:testnet-${sha7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push credit
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: microvault-credit/internal/credit/Dockerfile
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          tags: |
+            ${{ steps.vars.outputs.credit_image }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/credit:testnet-latest
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            com.shambarecords.microvault.core-revision=${{ steps.vars.outputs.core_sha }}
+          cache-from: type=gha,scope=credit
+          cache-to: type=gha,mode=max,scope=credit
+
+      - name: Build and push migrate
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: microvault-credit/Dockerfile.migrate
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          tags: |
+            ${{ steps.vars.outputs.migrate_image }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/migrate:testnet-latest
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            com.shambarecords.microvault.core-revision=${{ steps.vars.outputs.core_sha }}
+          cache-from: type=gha,scope=migrate
+          cache-to: type=gha,mode=max,scope=migrate
+
+      - name: Summary
+        run: |
+          {
+            echo "### Images"
+            echo '`${{ steps.vars.outputs.credit_image }}`'
+            echo '`${{ steps.vars.outputs.migrate_image }}`'
+            echo ""
+            echo "core: \`${{ steps.vars.outputs.core_sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: build
+    if: ${{ vars.COOLIFY_SERVICE_UUID != '' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    environment: testnet
+    concurrency:
+      group: deploy-testnet
+      cancel-in-progress: false
+
+    steps:
+      - name: Pin Coolify to these images
+        env:
+          CREDIT_IMAGE: ${{ needs.build.outputs.credit_image }}
+          MIGRATE_IMAGE: ${{ needs.build.outputs.migrate_image }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
+          COOLIFY_SERVICE_UUID: ${{ vars.COOLIFY_SERVICE_UUID }}
+        run: |
+          url="$COOLIFY_BASE_URL/api/v1/services/$COOLIFY_SERVICE_UUID/envs"
+          for pair in "CREDIT_IMAGE:$CREDIT_IMAGE" "MIGRATE_IMAGE:$MIGRATE_IMAGE"; do
+            key="${pair%%:*}"
+            value="${pair#*:}"
+            payload="$(jq -nc --arg k "$key" --arg v "$value" '{key:$k,value:$v}')"
+            code="$(curl --silent --output /dev/null --write-out '%{http_code}' -X PATCH \
+              -H "Authorization: Bearer $COOLIFY_TOKEN" --json "$payload" "$url")"
+            if [ "$code" = "404" ]; then
+              curl --fail --silent --show-error -X POST \
+                -H "Authorization: Bearer $COOLIFY_TOKEN" --json "$payload" "$url"
+            elif [ "$code" -ge 400 ]; then
+              echo "PATCH $key failed with HTTP $code" >&2
+              exit 1
+            fi
+          done
+
+      - name: Trigger Coolify deploy
+        env:
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
+          COOLIFY_SERVICE_UUID: ${{ vars.COOLIFY_SERVICE_UUID }}
+        run: |
+          curl --fail --silent --show-error -X POST \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" \
+            "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_SERVICE_UUID"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Deployed"
+            echo '`${{ needs.build.outputs.credit_image }}`'
+            echo '`${{ needs.build.outputs.migrate_image }}`'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -9,6 +9,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services"
+	"github.com/Shamba-Records-Limited/microvault/pkg/loanref"
 )
 
 // Valid repayment schedules
@@ -47,15 +48,22 @@ type Service interface {
 
 // service implements the Service interface
 type service struct {
-	repo repository.LoanRepository
+	repo      repository.LoanRepository
+	refPrefix string
 }
 
 // NewService creates a new loan service instance
-func NewService(repo repository.LoanRepository) Service {
+func NewService(repo repository.LoanRepository, refPrefix string) *service {
 	return &service{
-		repo: repo,
+		repo:      repo,
+		refPrefix: refPrefix,
 	}
 }
+
+// referenceAttempts bounds the unique-index collision retry. At six random
+// Crockford characters the space is 32^6 ≈ 1e9, so a collision is a rare event
+// and a bounded retry turns it into a second attempt rather than a 500.
+const referenceAttempts = 3
 
 // Create creates a new loan with business validation
 func (s *service) Create(ctx context.Context, req CreateLoanRequest) (*LoanResponse, error) {
@@ -91,13 +99,29 @@ func (s *service) Create(ctx context.Context, req CreateLoanRequest) (*LoanRespo
 		loan.OriginationFeeBps = &feeBps
 	}
 
-	// Create loan in database
-	if err := s.repo.Create(ctx, loan); err != nil {
-		log.Printf("Create: failed to create loan: %v", err)
-		return nil, err
+	// Create the loan, generating a fresh reference on a unique conflict. The
+	// model's BeforeCreate hook is the fallback for other creation paths; the
+	// service sets the reference explicitly so the configured prefix applies.
+	for attempt := 0; attempt < referenceAttempts; attempt++ {
+		if loan.LoanReference == nil {
+			ref, err := loanref.Generate(s.refPrefix)
+			if err != nil {
+				return nil, err
+			}
+			loan.LoanReference = &ref
+		}
+		if err := s.repo.Create(ctx, loan); err != nil {
+			if errors.Is(err, repository.ErrLoanReferenceConflict) {
+				loan.LoanReference = nil
+				continue
+			}
+			log.Printf("Create: failed to create loan: %v", err)
+			return nil, err
+		}
+		return toLoanResponse(loan), nil
 	}
 
-	return toLoanResponse(loan), nil
+	return nil, repository.ErrLoanReferenceConflict
 }
 
 // GetByID retrieves a loan by ID
@@ -523,7 +547,7 @@ func toLoanResponse(loan *models.Loan) *LoanResponse {
 		RampStellarTxHash:      loan.RampStellarTxHash,
 		EntryRateBuffered:      loan.EntryRateBuffered,
 		EntryRateSource:        loan.EntryRateSource,
-		EntryBufferPct:         loan.EntryBufferPct,
+		EntryBufferBps:         loan.EntryBufferBps,
 		RequestedLocalAmount:   loan.RequestedLocalAmount,
 		RampWithdrawMemo:       loan.RampWithdrawMemo,
 		RampWithdrawMemoType:   loan.RampWithdrawMemoType,
@@ -532,6 +556,21 @@ func toLoanResponse(loan *models.Loan) *LoanResponse {
 		RampRefundAmount:    loan.RampRefundAmount,
 		RampRefundShortfall: loan.RampRefundShortfall,
 		RampRefundedAt:      loan.RampRefundedAt,
+
+		RepaymentStatus:          loan.RepaymentStatus,
+		RepaymentPayoffStroops:   loan.RepaymentPayoffStroops,
+		RepaymentLockedAt:        loan.RepaymentLockedAt,
+		RepaymentExpiresAt:       loan.RepaymentExpiresAt,
+		RepaymentMGTxID:          loan.RepaymentMGTxID,
+		RepaymentNextPollAt:      loan.RepaymentNextPollAt,
+		RepaymentReminderSentAt:  loan.RepaymentReminderSentAt,
+		RepaymentVaultTxHash:     loan.RepaymentVaultTxHash,
+		RepaymentVaultAttempts:   loan.RepaymentVaultAttempts,
+		RepaymentReferenceSentAt: loan.RepaymentReferenceSentAt,
+		RepaymentProvider:        loan.RepaymentProvider,
+		RepaymentMpesaCheckoutID: loan.RepaymentMpesaCheckoutID,
+		RepaymentMpesaTransID:    loan.RepaymentMpesaTransID,
+		RepaymentSTKAttempts:     loan.RepaymentSTKAttempts,
 
 		CreatedAt: loan.CreatedAt,
 		UpdatedAt: loan.UpdatedAt,

@@ -4,6 +4,7 @@ package ratelimit
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -11,11 +12,6 @@ import (
 )
 
 // RedisStore implements [fiber.Storage] on top of an existing *redis.Client.
-//
-// It wraps the connection the rest of the service already uses rather than
-// opening its own, so limits share the configured pool, password and DB. Keys
-// are namespaced by prefix because that connection also holds USSD sessions and
-// idempotency records.
 type RedisStore struct {
 	client *redis.Client
 	prefix string
@@ -36,7 +32,7 @@ func (s *RedisStore) Get(key string) ([]byte, error) {
 		return nil, nil
 	}
 	val, err := s.client.Get(context.Background(), s.key(key)).Bytes()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return nil, nil
 	}
 	if err != nil {

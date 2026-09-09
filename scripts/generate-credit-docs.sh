@@ -10,8 +10,9 @@ swag init --parseDependency --parseInternal \
     --dir ./,./internal/credit,"${MICROVAULT_DIR}/pkg/controllers","${MICROVAULT_DIR}/pkg/payment/yellowcard","${MICROVAULT_DIR}/pkg/auth","${MICROVAULT_DIR}/pkg/validation" \
     --output ./cmd/credit/docs
 
-# Build Redoc static HTML from swagger.json
+# Build the themed Redoc static HTML from swagger.json. Not
+# `@redocly/cli build-docs --theme` — see scripts/render-redoc.js for why.
 if [ -f ./cmd/credit/docs/swagger.json ]; then
-    npx @redocly/cli build-docs ./cmd/credit/docs/swagger.json \
-        --output ./cmd/credit/docs/redoc-static.html 2>/dev/null || echo "Redocly build skipped"
+    node ./scripts/render-redoc.js ./cmd/credit/docs/swagger.json \
+        ./cmd/credit/docs/redoc-static.html "microvault Credit API" || echo "Redoc render skipped"
 fi

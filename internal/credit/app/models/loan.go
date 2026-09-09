@@ -1,26 +1,31 @@
 package models
 
 import (
-	"fmt"
+	"math"
 	"time"
 
-	transactions "github.com/Shamba-Records-Limited/microvault/pkg/models"
-	users "github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
+
+	"github.com/Shamba-Records-Limited/microvault/pkg/loanref"
+	users "github.com/Shamba-Records-Limited/microvault/pkg/models"
 )
 
 // Loan represents a loan record
 // Amounts stored in smallest unit, rates in basis points
 type Loan struct {
-	ID              string  `json:"id" gorm:"type:uuid;primaryKey"`
-	LoanReference   *string `json:"loan_reference,omitempty" gorm:"column:loan_reference;type:varchar(50);uniqueIndex"`
-	UserID          string  `json:"user_id" gorm:"type:uuid;not null;index"`
-	AccountID       string  `json:"account_id" gorm:"type:uuid;not null;index"`
-	ProductID       *string `json:"product_id,omitempty" gorm:"type:uuid;index"`
-	PrincipalAmount int64   `json:"principal_amount" gorm:"type:bigint;not null"`
-	PrincipalAsset  string  `json:"principal_asset" gorm:"type:varchar(20);not null;index"`
+	ID            string  `json:"id" gorm:"type:uuid;primaryKey"`
+	LoanReference *string `json:"loan_reference,omitempty" gorm:"column:loan_reference;type:varchar(50);uniqueIndex"`
+	// LegacyLoanReference preserves the pre-migration LR-... reference so
+	// payments quoting it still resolve. Resolution tries loan_reference first,
+	// then this column. Retired once no loan predating the migration is open.
+	LegacyLoanReference *string `json:"legacy_loan_reference,omitempty" gorm:"column:legacy_loan_reference;type:varchar(50);index"`
+	UserID              string  `json:"user_id" gorm:"type:uuid;not null;index"`
+	AccountID           string  `json:"account_id" gorm:"type:uuid;not null;index"`
+	ProductID           *string `json:"product_id,omitempty" gorm:"type:uuid;index"`
+	PrincipalAmount     int64   `json:"principal_amount" gorm:"type:bigint;not null"`
+	PrincipalAsset      string  `json:"principal_asset" gorm:"type:varchar(20);not null;index"`
 	// VaultAPRBps is the annual rate that applied when the loan opened, read
 	// from the vault at borrow time. It is an audit record of the rate, not a
 	// fixed obligation: real accrual is derived from BorrowIndex, and the
@@ -48,16 +53,22 @@ type Loan struct {
 	SettlementMethod  *string    `json:"settlement_method,omitempty" gorm:"type:varchar(20)"`
 	RampSequenceID    *string    `json:"ramp_sequence_id,omitempty" gorm:"type:varchar(200);index"`
 	// DisbursementRate is the FX rate actually executed at disbursement, the
-	// counterpart to EntryRateBuffered at quote time. Stored as a rate, not
-	// basis points — the old disbursement_rate_bps held rate x 10^4.
-	DisbursementRate     *float64 `json:"disbursement_rate,omitempty" gorm:"column:disbursement_rate;type:numeric(20,8)"`
-	DeliveredAmountLocal *int64   `json:"delivered_amount_local,omitempty" gorm:"column:delivered_amount_local;type:bigint"`
-	ConversionSpreadBps  *int32   `json:"conversion_spread_bps,omitempty" gorm:"type:int"`
-	BorrowIndex          *int64   `json:"borrow_index,omitempty" gorm:"type:bigint"`
-	ServiceFeeUSD        *int64   `json:"service_fee_usd,omitempty" gorm:"type:bigint"`
-	ServiceFeeLocal      *int64   `json:"service_fee_local,omitempty" gorm:"type:bigint"`
-	PartnerFeeUSD        *int64   `json:"partner_fee_usd,omitempty" gorm:"type:bigint"`
-	PartnerFeeLocal      *int64   `json:"partner_fee_local,omitempty" gorm:"type:bigint"`
+	// counterpart to EntryRateBuffered at quote time.
+	//
+	// Stored as the rate scaled by [RateScaleE8]: 128.23 KES/USD is
+	// 12823000000. The name carries no scale suffix and the BIGINT column type
+	// does not imply one, so this comment and [RateScaleE8] are the only record
+	// of it — always cross the boundary through [RateE8] and [RateFromE8]
+	// rather than dividing by hand. An FX rate is not a percentage; do not
+	// reach for basis points here (see migration 000019).
+	DisbursementRate     *int64 `json:"disbursement_rate,omitempty" gorm:"column:disbursement_rate;type:bigint"`
+	DeliveredAmountLocal *int64 `json:"delivered_amount_local,omitempty" gorm:"column:delivered_amount_local;type:bigint"`
+	ConversionSpreadBps  *int32 `json:"conversion_spread_bps,omitempty" gorm:"type:int"`
+	BorrowIndex          *int64 `json:"borrow_index,omitempty" gorm:"type:bigint"`
+	ServiceFeeUSD        *int64 `json:"service_fee_usd,omitempty" gorm:"type:bigint"`
+	ServiceFeeLocal      *int64 `json:"service_fee_local,omitempty" gorm:"type:bigint"`
+	PartnerFeeUSD        *int64 `json:"partner_fee_usd,omitempty" gorm:"type:bigint"`
+	PartnerFeeLocal      *int64 `json:"partner_fee_local,omitempty" gorm:"type:bigint"`
 
 	// Disclosed fees: fixed at creation and never rewritten, unlike the
 	// ServiceFee/PartnerFee pair above, which the ramp reports after
@@ -98,12 +109,16 @@ type Loan struct {
 	// FX audit fields capture the rate the loan was quoted at, the source
 	// label, the entry buffer percentage applied, and the user's originally
 	// requested local amount — used by the poller's drift detection.
-	// EntryRateBuffered already has EntryBufferPct deducted; it is not the raw
-	// provider rate, and will not match a live quote from EntryRateSource.
-	EntryRateBuffered    *float64 `json:"entry_rate_buffered,omitempty" gorm:"column:entry_rate_buffered;type:numeric(20,8)"`
-	EntryRateSource      *string  `json:"entry_rate_source,omitempty" gorm:"type:varchar(40)"`
-	EntryBufferPct       *float64 `json:"entry_buffer_pct,omitempty" gorm:"type:numeric(6,4)"`
-	RequestedLocalAmount *int64   `json:"requested_local_amount,omitempty" gorm:"type:bigint"`
+	// EntryRateBuffered already has EntryBufferBps deducted; it is not the
+	// raw provider rate, and will not match a live quote from EntryRateSource.
+	// Scaled by [RateScaleE8], as DisbursementRate — same caveat about the
+	// scale living in the comment rather than the name or column type.
+	EntryRateBuffered *int64  `json:"entry_rate_buffered,omitempty" gorm:"column:entry_rate_buffered;type:bigint"`
+	EntryRateSource   *string `json:"entry_rate_source,omitempty" gorm:"type:varchar(40)"`
+	// EntryBufferBps is a true percentage and so is held in basis points:
+	// 1 % is 100. Unlike the rates above, bps is the correct unit here.
+	EntryBufferBps       *int32 `json:"entry_buffer_bps,omitempty" gorm:"column:entry_buffer_bps;type:int"`
+	RequestedLocalAmount *int64 `json:"requested_local_amount,omitempty" gorm:"type:bigint"`
 
 	// SEP-24 withdraw memo returned on MG's transaction object; used to match
 	// refund inbound USDC back to the loan.
@@ -132,14 +147,61 @@ type Loan struct {
 	RampRefundShortfall *int64     `json:"ramp_refund_shortfall,omitempty" gorm:"type:bigint"`
 	RampRefundedAt      *time.Time `json:"ramp_refunded_at,omitempty"`
 
+	// Borrower-initiated repayment, tracked apart from both loans.status and
+	// the VaultRepay* pair above — those mean "a disbursement was unwound",
+	// which is the opposite movement of money.
+	//
+	// RepaymentStatus and loans.status are allowed to disagree for a window:
+	// once cash lands on the treasury the borrower is told immediately, while
+	// the treasury-to-vault leg may still be retrying. Status is disbursed and
+	// RepaymentStatus is funds_received throughout that window.
+	//
+	// RepaymentPayoffStroops is quote-locked at initiation, so borrow-index
+	// movement afterwards does not change what the borrower owes.
+	// RepaymentMGTxID is MoneyGram's transaction ID and the idempotency key
+	// for the whole rail; it is uniquely indexed.
+	RepaymentStatus        string     `json:"repayment_status" gorm:"type:varchar(20);not null;default:'none'"`
+	RepaymentPayoffStroops *int64     `json:"repayment_payoff_stroops,omitempty" gorm:"type:bigint"`
+	RepaymentLockedAt      *time.Time `json:"repayment_locked_at,omitempty" gorm:"type:timestamptz"`
+	RepaymentExpiresAt     *time.Time `json:"repayment_expires_at,omitempty" gorm:"type:timestamptz"`
+	RepaymentMGTxID        *string    `json:"repayment_mg_tx_id,omitempty" gorm:"column:repayment_mg_tx_id;type:varchar(100);uniqueIndex"`
+	RepaymentNextPollAt    *time.Time `json:"repayment_next_poll_at,omitempty" gorm:"type:timestamptz;index"`
+	// RepaymentProvider discriminates the rails; without it the MoneyGram and
+	// M-Pesa pollers would drive each other's loans. Empty means MoneyGram-era
+	// rows predating the column.
+	RepaymentProvider string `json:"repayment_provider,omitempty" gorm:"column:repayment_provider;type:varchar(20);index"`
+	// The M-Pesa Express pair. Both are uniquely indexed by partial indexes in
+	// migration 000032, not by gorm tags — a full unique index would reject
+	// every NULL row.
+	RepaymentMpesaCheckoutID *string `json:"repayment_mpesa_checkout_id,omitempty" gorm:"column:repayment_mpesa_checkout_id;type:varchar(100)"`
+	RepaymentMpesaTransID    *string `json:"repayment_mpesa_trans_id,omitempty" gorm:"column:repayment_mpesa_trans_id;type:varchar(20)"`
+	RepaymentSTKAttempts     int     `json:"repayment_stk_attempts" gorm:"column:repayment_stk_attempts;not null;default:0"`
+	// RepaymentReminderSentAt is written before the pre-expiry SMS, so a
+	// failing send is not retried on every poll tick. It records a
+	// notification rather than a movement of money, so nothing else on the
+	// row can stand in for it.
+	RepaymentReminderSentAt *time.Time `json:"repayment_reminder_sent_at,omitempty" gorm:"type:timestamptz"`
+	// RepaymentReferenceSentAt marks the SMS carrying MoneyGram's deposit
+	// reference. Written before the send so a failing provider is not retried
+	// every poll tick.
+	RepaymentReferenceSentAt *time.Time `json:"repayment_reference_sent_at,omitempty" gorm:"type:timestamptz"`
+	// RepaymentVaultTxHash is the treasury-to-vault repay_for transaction.
+	// Distinct from VaultRepayTxHash, which means the disbursement was
+	// unwound; a borrower settling their debt must not overwrite that.
+	RepaymentVaultTxHash *string `json:"repayment_vault_tx_hash,omitempty" gorm:"type:varchar(64)"`
+	// RepaymentVaultAttempts counts failed treasury-to-vault repay_for calls.
+	// Durable rather than in-memory: a restart must not reset it, or the
+	// escalation ceiling would never be reached. Doubles as the escalation
+	// marker, since crossing the ceiling happens exactly once.
+	RepaymentVaultAttempts int `json:"repayment_vault_attempts" gorm:"not null;default:0"`
+
 	CreatedAt time.Time      `json:"created_at" gorm:"autoCreateTime;not null"`
 	UpdatedAt time.Time      `json:"updated_at" gorm:"autoUpdateTime;not null"`
 	DeletedAt gorm.DeletedAt `json:"deleted_at" gorm:"index"`
 
-	User       *users.User    `gorm:"foreignKey:UserID"`
-	Account    *users.Account `gorm:"foreignKey:AccountID"`
-	Product    *LoanProduct   `gorm:"foreignKey:ProductID"`
-	Repayments []Repayment    `gorm:"foreignKey:LoanID"`
+	User    *users.User    `gorm:"foreignKey:UserID"`
+	Account *users.Account `gorm:"foreignKey:AccountID"`
+	Product *LoanProduct   `gorm:"foreignKey:ProductID"`
 }
 
 // TableName specifies the table name for Loan model
@@ -155,13 +217,19 @@ func (loan *Loan) BeforeCreate(tx *gorm.DB) error {
 	}
 	loan.ID = id.String()
 
-	// Generate a human-readable loan reference from the UUIDv7 timestamp +
-	// random suffix.
-	// Format: LR-unix_ms_hex-4_random_hex e.g. "LR-018F3A2B1C-A7F2"
+	// Generate a short loan reference when the caller has not set one. The
+	// service path sets it explicitly with the configured prefix; this is the
+	// fallback for every other creation path.
+	// Format: 2-char prefix + 6 random Crockford base32 + 1 check char,
+	// e.g. "MV7K3QA9F". The previous format ("LR-unix_ms_hex-4_random_hex")
+	// embedded a millisecond timestamp, which made references enumerable — and
+	// the reference is now the only binding between a paybill payment and a
+	// loan. Existing references are preserved in loans.legacy_loan_reference.
 	if loan.LoanReference == nil {
-		ts := time.Now().UnixMilli()
-		short := id.String()[24:28] // 4 hex chars from the random portion
-		ref := fmt.Sprintf("LR-%X-%s", ts, short)
+		ref, err := loanref.Generate(loanref.DefaultPrefix)
+		if err != nil {
+			return err
+		}
 		loan.LoanReference = &ref
 	}
 	return nil
@@ -208,44 +276,6 @@ func (lp *LoanProduct) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-// Repayment represents a loan repayment schedule item
-type Repayment struct {
-	ID                string         `json:"id" gorm:"type:uuid;primaryKey"`
-	LoanID            string         `json:"loan_id" gorm:"type:uuid;not null;index"`
-	UserID            string         `json:"user_id" gorm:"type:uuid;not null;index"`
-	InstallmentNumber int            `json:"installment_number" gorm:"type:int;not null"`
-	DueDate           time.Time      `json:"due_date" gorm:"type:timestamp;not null;index"`
-	AmountDue         int64          `json:"amount_due" gorm:"type:bigint;not null"`
-	AmountPaid        int64          `json:"amount_paid" gorm:"type:bigint;not null;default:0"`
-	PaidAt            *time.Time     `json:"paid_at,omitempty" gorm:"type:timestamp"`
-	PaymentMethod     *string        `json:"payment_method,omitempty" gorm:"type:varchar(50)"`
-	Status            string         `json:"status" gorm:"type:varchar(20);not null;default:'pending';index"`
-	LateFee           int64          `json:"late_fee" gorm:"type:bigint;not null;default:0"`
-	TransactionID     *string        `json:"transaction_id,omitempty" gorm:"type:uuid;index"`
-	CreatedAt         time.Time      `json:"created_at" gorm:"autoCreateTime;not null"`
-	UpdatedAt         time.Time      `json:"updated_at" gorm:"autoUpdateTime;not null"`
-	DeletedAt         gorm.DeletedAt `json:"deleted_at" gorm:"index"`
-
-	Loan        Loan                      `gorm:"foreignKey:LoanID"`
-	User        *users.User               `gorm:"foreignKey:UserID"`
-	Transaction *transactions.Transaction `gorm:"foreignKey:TransactionID"`
-}
-
-// TableName specifies the table name for Repayment model
-func (Repayment) TableName() string {
-	return "repayments"
-}
-
-// BeforeCreate sets the ID before creating a new repayment
-func (r *Repayment) BeforeCreate(tx *gorm.DB) error {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return err
-	}
-	r.ID = id.String()
-	return nil
-}
-
 const (
 	// Interest type constants
 	InterestTypeSimple   = "simple"
@@ -265,13 +295,6 @@ const (
 	// did not default. Distinct from LoanStatusDefaulted, which is a
 	// borrower-side credit event.
 	LoanStatusOffRampFailed = "offramp_failed"
-
-	// Repayment Status
-	RepaymentStatusPending = "pending"
-	RepaymentStatusPaid    = "paid"
-	RepaymentStatusOverdue = "overdue"
-	RepaymentStatusPartial = "partial"
-	RepaymentStatusWaived  = "waived"
 
 	// Disbursement status vocabulary. No longer a column: these are derived
 	// from loans.status, ramp_refund_declared_at and ramp_pickup_ready_at, and
@@ -298,18 +321,52 @@ const (
 	// completed direct where USDC went to YC and no repay is owed).
 	VaultRepayStatusSuccess = "success"
 	VaultRepayStatusFailed  = "failed"
+
+	// Loan Repayment Status — the borrower paying their loan off, stored on
+	// loans.repayment_status. The LoanRepayment prefix is deliberate: it keeps
+	// these apart from VaultRepayStatus* above, which records a disbursement
+	// being unwound rather than a borrower settling a debt.
+	//
+	// The two live states are initiated (deposit open, borrower has not paid
+	// the agent yet) and funds_received (USDC on the treasury, vault leg not
+	// yet confirmed). Everything else is terminal.
+	LoanRepaymentStatusNone = "none"
+	// LoanRepaymentStatusInitiated means a deposit is open and the payoff
+	// quote is locked until repayment_expires_at.
+	LoanRepaymentStatusInitiated = "initiated"
+	// LoanRepaymentStatusFundsReceived means the cash reached the treasury as
+	// USDC. The borrower is told at this point, before the vault leg settles.
+	LoanRepaymentStatusFundsReceived = "funds_received"
+	// LoanRepaymentStatusSettled means the treasury-to-vault leg confirmed.
+	// This is the only state that flips loans.status to repaid.
+	LoanRepaymentStatusSettled = "settled"
+	// LoanRepaymentStatusExpired means the cash-in window elapsed without the
+	// borrower paying. The quote lock is released and the loan returns to its
+	// prior status; the borrower owes what they owed before.
+	LoanRepaymentStatusExpired = "expired"
+	// LoanRepaymentStatusFailed means the rail failed before funds moved. It
+	// is not used for a failed vault leg — funds already on the treasury stay
+	// at funds_received so reconciliation keeps retrying.
+	LoanRepaymentStatusFailed = "failed"
+
+	// Loan Repayment Provider — which rail owns the in-flight repayment.
+	LoanRepaymentProviderMoneyGram = "moneygram"
+	LoanRepaymentProviderMpesa     = "mpesa"
 )
 
+// IsRepaymentOpen reports whether a borrower repayment is in flight and owned
+// by the poller or the reconciliation loop. It matches the predicate of the
+// idx_loans_repayment_open index; keep the two in step.
+func (l *Loan) IsRepaymentOpen() bool {
+	switch l.RepaymentStatus {
+	case LoanRepaymentStatusInitiated, LoanRepaymentStatusFundsReceived:
+		return true
+	default:
+		return false
+	}
+}
+
 // DeriveDisbursementStatus reports where a loan's payout stands.
-//
-// This replaced a stored column. Every terminal value restates the loan's own
-// status, so keeping a second copy only created a way for the two to disagree —
-// which they did: MoneyGram wrote "completed" while the reader compared against
-// YellowCard's "complete", and no cash-pickup loan ever left disbursing.
-//
-// The two non-derivable states have their own markers. A declared-but-
-// unverified refund has no transaction row by design, and pickup-ready records
-// an SMS rather than a movement of money.
 func (l *Loan) DeriveDisbursementStatus() string {
 	switch {
 	case l.Status == LoanStatusCancelled:
@@ -339,4 +396,45 @@ func (l *Loan) IsDisbursementTerminal() bool {
 	default:
 		return false
 	}
+}
+
+// RateScaleE8 is the fixed-point scale applied to stored FX rates.
+const RateScaleE8 = 100_000_000
+
+// RateE8 converts an FX rate to its stored form, rounding to the nearest unit
+// of the 10^8 scale. Returns nil for a non-positive rate so an unknown rate
+// stays NULL rather than being recorded as zero.
+func RateE8(rate float64) *int64 {
+	if rate <= 0 {
+		return nil
+	}
+	v := int64(math.Round(rate * RateScaleE8))
+	return &v
+}
+
+// RateFromE8 converts a stored rate back to its decimal form. Returns 0 when
+// the rate was never recorded.
+func RateFromE8(e8 *int64) float64 {
+	if e8 == nil {
+		return 0
+	}
+	return float64(*e8) / RateScaleE8
+}
+
+// BufferBps converts a buffer fraction (0.01 = 1 %) to basis points. Returns
+// nil for a non-positive fraction, leaving an unrecorded buffer NULL.
+func BufferBps(fraction float64) *int32 {
+	if fraction <= 0 {
+		return nil
+	}
+	v := int32(math.Round(fraction * 10_000))
+	return &v
+}
+
+// BufferFraction converts stored basis points back to a fraction.
+func BufferFraction(bps *int32) float64 {
+	if bps == nil {
+		return 0
+	}
+	return float64(*bps) / 10_000
 }

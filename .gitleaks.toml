@@ -5,9 +5,11 @@ useDefault = true
 [allowlist]
 # Exclude test files with mock/test keys
 paths = [
-    '''pkg/services/stellar/testing/mock_rpc_client\.go''',
-    '''pkg/services/stellar/testing/fixtures\.go''',
+  '''pkg/services/stellar/testing/mock_rpc_client\.go''',
+  '''pkg/services/stellar/testing/fixtures\.go''',
+  '''.*_test\.go''',
 ]
+
 
 # Or exclude specific test key patterns
 regexes = [

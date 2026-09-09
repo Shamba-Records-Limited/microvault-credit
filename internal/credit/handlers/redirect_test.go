@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -37,7 +38,7 @@ func TestRedirect_ValidCodeRedirects(t *testing.T) {
 		DisbursementStatus: &pending,
 	}})
 
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/abc123", nil))
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/abc123", http.NoBody))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +53,7 @@ func TestRedirect_ValidCodeRedirects(t *testing.T) {
 func TestRedirect_UnknownCode404(t *testing.T) {
 	app := newTestApp(stubResolver{err: loan.ErrLoanNotFound})
 
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/missing", nil))
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/missing", http.NoBody))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +69,7 @@ func TestRedirect_SettledLoan410(t *testing.T) {
 		DisbursementStatus: &done,
 	}})
 
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/spent", nil))
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/spent", http.NoBody))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +91,7 @@ func TestRedirect_MoreInfoLinkSurvivesSettlement(t *testing.T) {
 		DisbursementStatus:    &settled,
 	}})
 
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/support1", nil))
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/support1", http.NoBody))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +115,7 @@ func TestRedirect_InteractiveLinkDiesOnSettlement(t *testing.T) {
 		DisbursementStatus:    &settled,
 	}})
 
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/interact", nil))
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/interact", http.NoBody))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +131,7 @@ func TestRedirect_MoreInfoCodeWithoutURL(t *testing.T) {
 		RampMoreInfoShortCode: strptr("support1"),
 	}})
 
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/support1", nil))
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/support1", http.NoBody))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +151,7 @@ func TestRedirect_ExpiredCode410(t *testing.T) {
 		RampShortCodeExpiresAt: &expired,
 	}})
 
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/abc123", nil))
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/abc123", http.NoBody))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +175,7 @@ func TestRedirect_UnexpiredAndLegacyCodesStillResolve(t *testing.T) {
 				RampShortCodeExpiresAt: expiresAt,
 			}})
 
-			resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/abc123", nil))
+			resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/abc123", http.NoBody))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -197,7 +198,7 @@ func TestRedirect_MoreInfoLinkIgnoresInteractiveExpiry(t *testing.T) {
 		RampShortCodeExpiresAt: &expired,
 	}})
 
-	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/info99", nil))
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/r/info99", http.NoBody))
 	if err != nil {
 		t.Fatal(err)
 	}

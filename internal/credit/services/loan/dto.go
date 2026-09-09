@@ -31,7 +31,7 @@ type UpdateLoanRequest struct {
 	RampRefundDeclaredAt *time.Time `json:"ramp_refund_declared_at,omitempty"`
 	RampPickupReadyAt    *time.Time `json:"ramp_pickup_ready_at,omitempty"`
 	RampSequenceID       *string    `json:"ramp_sequence_id,omitempty"`
-	DisbursementRate     *float64   `json:"disbursement_rate,omitempty"`
+	DisbursementRate     *int64     `json:"disbursement_rate,omitempty"`
 	DeliveredAmountLocal *int64     `json:"delivered_amount_local,omitempty"`
 	ConversionSpreadBps  *int32     `json:"conversion_spread_bps,omitempty"`
 	BorrowIndex          *int64     `json:"borrow_index,omitempty"`
@@ -53,9 +53,9 @@ type UpdateLoanRequest struct {
 	RampMoreInfoURL        *string    `json:"ramp_more_info_url,omitempty"`
 	RampChildAccountIndex  *int64     `json:"ramp_child_account_index,omitempty"`
 	RampStellarTxHash      *string    `json:"ramp_stellar_tx_hash,omitempty"`
-	EntryRateBuffered      *float64   `json:"entry_rate_buffered,omitempty"`
+	EntryRateBuffered      *int64     `json:"entry_rate_buffered,omitempty"`
 	EntryRateSource        *string    `json:"entry_rate_source,omitempty"`
-	EntryBufferPct         *float64   `json:"entry_buffer_pct,omitempty"`
+	EntryBufferBps         *int32     `json:"entry_buffer_bps,omitempty"`
 	RequestedLocalAmount   *int64     `json:"requested_local_amount,omitempty"`
 	RampWithdrawMemo       *string    `json:"ramp_withdraw_memo,omitempty"`
 	RampWithdrawMemoType   *string    `json:"ramp_withdraw_memo_type,omitempty"`
@@ -64,6 +64,25 @@ type UpdateLoanRequest struct {
 	RampRefundAmount    *int64     `json:"ramp_refund_amount,omitempty"`
 	RampRefundShortfall *int64     `json:"ramp_refund_shortfall,omitempty"`
 	RampRefundedAt      *time.Time `json:"ramp_refunded_at,omitempty"`
+
+	// Borrower repayment. Separate from the VaultRepay* pair, which records a
+	// disbursement being unwound. See models.LoanRepaymentStatus*.
+	RepaymentStatus          *string    `json:"repayment_status,omitempty"`
+	RepaymentPayoffStroops   *int64     `json:"repayment_payoff_stroops,omitempty"`
+	RepaymentLockedAt        *time.Time `json:"repayment_locked_at,omitempty"`
+	RepaymentExpiresAt       *time.Time `json:"repayment_expires_at,omitempty"`
+	RepaymentMGTxID          *string    `json:"repayment_mg_tx_id,omitempty"`
+	RepaymentNextPollAt      *time.Time `json:"repayment_next_poll_at,omitempty"`
+	RepaymentReminderSentAt  *time.Time `json:"repayment_reminder_sent_at,omitempty"`
+	RepaymentVaultTxHash     *string    `json:"repayment_vault_tx_hash,omitempty"`
+	RepaymentVaultAttempts   *int       `json:"repayment_vault_attempts,omitempty"`
+	RepaymentReferenceSentAt *time.Time `json:"repayment_reference_sent_at,omitempty"`
+
+	// M-Pesa STK fields.
+	RepaymentProvider        *string `json:"repayment_provider,omitempty"`
+	RepaymentMpesaCheckoutID *string `json:"repayment_mpesa_checkout_id,omitempty"`
+	RepaymentMpesaTransID    *string `json:"repayment_mpesa_trans_id,omitempty"`
+	RepaymentSTKAttempts     *int    `json:"repayment_stk_attempts,omitempty"`
 }
 
 // ApproveLoanRequest represents the request to approve a loan
@@ -115,7 +134,7 @@ type LoanResponse struct {
 	SettlementMethod     *string    `json:"settlement_method,omitempty"`
 	DisbursementStatus   *string    `json:"disbursement_status,omitempty"`
 	RampSequenceID       *string    `json:"ramp_sequence_id,omitempty"`
-	DisbursementRate     *float64   `json:"disbursement_rate,omitempty"`
+	DisbursementRate     *int64     `json:"disbursement_rate,omitempty"`
 	DeliveredAmountLocal *int64     `json:"delivered_amount_local,omitempty"`
 	ConversionSpreadBps  *int32     `json:"conversion_spread_bps,omitempty"`
 	BorrowIndex          *int64     `json:"borrow_index,omitempty"`
@@ -136,9 +155,9 @@ type LoanResponse struct {
 	RampMoreInfoURL        *string    `json:"ramp_more_info_url,omitempty"`
 	RampChildAccountIndex  *int64     `json:"ramp_child_account_index,omitempty"`
 	RampStellarTxHash      *string    `json:"ramp_stellar_tx_hash,omitempty"`
-	EntryRateBuffered      *float64   `json:"entry_rate_buffered,omitempty"`
+	EntryRateBuffered      *int64     `json:"entry_rate_buffered,omitempty"`
 	EntryRateSource        *string    `json:"entry_rate_source,omitempty"`
-	EntryBufferPct         *float64   `json:"entry_buffer_pct,omitempty"`
+	EntryBufferBps         *int32     `json:"entry_buffer_bps,omitempty"`
 	RequestedLocalAmount   *int64     `json:"requested_local_amount,omitempty"`
 	RampWithdrawMemo       *string    `json:"ramp_withdraw_memo,omitempty"`
 	RampWithdrawMemoType   *string    `json:"ramp_withdraw_memo_type,omitempty"`
@@ -147,6 +166,21 @@ type LoanResponse struct {
 	RampRefundAmount    *int64     `json:"ramp_refund_amount,omitempty"`
 	RampRefundShortfall *int64     `json:"ramp_refund_shortfall,omitempty"`
 	RampRefundedAt      *time.Time `json:"ramp_refunded_at,omitempty"`
+
+	RepaymentStatus          string     `json:"repayment_status"`
+	RepaymentPayoffStroops   *int64     `json:"repayment_payoff_stroops,omitempty"`
+	RepaymentLockedAt        *time.Time `json:"repayment_locked_at,omitempty"`
+	RepaymentExpiresAt       *time.Time `json:"repayment_expires_at,omitempty"`
+	RepaymentMGTxID          *string    `json:"repayment_mg_tx_id,omitempty"`
+	RepaymentNextPollAt      *time.Time `json:"repayment_next_poll_at,omitempty"`
+	RepaymentReminderSentAt  *time.Time `json:"repayment_reminder_sent_at,omitempty"`
+	RepaymentVaultTxHash     *string    `json:"repayment_vault_tx_hash,omitempty"`
+	RepaymentVaultAttempts   int        `json:"repayment_vault_attempts"`
+	RepaymentReferenceSentAt *time.Time `json:"repayment_reference_sent_at,omitempty"`
+	RepaymentProvider        string     `json:"repayment_provider"`
+	RepaymentMpesaCheckoutID *string    `json:"repayment_mpesa_checkout_id,omitempty"`
+	RepaymentMpesaTransID    *string    `json:"repayment_mpesa_trans_id,omitempty"`
+	RepaymentSTKAttempts     int        `json:"repayment_stk_attempts"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -274,8 +308,8 @@ func (r UpdateLoanRequest) changedFields() map[string]any {
 	if r.EntryRateSource != nil {
 		f["entry_rate_source"] = r.EntryRateSource
 	}
-	if r.EntryBufferPct != nil {
-		f["entry_buffer_pct"] = r.EntryBufferPct
+	if r.EntryBufferBps != nil {
+		f["entry_buffer_bps"] = r.EntryBufferBps
 	}
 	if r.RequestedLocalAmount != nil {
 		f["requested_local_amount"] = r.RequestedLocalAmount
@@ -297,6 +331,48 @@ func (r UpdateLoanRequest) changedFields() map[string]any {
 	}
 	if r.RampRefundedAt != nil {
 		f["ramp_refunded_at"] = r.RampRefundedAt
+	}
+	if r.RepaymentStatus != nil {
+		f["repayment_status"] = r.RepaymentStatus
+	}
+	if r.RepaymentPayoffStroops != nil {
+		f["repayment_payoff_stroops"] = r.RepaymentPayoffStroops
+	}
+	if r.RepaymentLockedAt != nil {
+		f["repayment_locked_at"] = r.RepaymentLockedAt
+	}
+	if r.RepaymentExpiresAt != nil {
+		f["repayment_expires_at"] = r.RepaymentExpiresAt
+	}
+	if r.RepaymentMGTxID != nil {
+		f["repayment_mg_tx_id"] = r.RepaymentMGTxID
+	}
+	if r.RepaymentNextPollAt != nil {
+		f["repayment_next_poll_at"] = r.RepaymentNextPollAt
+	}
+	if r.RepaymentReminderSentAt != nil {
+		f["repayment_reminder_sent_at"] = r.RepaymentReminderSentAt
+	}
+	if r.RepaymentVaultAttempts != nil {
+		f["repayment_vault_attempts"] = r.RepaymentVaultAttempts
+	}
+	if r.RepaymentReferenceSentAt != nil {
+		f["repayment_reference_sent_at"] = r.RepaymentReferenceSentAt
+	}
+	if r.RepaymentProvider != nil {
+		f["repayment_provider"] = r.RepaymentProvider
+	}
+	if r.RepaymentMpesaCheckoutID != nil {
+		f["repayment_mpesa_checkout_id"] = r.RepaymentMpesaCheckoutID
+	}
+	if r.RepaymentMpesaTransID != nil {
+		f["repayment_mpesa_trans_id"] = r.RepaymentMpesaTransID
+	}
+	if r.RepaymentSTKAttempts != nil {
+		f["repayment_stk_attempts"] = r.RepaymentSTKAttempts
+	}
+	if r.RepaymentVaultTxHash != nil {
+		f["repayment_vault_tx_hash"] = r.RepaymentVaultTxHash
 	}
 	return f
 }
