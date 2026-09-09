@@ -37,8 +37,12 @@ import (
 // inherited from the integration plan; override via FXConfig if needed.
 const DefaultFXBufferPct = 0.02
 
-// Compile-time check.
-var _ ussd.LoanService = (*LoanServiceAdapter)(nil)
+// Compile-time checks.
+var (
+	_ ussd.LoanService    = (*LoanServiceAdapter)(nil)
+	_ cashin.Collector    = (*LoanServiceAdapter)(nil)
+	_ cashin.StatusReader = (*LoanServiceAdapter)(nil)
+)
 
 // LoanServiceAdapter implements [ussd.LoanService] by orchestrating credit's
 // loan service, Stellar vault, YellowCard off-ramp, and SMS notifications.
@@ -92,6 +96,14 @@ const defaultRepaymentWindow = 96 * time.Hour
 // repaymentStatusInitiated mirrors models.LoanRepaymentStatusInitiated. Named
 // here so this file does not import the model package for one constant.
 const repaymentStatusInitiated = "initiated"
+
+// repaymentStatusFundsReceived and repaymentStatusSettled mirror
+// models.LoanRepaymentStatusFundsReceived and models.LoanRepaymentStatusSettled,
+// for the same reason as repaymentStatusInitiated above.
+const (
+	repaymentStatusFundsReceived = "funds_received"
+	repaymentStatusSettled       = "settled"
+)
 
 // sendRepaymentLink delivers the interactive URL by SMS. Best effort: the
 // deposit and quote lock stand whether or not the SMS lands.
@@ -174,26 +186,31 @@ func (a *LoanServiceAdapter) notifyAsync(label, loanID string, send func(ctx con
 	}()
 }
 
-// InitiateRepayment freezes the payoff in USDC and opens a MoneyGram cash
-// deposit under the borrower's own SEP-10 memo.
+// InitiateRepayment opens a MoneyGram cash deposit for the loan via the
+// cashin registry — the ussd.LoanService entry point kept call-site
+// compatible while routing MoneyGram through the same resolve-then-call
+// shape PromptRepayment already uses for M-Pesa. The guard checks and the
+// async deposit-opening live in Collect, the registry-facing implementation.
 func (a *LoanServiceAdapter) InitiateRepayment(ctx context.Context, loanID, phoneNumber string) error {
-	errb := oops.In(pkgErrors.DomainRepaymentCashIn).Tags("moneygram", "sep24").With(pkgErrors.AttrLoanID, loanID)
-
-	// Synchronous, because a USSD screen that promises an SMS must not be shown
-	// when the request could never have produced one. Both checks are local.
-	if a.repayAnchor == nil || a.repayTreasuryPubkey == "" || a.repayAuthPubkey == "" {
-		return errb.Code(pkgErrors.CodeAnchorNotWired).Errorf("repayment anchor is not configured")
+	if a.cashIn == nil {
+		return lendingErr("initiate_repayment").With(pkgErrors.AttrLoanID, loanID).
+			Code(pkgErrors.CodeAnchorNotWired).Errorf("no cash-in provider is configured")
 	}
-	if loanID == "" || phoneNumber == "" {
-		return errb.Code(pkgErrors.CodeMissingAccount).Errorf("loan id and phone number are both required")
+	req := cashin.Request{
+		LoanID:           loanID,
+		Payer:            phoneNumber,
+		CollectionMethod: cashin.CollectionMethodCash,
 	}
-
-	// Everything past here talks to MoneyGram and took over fifteen seconds
-	// against the sandbox — past the point Africa's Talking abandons the
-	// session. It runs on its own context so it outlives the USSD turn.
-	go a.runRepaymentInitiation(loanID, phoneNumber)
-
-	return nil
+	provider, err := a.cashIn.Resolve(req)
+	if err != nil {
+		return lendingErr("initiate_repayment").With(pkgErrors.AttrLoanID, loanID).
+			Wrapf(err, "could not resolve a cash provider")
+	}
+	// No type assertion needed: cashin.Provider is a type alias for
+	// cashin.Collector (unlike Prompter/StatusReader/etc., which are genuinely
+	// optional capabilities), so Resolve's return value already satisfies it.
+	_, err = provider.Collect(ctx, req)
+	return err
 }
 
 // routeMobileMoney returns a payout-method alias to pin, or "" to leave
@@ -1461,6 +1478,88 @@ func (a *LoanServiceAdapter) PromptRepayment(ctx context.Context, loanID, phoneN
 			Wrapf(err, "the prompt was refused")
 	}
 	return nil
+}
+
+// ID names the provider. LoanServiceAdapter is MoneyGram's cashin.Collector:
+// it already owns the anchor, treasury and loan-service dependencies Collect
+// needs, so implementing the interface directly is simpler than a separate
+// adapter type duplicating those fields.
+func (a *LoanServiceAdapter) ID() cashin.ProviderID { return cashin.ProviderMoneyGram }
+
+// Collect opens a MoneyGram cash deposit for the loan — freezing the payoff
+// in USDC and opening a cash deposit under the borrower's own SEP-10 memo.
+// Returns once the request is accepted, not once the deposit exists: the
+// SEP-24 handshake runs in the background and reports outcome by SMS. See
+// runRepaymentInitiation. InitiateRepayment is the ussd.LoanService entry
+// point onto this method, resolved through the cashin registry.
+func (a *LoanServiceAdapter) Collect(ctx context.Context, req cashin.Request) (*cashin.Result, error) {
+	errb := oops.In(pkgErrors.DomainRepaymentCashIn).Tags("moneygram", "sep24").With(pkgErrors.AttrLoanID, req.LoanID)
+
+	// Synchronous, because a USSD screen that promises an SMS must not be shown
+	// when the request could never have produced one. All four checks are local.
+	if req.LoanID == "" || req.Payer == "" {
+		return nil, errb.Code(pkgErrors.CodeMissingAccount).Errorf("loan id and payer phone number are both required")
+	}
+	if a.repayAnchor == nil || a.repayTreasuryPubkey == "" || a.repayAuthPubkey == "" {
+		return nil, errb.Code(pkgErrors.CodeAnchorNotWired).Errorf("repayment anchor is not configured")
+	}
+
+	loanRow, err := a.loanSvc.GetByID(ctx, req.LoanID)
+	if err != nil {
+		return nil, errb.Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not load loan")
+	}
+
+	// Everything past here talks to MoneyGram and took over fifteen seconds
+	// against the sandbox — past the point Africa's Talking abandons the
+	// session. It runs on its own context so it outlives the USSD turn.
+	go a.runRepaymentInitiation(req.LoanID, req.Payer)
+
+	reference := req.LoanID
+	if loanRow.LoanReference != nil && *loanRow.LoanReference != "" {
+		reference = *loanRow.LoanReference
+	}
+	return &cashin.Result{
+		LoanID:    req.LoanID,
+		Reference: reference,
+		Amount:    req.AmountMinor,
+		At:        time.Now(),
+		Provider:  moneygram.RepaymentPayload{},
+	}, nil
+}
+
+// Status resolves a MoneyGram collection from the loan row. ref.ID is the
+// loan ID — MoneyGram's deposit isn't independently addressable, only
+// reachable through the loan it was opened against.
+func (a *LoanServiceAdapter) Status(ctx context.Context, ref cashin.ProviderRef) (*cashin.Status, error) {
+	loanRow, err := a.loanSvc.GetByID(ctx, ref.ID)
+	if err != nil {
+		return nil, lendingErr("moneygram_status").With(pkgErrors.AttrLoanID, ref.ID).
+			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not load loan")
+	}
+
+	reference := ref.ID
+	if loanRow.LoanReference != nil && *loanRow.LoanReference != "" {
+		reference = *loanRow.LoanReference
+	}
+	var amount int64
+	if loanRow.RepaymentPayoffStroops != nil {
+		amount = *loanRow.RepaymentPayoffStroops
+	}
+	var mgTxID string
+	if loanRow.RepaymentMGTxID != nil {
+		mgTxID = *loanRow.RepaymentMGTxID
+	}
+
+	return &cashin.Status{
+		Reference: reference,
+		// funds_received is the collection succeeding — cash reached the
+		// treasury. settled is the on-chain leg completing afterward; either
+		// implies the collection itself did not fail.
+		Succeeded: loanRow.RepaymentStatus == repaymentStatusFundsReceived || loanRow.RepaymentStatus == repaymentStatusSettled,
+		Amount:    amount,
+		At:        time.Now(),
+		Provider:  moneygram.RepaymentPayload{MGTxID: mgTxID},
+	}, nil
 }
 
 // fetchFXForQuote sources a current FX rate using the orchestrator cascade

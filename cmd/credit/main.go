@@ -524,6 +524,16 @@ func main() {
 	}
 	logger.Info("loan entry-rate buffer configured", "buffer_pct", loanAdapter.FXBufferPct())
 
+	// MoneyGram is a cashin.Collector too — loanAdapter already owns the
+	// anchor/treasury dependencies InitiateRepayment needs, so it registers
+	// itself rather than a separate adapter duplicating them.
+	if err := cashInRegistry.Register(loanAdapter); err != nil {
+		log.Fatalf("Failed to register MoneyGram cash-in: %v", err)
+	}
+	if err := cashInRegistry.Alias(cashin.CollectionMethodCash, cashin.ProviderMoneyGram); err != nil {
+		log.Fatalf("Failed to alias cash → moneygram: %v", err)
+	}
+
 	// ---- 12. DisbursementStatusAdapter (webhook callbacks) ----
 	disbursementAdapter := adapters.NewDisbursementStatusAdapter(adapters.DisbursementAdapterDeps{
 		Repo:          repos.Loan,
