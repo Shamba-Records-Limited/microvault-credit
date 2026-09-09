@@ -224,6 +224,9 @@ func main() {
 	if err := cfg.Payments.MoneyGram.Validate(); err != nil {
 		log.Fatalf("MoneyGram config invalid: %v", err)
 	}
+	if err := cfg.Payments.Mpesa.Validate(cfg.Server.ServerEnvironment); err != nil {
+		log.Fatalf("M-Pesa config invalid: %v", err)
+	}
 	tomlCtx, tomlCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	mgTOML, err := stellaranchor.FetchTOML(tomlCtx, nil, cfg.Payments.MoneyGram.HomeDomain)
 	tomlCancel()
@@ -702,10 +705,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("M-Pesa client construction failed: %v", err)
 	}
-	stkRunner := mpesapoller.NewSTKRunner(coreRepos.Mpesa, mpesaClient, cfg.Payments.Mpesa, logger)
-	go stkRunner.Start(pollerCtx)
-	log.Println("M-Pesa STK poller started")
-
 	// Cash-in registry: paybill collections and STK prompts resolve to M-Pesa.
 	// In-flight prompts are driven by the loan poller below.
 	mpesaCollection, err := adapters.NewMpesaCollectionAdapter(adapters.MpesaCollectionAdapterDeps{
@@ -713,6 +712,11 @@ func main() {
 		Repo:    repos.Loan,
 		LoanSvc: loanSvc,
 		Config:  cfg.Payments.Mpesa,
+
+		UserSvc:          userSvc,
+		ValidationRepo:   coreRepos.MpesaValidation,
+		ValidationPolicy: cfg.Payments.Mpesa.NumberValidationPolicy,
+		Logger:           logger,
 	})
 	if err != nil {
 		log.Fatalf("M-Pesa collection adapter construction failed: %v", err)
@@ -742,8 +746,42 @@ func main() {
 	go mpesaLoanRunner.Start(pollerCtx)
 	log.Println("M-Pesa STK loan poller started")
 
+	// Pull reconciliation sweep and Account Balance poll — both wall-clock
+	// tickers, not Runner[T] drivers, since neither is a queue of due rows;
+	// see pkg/services/mpesapoller/doc.go. Both run from this process because
+	// the Daraja client they need is constructed here, not in core, even
+	// though the package they're defined in is core's.
+	pullSweeper := mpesapoller.NewPullSweeper(mpesapoller.PullSweeperDeps{
+		Client:    mpesaClient,
+		Repo:      coreRepos.Mpesa,
+		Cursor:    coreRepos.MpesaPullCursor,
+		Shortcode: cfg.Payments.Mpesa.CollectionShortcode,
+		Interval:  cfg.Payments.Mpesa.PullSweepInterval,
+		Logger:    logger,
+	})
+	go pullSweeper.Start(pollerCtx)
+	log.Println("M-Pesa pull sweeper started")
+
+	balancePoller := mpesapoller.NewBalancePoller(mpesapoller.BalancePollerDeps{
+		Client:                mpesaClient,
+		Queries:               coreRepos.MpesaBalance,
+		CollectionShortcode:   cfg.Payments.Mpesa.CollectionShortcode,
+		DisbursementShortcode: cfg.Payments.Mpesa.DisbursementShortcode,
+		Interval:              cfg.Payments.Mpesa.BalancePollInterval,
+		Logger:                logger,
+	})
+	go balancePoller.Start(pollerCtx)
+	log.Println("M-Pesa balance poller started")
+
 	// ---- 16. Fiber app + middleware + routes ----
-	app := fiber.New()
+	// The proxy header is read only from a trusted hop: without the
+	// trusted-proxy check, any client reaching the port could set
+	// X-Forwarded-For and choose the address the Daraja allowlist sees.
+	app := fiber.New(fiber.Config{
+		ProxyHeader:             fiber.HeaderXForwardedFor,
+		EnableTrustedProxyCheck: true,
+		TrustedProxies:          cfg.Server.TrustedProxyCIDRs,
+	})
 
 	healthCheck := health.NewCheckerWithoutStellar("credit", "credit")
 	middleware.FiberMiddleware(app, healthCheck)

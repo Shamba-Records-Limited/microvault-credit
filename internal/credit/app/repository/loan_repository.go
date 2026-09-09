@@ -141,6 +141,7 @@ func (r *loanRepository) GetByID(ctx context.Context, id string) (*models.Loan, 
 	var loan models.Loan
 	result := r.db.WithContext(ctx).
 		Preload("User").
+		Preload("Account").
 		Where("id = ? AND deleted_at IS NULL", id).
 		First(&loan)
 	if errors.Is(result.Error, gorm.ErrRecordNotFound) {

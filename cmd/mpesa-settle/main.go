@@ -1,0 +1,159 @@
+// Command mpesa-settle writes the vault leg for an M-Pesa repayment settled
+// by hand.
+//
+// M-Pesa collections convert to USDC through an OTC desk today, not an
+// automated anchor flow — cheaper than per-transaction on-ramp fees, but it
+// means nothing polls for "the money arrived" the way MoneyGram's SEP-24
+// poller does (see config.MpesaConfig.SettlementMode). This command is that
+// missing step: once the OTC-desk USDC has landed in treasury — verified
+// out-of-band, before running this — it executes the on-chain repay_for call
+// and records the result.
+//
+// Amount and borrower address come from the loan row, never the command
+// line: RepayForBorrower executes a real transfer, so nothing here should let
+// a typed figure move the wrong amount on-chain.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"log/slog"
+	"os"
+
+	_ "github.com/joho/godotenv/autoload"
+
+	"github.com/Shamba-Records-Limited/microvault/pkg/config"
+	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
+	"github.com/Shamba-Records-Limited/microvault/platform/database"
+
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/adapters"
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
+	}
+
+	cfg, err := config.New()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	switch os.Args[1] {
+	case "settle":
+		settle(cfg, os.Args[2:])
+	default:
+		fmt.Printf("Unknown command: %s\n", os.Args[1])
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func settle(cfg *config.Config, args []string) {
+	flags := flag.NewFlagSet("settle", flag.ExitOnError)
+	confirm := flags.Bool("confirm", false, "actually execute the on-chain repay")
+	_ = flags.Parse(args)
+	if flags.NArg() < 1 {
+		log.Fatal("Usage: mpesa-settle settle <loan-id> [--confirm]")
+	}
+	loanID := flags.Arg(0)
+
+	db, err := database.GetConnection("mpesa-settle", &cfg.Postgres)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	repos, err := repository.NewRepositories(db)
+	if err != nil {
+		log.Fatalf("Failed to initialize repositories: %v", err)
+	}
+	loanSvc := loan.NewService(repos.Loan, cfg.Payments.LoanReferencePrefix)
+
+	loanRow, err := repos.Loan.GetByID(context.Background(), loanID)
+	if err != nil {
+		log.Fatalf("Could not load loan %s: %v", loanID, err)
+	}
+	if loanRow.RepaymentProvider != models.LoanRepaymentProviderMpesa {
+		log.Fatalf("Loan %s is not on the M-Pesa rail (repayment_provider=%q)", loanID, loanRow.RepaymentProvider)
+	}
+	if loanRow.RepaymentStatus != models.LoanRepaymentStatusFundsReceived {
+		log.Fatalf("Loan %s is not awaiting settlement (repayment_status=%q, expected %q)",
+			loanID, loanRow.RepaymentStatus, models.LoanRepaymentStatusFundsReceived)
+	}
+	if loanRow.Account == nil || loanRow.Account.PublicKey == "" {
+		log.Fatalf("Loan %s has no borrower account to attribute the repayment to", loanID)
+	}
+	if loanRow.RepaymentPayoffStroops == nil || *loanRow.RepaymentPayoffStroops <= 0 {
+		log.Fatalf("Loan %s has no positive frozen payoff to settle", loanID)
+	}
+	amountStroops := *loanRow.RepaymentPayoffStroops
+
+	fmt.Println("M-Pesa manual settlement")
+	fmt.Printf("  loan:             %s\n", loanID)
+	fmt.Printf("  reference:        %s\n", derefStr(loanRow.LoanReference))
+	fmt.Printf("  borrower:         %s\n", loanRow.Account.PublicKey)
+	fmt.Printf("  amount (stroops): %d\n", amountStroops)
+	fmt.Println("\nPrecondition, not enforced here: the OTC-desk USDC deposit for this amount has already landed in treasury.")
+
+	if !*confirm {
+		fmt.Println("\nNothing was sent. Re-run with --confirm to execute the on-chain repay.")
+		return
+	}
+
+	rpcClient := cfg.Stellar.NewRpcClient()
+	stellarSvc := stellar.NewService(
+		rpcClient,
+		cfg.Stellar.NetworkPassphrase,
+		cfg.Stellar.TreasurySecretKey,
+		cfg.Stellar.AdminSecretKey,
+		cfg.Stellar.ContractID,
+		cfg.Stellar.USDCIssuer,
+	)
+
+	// Reused as-is despite the name: RepayForBorrower/MarkSettled do nothing
+	// MoneyGram-specific, and the transaction-recording path they share
+	// already reads the provider label off the loan row rather than assuming
+	// MoneyGram. Extracting a provider-agnostic settlement type is a
+	// follow-up, not a blocker.
+	depositAdapter, err := adapters.NewMoneyGramDepositAdapter(adapters.DepositAdapterDeps{
+		Repo:       repos.Loan,
+		LoanSvc:    loanSvc,
+		StellarSvc: stellarSvc,
+		Logger:     slog.Default(),
+	})
+	if err != nil {
+		log.Fatalf("Could not construct the settlement adapter: %v", err)
+	}
+
+	ctx := context.Background()
+	txHash, err := depositAdapter.RepayForBorrower(ctx, loanID, loanRow.Account.PublicKey, amountStroops)
+	if err != nil {
+		log.Fatalf("Vault repay failed: %v", err)
+	}
+	if err := depositAdapter.MarkSettled(ctx, loanID, txHash); err != nil {
+		log.Fatalf("Vault repay succeeded (tx %s) but recording settlement failed — fix the loan row by hand: %v", txHash, err)
+	}
+
+	fmt.Printf("\nSettled. txHash=%s\n", txHash)
+}
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func printUsage() {
+	fmt.Println("M-Pesa Manual Settlement CLI")
+	fmt.Println("\nUsage:")
+	fmt.Println("  mpesa-settle settle <loan-id> [--confirm]")
+	fmt.Println("\nExamples:")
+	fmt.Println("  mpesa-settle settle 3f8a1c2e-...")
+	fmt.Println("  mpesa-settle settle 3f8a1c2e-... --confirm")
+}

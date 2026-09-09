@@ -2,6 +2,9 @@ package adapters
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -10,8 +13,11 @@ import (
 
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
 	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
+	coremodels "github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/cashin"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/mpesa"
+	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
+	"github.com/Shamba-Records-Limited/microvault/pkg/user"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
@@ -25,6 +31,13 @@ var (
 	_ cashin.StatusReader = (*MpesaCollectionAdapter)(nil)
 )
 
+// userLookup is the one method Mobile Number Validation needs from
+// user.Service — a narrow interface so this file depends on a capability, not
+// the whole service.
+type userLookup interface {
+	GetByID(ctx context.Context, id string) (*user.UserResponse, error)
+}
+
 // MpesaCollectionAdapter opens loan collections on the M-Pesa rail. The
 // paybill method is passive — instructions only, settled by C2B — and STK
 // prompts go through Prompter, which needs the payer MSISDN a plain Request
@@ -35,15 +48,30 @@ type MpesaCollectionAdapter struct {
 	loanSvc loan.Service
 	cfg     config.MpesaConfig
 	now     func() time.Time
+
+	// userSvc and validationRepo are optional: nil disables Mobile Number
+	// Validation entirely, independent of the configured policy, so a
+	// deployment that never wires them never spends on Daraja's per-call fee.
+	userSvc          userLookup
+	validationRepo   corerepository.MpesaNumberValidationRepository
+	validationPolicy mpesa.ValidationPolicy
+	logger           *slog.Logger
 }
 
-// MpesaCollectionAdapterDeps are the collaborators the adapter needs; all
-// required.
+// MpesaCollectionAdapterDeps are the collaborators the adapter needs.
+// UserSvc, ValidationRepo, ValidationPolicy and Logger are optional — leaving
+// UserSvc or ValidationRepo nil disables Mobile Number Validation regardless
+// of ValidationPolicy.
 type MpesaCollectionAdapterDeps struct {
 	Client  *mpesa.Client
 	Repo    repository.LoanRepository
 	LoanSvc loan.Service
 	Config  config.MpesaConfig
+
+	UserSvc          userLookup
+	ValidationRepo   corerepository.MpesaNumberValidationRepository
+	ValidationPolicy mpesa.ValidationPolicy
+	Logger           *slog.Logger
 }
 
 // NewMpesaCollectionAdapter builds the adapter.
@@ -52,12 +80,20 @@ func NewMpesaCollectionAdapter(deps MpesaCollectionAdapterDeps) (*MpesaCollectio
 		return nil, oops.In(pkgErrors.DomainRepaymentCashIn).Tags("mpesa", "collection").
 			Code(pkgErrors.CodeMissingDependency).Errorf("client, loan repository and loan service are required")
 	}
+	logger := deps.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &MpesaCollectionAdapter{
-		client:  deps.Client,
-		repo:    deps.Repo,
-		loanSvc: deps.LoanSvc,
-		cfg:     deps.Config,
-		now:     time.Now,
+		client:           deps.Client,
+		repo:             deps.Repo,
+		loanSvc:          deps.LoanSvc,
+		cfg:              deps.Config,
+		now:              time.Now,
+		userSvc:          deps.UserSvc,
+		validationRepo:   deps.ValidationRepo,
+		validationPolicy: deps.ValidationPolicy,
+		logger:           logger.With("component", "mpesa_collection_adapter"),
 	}, nil
 }
 
@@ -151,6 +187,14 @@ func (a *MpesaCollectionAdapter) Prompt(ctx context.Context, req cashin.PromptRe
 		return nil, adapterErr("mpesa_prompt", req.LoanID).Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not mark the repayment initiated")
 	}
 
+	// Out of band, never inside the request that pushed the prompt: Mobile
+	// Number Validation is a paid, synchronous third-party call, and nothing
+	// about whether the payer's MSISDN matches their national ID should slow
+	// down or fail the STK push itself.
+	if a.validationEnabled() {
+		go a.validateNumber(context.Background(), l.UserID, req.Payer)
+	}
+
 	return &cashin.PromptResult{
 		LoanID:    req.LoanID,
 		Reference: reference,
@@ -179,4 +223,63 @@ func (a *MpesaCollectionAdapter) Status(ctx context.Context, ref cashin.Provider
 			CheckoutRequestID: resp.CheckoutRequestID,
 		},
 	}, nil
+}
+
+// validationEnabled reports whether Mobile Number Validation should run.
+// Disabled by an unset/"disabled" policy or by either collaborator being
+// nil — the platform validating upstream and this adapter not being wired
+// for it look the same from here, which is the point: neither should spend
+// on Daraja's per-call fee.
+func (a *MpesaCollectionAdapter) validationEnabled() bool {
+	if a.userSvc == nil || a.validationRepo == nil {
+		return false
+	}
+	switch a.validationPolicy {
+	case mpesa.ValidationAdvisory, mpesa.ValidationEnforcing:
+		return true
+	default:
+		return false
+	}
+}
+
+// validateNumber checks the payer's MSISDN against the borrower's national ID
+// and records the verdict. Best-effort throughout: every failure is logged
+// and swallowed, because this is a fraud signal for risk scoring, not a
+// condition the STK push itself depends on. Enforcing's blocking behaviour is
+// not implemented here — see config.MpesaConfig.NumberValidationPolicy.
+func (a *MpesaCollectionAdapter) validateNumber(ctx context.Context, userID, msisdn string) {
+	u, err := a.userSvc.GetByID(ctx, userID)
+	if err != nil || u.NationalID == "" {
+		return
+	}
+
+	hash := identityHash(msisdn, mpesa.IDTypeNational, u.NationalID)
+	if _, err := a.validationRepo.Get(ctx, hash); err == nil {
+		// Already cached. No scheduled re-validation exists yet, so a cache
+		// hit is treated as good until something adds one.
+		return
+	}
+
+	result, err := a.client.ValidateMobileNumber(ctx, msisdn, mpesa.IDTypeNational, u.NationalID, a.cfg.CollectionShortcode)
+	if err != nil {
+		a.logger.Warn("mobile number validation call failed", "user_id", userID, "error", err)
+		return
+	}
+
+	if err := a.validationRepo.Upsert(ctx, &coremodels.MpesaNumberValidation{
+		IdentityHash: hash,
+		Matched:      result.Matched,
+		ResponseCode: result.ResponseCode,
+		CheckedAt:    time.Now(),
+	}); err != nil {
+		a.logger.Warn("could not cache mobile number validation verdict", "user_id", userID, "error", err)
+	}
+}
+
+// identityHash never persists the tuple itself, only its digest — the cache
+// exists to avoid paying for the same check twice, not to store national ID
+// numbers.
+func identityHash(msisdn string, idType mpesa.IDType, idNumber string) string {
+	sum := sha256.Sum256([]byte(msisdn + "|" + string(idType) + "|" + idNumber))
+	return hex.EncodeToString(sum[:])
 }

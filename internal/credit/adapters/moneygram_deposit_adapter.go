@@ -440,7 +440,18 @@ func (a *MoneyGramDepositAdapter) recordVaultRepayTransaction(ctx context.Contex
 		amount = *loanRow.RepaymentPayoffStroops
 	}
 	desc := "USDC returned to the vault for a borrower repayment, attributed via repay_for"
-	provider := "moneygram"
+	// This method is reached by any rail's settlement, not just MoneyGram's —
+	// the manual M-Pesa settle command calls it too, via the same
+	// RepayForBorrower/MarkSettled pair. The provider label must follow the
+	// loan, not the type this method happens to be defined on.
+	provider := loanRow.RepaymentProvider
+	if provider == "" {
+		provider = "moneygram"
+	}
+	externalID := loanRow.RepaymentMGTxID
+	if externalID == nil {
+		externalID = loanRow.RepaymentMpesaTransID
+	}
 
 	txnResp, err := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
 		UserID:           &loanRow.UserID,
@@ -450,7 +461,7 @@ func (a *MoneyGramDepositAdapter) recordVaultRepayTransaction(ctx context.Contex
 		Amount:           amount,
 		Asset:            "USDC",
 		StellarTxHash:    &txHash,
-		ExternalID:       loanRow.RepaymentMGTxID,
+		ExternalID:       externalID,
 		ExternalProvider: &provider,
 		Description:      &desc,
 	})
