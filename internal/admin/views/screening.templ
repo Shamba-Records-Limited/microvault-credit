@@ -1,0 +1,196 @@
+package views
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"gorm.io/datatypes"
+
+	coremodels "github.com/Shamba-Records-Limited/microvault/pkg/models"
+)
+
+// ScreeningQueuePage is the state the screening queue renders from — every
+// address in review, plus pending/expired, per the source design doc §14.
+type ScreeningQueuePage struct {
+	Addresses  []*coremodels.CounterpartyAddress
+	Page       int
+	PageSize   int
+	TotalCount int64
+	Flash      string
+	Error      string
+}
+
+// ScreeningDetailPage is the state one address's full screening history
+// renders from — the audit artefact, rendered from raw_payload rather than
+// parsed columns, per the source design doc §14.
+type ScreeningDetailPage struct {
+	Address    *coremodels.CounterpartyAddress
+	Screenings []*coremodels.AddressScreening
+	Flash      string
+	Error      string
+}
+
+// riskScoreLabel prints the raw score Elliptic returned. Its scale isn't
+// pinned down anywhere in the source design doc, so this deliberately does
+// not reformat it as a percentage or basis points — showing the number
+// exactly as received avoids implying a precision or unit this admin
+// doesn't actually know.
+func riskScoreLabel(score *float64) string {
+	if score == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%.2f", *score)
+}
+
+// prettyJSON re-indents raw_payload for the audit view. A malformed payload
+// (should not happen — it came from our own json.Marshal at write time) is
+// shown verbatim rather than hidden, since this screen's whole purpose is
+// showing the screening as it was.
+func prettyJSON(raw datatypes.JSON) string {
+	indented, err := json.MarshalIndent(json.RawMessage(raw), "", "  ")
+	if err != nil {
+		return string(raw)
+	}
+	return string(indented)
+}
+
+templ ScreeningQueue(p ScreeningQueuePage) {
+	@Shell("Screening queue", "/screening") {
+		@Alert(ToneGood, p.Flash)
+		@Alert(ToneCritical, p.Error)
+		if len(p.Addresses) == 0 {
+			@EmptyState("Nothing in the screening queue.")
+		} else {
+			<div class="overflow-hidden rounded-xl border bg-card">
+				<table class="w-full text-sm">
+					<thead class="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
+						<tr>
+							<th class="px-4 py-3 font-medium">Address</th>
+							<th class="px-4 py-3 font-medium">Counterparty</th>
+							<th class="px-4 py-3 font-medium">Status</th>
+							<th class="px-4 py-3 font-medium">Risk score</th>
+							<th class="px-4 py-3 font-medium">Screened</th>
+							<th class="px-4 py-3 font-medium">Actions</th>
+						</tr>
+					</thead>
+					<tbody id="screening-rows">
+						for _, addr := range p.Addresses {
+							@ScreeningRow(addr)
+						}
+					</tbody>
+				</table>
+			</div>
+			@pager(Pager{Path: "/screening", Page: p.Page, PageSize: p.PageSize, TotalCount: p.TotalCount})
+		}
+	}
+}
+
+// ScreeningRow is one queue row, reused by the full list and by the
+// hx-post rescreen response that swaps just this row (hx-target="#row-{id}"
+// hx-swap="outerHTML") — the first HTMX-driven partial update in this
+// admin, since a rescreen is a synchronous Elliptic call that can take
+// seconds and a full-page render would block on it.
+templ ScreeningRow(addr *coremodels.CounterpartyAddress) {
+	<tr id={ "row-" + addr.ID } class="border-b last:border-0 hover:bg-muted/30">
+		<td class="px-4 py-3">
+			<a href={ templ.SafeURL("/screening/" + addr.ID) } class="font-mono text-xs hover:underline">
+				{ addr.Address }
+			</a>
+		</td>
+		<td class="px-4 py-3">
+			if addr.Counterparty != nil {
+				<a href={ templ.SafeURL("/counterparties/" + addr.CounterpartyID) } class="hover:underline">
+					{ addr.Counterparty.LegalName }
+				</a>
+			}
+		</td>
+		<td class="px-4 py-3">@Badge(addressStatusTone(addr.Status), string(addr.Status))</td>
+		<td class="px-4 py-3 tabular-nums">
+			if addr.LatestScreening != nil {
+				{ riskScoreLabel(addr.LatestScreening.RiskScore) }
+			} else {
+				—
+			}
+		</td>
+		<td class="px-4 py-3 tabular-nums text-muted-foreground">{ DatePtr(addr.ScreenedAt) }</td>
+		<td class="px-4 py-3">
+			<div class="flex gap-2">
+				<button
+					type="button"
+					hx-post={ "/screening/" + addr.ID + "/rescreen" }
+					hx-target={ "#row-" + addr.ID }
+					hx-swap="outerHTML"
+					class="rounded-md border border-input px-2 py-1 text-xs hover:bg-muted/50"
+				>
+					Rescreen
+				</button>
+				<form method="post" action={ templ.SafeURL("/screening/" + addr.ID + "/approve") }>
+					<button type="submit" class="rounded-md border border-input px-2 py-1 text-xs hover:bg-muted/50">
+						Approve
+					</button>
+				</form>
+				<form method="post" action={ templ.SafeURL("/screening/" + addr.ID + "/reject") }>
+					<button type="submit" class="rounded-md border border-input px-2 py-1 text-xs hover:bg-muted/50">
+						Reject
+					</button>
+				</form>
+			</div>
+		</td>
+	</tr>
+}
+
+templ ScreeningDetail(p ScreeningDetailPage) {
+	@Shell("Screening detail", "/screening") {
+		@Alert(ToneGood, p.Flash)
+		@Alert(ToneCritical, p.Error)
+		if p.Address == nil {
+			@EmptyState("Address not found.")
+		} else {
+			@Card(p.Address.Address) {
+				<dl class="grid grid-cols-3 gap-4 text-sm">
+					<div>
+						<dt class="text-xs font-medium text-muted-foreground">Status</dt>
+						<dd class="mt-1">@Badge(addressStatusTone(p.Address.Status), string(p.Address.Status))</dd>
+					</div>
+					<div>
+						<dt class="text-xs font-medium text-muted-foreground">On-chain state</dt>
+						<dd class="mt-1">@Badge(onchainStateTone(p.Address.OnchainState), string(p.Address.OnchainState))</dd>
+					</div>
+					<div>
+						<dt class="text-xs font-medium text-muted-foreground">Expires</dt>
+						<dd class="mt-1">{ DatePtr(p.Address.ExpiresAt) }</dd>
+					</div>
+				</dl>
+			}
+			<div class="mt-6 space-y-4">
+				<h2 class="text-sm font-medium text-muted-foreground">Screening history</h2>
+				if len(p.Screenings) == 0 {
+					@EmptyState("No screenings recorded yet.")
+				} else {
+					for _, s := range p.Screenings {
+						@screeningRecord(s)
+					}
+				}
+			</div>
+		}
+	}
+}
+
+// screeningRecord renders from raw_payload, not parsed columns — this is
+// the audit artefact exported when a regulator asks why an address was
+// approved, so it shows the screening as it was, not as the current parser
+// would interpret it. See the source design doc §14.
+templ screeningRecord(s *coremodels.AddressScreening) {
+	@Card("") {
+		<div class="mb-3 flex items-center justify-between">
+			<div class="flex items-center gap-2">
+				<span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">{ s.Verdict }</span>
+				if s.Sanctioned {
+					@Badge(ToneCritical, "Sanctioned")
+				}
+			</div>
+			<span class="text-xs tabular-nums text-muted-foreground">{ Date(s.CreatedAt) }</span>
+		</div>
+		<pre class="max-h-96 overflow-auto rounded-md bg-muted/40 p-3 text-xs">{ prettyJSON(s.RawPayload) }</pre>
+	}
+}

@@ -1,0 +1,312 @@
+package views
+
+import (
+	coremodels "github.com/Shamba-Records-Limited/microvault/pkg/models"
+)
+
+// CounterpartiesPage is the state the counterparties list renders from.
+type CounterpartiesPage struct {
+	Counterparties []*coremodels.Counterparty
+	KYBStatus      string
+	Page           int
+	PageSize       int
+	TotalCount     int64
+	Flash          string
+	Error          string
+	ShowForm       bool
+	Form           CounterpartyForm
+}
+
+// CounterpartyForm is the create-counterparty form's state, echoed back on
+// a validation failure the same way views.LimitForm is.
+type CounterpartyForm struct {
+	LegalName          string
+	RegistrationNumber string
+	Jurisdiction       string
+}
+
+// CounterpartyDetailPage is the state the counterparty detail screen
+// renders from — the entity plus its addresses, per the source design doc
+// §14: "answers who is allowed to put money in."
+type CounterpartyDetailPage struct {
+	Counterparty *coremodels.Counterparty
+	Flash        string
+	Error        string
+}
+
+var KYBStatusFilters = []FilterOption{
+	{Value: "", Label: "All KYB statuses"},
+	{Value: string(coremodels.CounterpartyKYBPending), Label: "Pending"},
+	{Value: string(coremodels.CounterpartyKYBApproved), Label: "Approved"},
+	{Value: string(coremodels.CounterpartyKYBRejected), Label: "Rejected"},
+	{Value: string(coremodels.CounterpartyKYBExpired), Label: "Expired"},
+}
+
+func kybStatusTone(status coremodels.CounterpartyKYBStatus) Tone {
+	switch status {
+	case coremodels.CounterpartyKYBApproved:
+		return ToneGood
+	case coremodels.CounterpartyKYBRejected:
+		return ToneCritical
+	case coremodels.CounterpartyKYBExpired:
+		return ToneWarning
+	default:
+		return ToneNeutral
+	}
+}
+
+// addressStatusTone and onchainStateTone are deliberately separate — the
+// source design doc §14 requires these render as two distinct indicators,
+// never collapsed into one, because an address approved in the database
+// but still pending on-chain cannot actually deposit yet.
+func addressStatusTone(status coremodels.CounterpartyAddressStatus) Tone {
+	switch status {
+	case coremodels.AddressStatusApproved:
+		return ToneGood
+	case coremodels.AddressStatusRejected:
+		return ToneCritical
+	case coremodels.AddressStatusReview:
+		return ToneWarning
+	case coremodels.AddressStatusUnscreenable:
+		return ToneWarning
+	case coremodels.AddressStatusExpired:
+		return ToneSerious
+	default:
+		return ToneNeutral
+	}
+}
+
+func onchainStateTone(state coremodels.CounterpartyAddressOnchainState) Tone {
+	switch state {
+	case coremodels.OnchainStateApproved:
+		return ToneGood
+	case coremodels.OnchainStateRevoked:
+		return ToneCritical
+	case coremodels.OnchainStatePending:
+		return ToneWarning
+	default:
+		return ToneNeutral
+	}
+}
+
+templ Counterparties(p CounterpartiesPage) {
+	@Shell("Counterparties", "/counterparties") {
+		@Alert(ToneGood, p.Flash)
+		@Alert(ToneCritical, p.Error)
+		<div class="mb-4 flex items-center justify-between">
+			@filterBarInline("/counterparties", []FilterSpec{
+				{Name: "kyb_status", Label: "KYB status", Options: KYBStatusFilters, Current: p.KYBStatus},
+			})
+			if !p.ShowForm {
+				<a href="/counterparties?new=1" class="rounded-md border border-input px-3 py-2 text-sm hover:bg-muted/50">
+					New counterparty
+				</a>
+			}
+		</div>
+		if p.ShowForm {
+			@counterpartyForm(p.Form)
+		}
+		if len(p.Counterparties) == 0 {
+			@EmptyState("No counterparties match this filter.")
+		} else {
+			@counterpartyTable(p.Counterparties)
+			@pager(Pager{
+				Path:       "/counterparties",
+				Page:       p.Page,
+				PageSize:   p.PageSize,
+				TotalCount: p.TotalCount,
+				Query:      queryString("kyb_status", p.KYBStatus),
+			})
+		}
+	}
+}
+
+// filterBarInline is filterBar without its own bottom margin, so it can sit
+// beside the "New counterparty" link in one row.
+templ filterBarInline(path string, filters []FilterSpec) {
+	<form method="get" action={ templ.SafeURL(path) } class="flex items-end gap-3">
+		for _, f := range filters {
+			<div>
+				<label for={ f.Name } class="text-xs font-medium text-muted-foreground">{ f.Label }</label>
+				<select
+					id={ f.Name }
+					name={ f.Name }
+					class="mt-1 rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				>
+					for _, option := range f.Options {
+						<option value={ option.Value } selected?={ option.Value == f.Current }>{ option.Label }</option>
+					}
+				</select>
+			</div>
+		}
+		<button type="submit" class="rounded-md border border-input px-3 py-2 text-sm hover:bg-muted/50">
+			Filter
+		</button>
+	</form>
+}
+
+templ counterpartyForm(f CounterpartyForm) {
+	@Card("New counterparty") {
+		<form method="post" action="/counterparties" class="grid grid-cols-2 gap-4">
+			<div>
+				<label class="text-xs font-medium text-muted-foreground">Legal name</label>
+				<input
+					type="text"
+					name="legal_name"
+					value={ f.LegalName }
+					class="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+				/>
+			</div>
+			<div>
+				<label class="text-xs font-medium text-muted-foreground">Registration number</label>
+				<input
+					type="text"
+					name="registration_number"
+					value={ f.RegistrationNumber }
+					class="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+				/>
+			</div>
+			<div>
+				<label class="text-xs font-medium text-muted-foreground">Jurisdiction</label>
+				<input
+					type="text"
+					name="jurisdiction"
+					value={ f.Jurisdiction }
+					class="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+				/>
+			</div>
+			@formActions("Create counterparty", "/counterparties")
+		</form>
+	}
+}
+
+templ counterpartyTable(cps []*coremodels.Counterparty) {
+	<div class="overflow-hidden rounded-xl border bg-card">
+		<table class="w-full text-sm">
+			<thead class="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
+				<tr>
+					<th class="px-4 py-3 font-medium">Legal name</th>
+					<th class="px-4 py-3 font-medium">Jurisdiction</th>
+					<th class="px-4 py-3 font-medium">KYB status</th>
+					<th class="px-4 py-3 font-medium">Created</th>
+				</tr>
+			</thead>
+			<tbody>
+				for _, cp := range cps {
+					<tr class="border-b last:border-0 hover:bg-muted/30">
+						<td class="px-4 py-3">
+							<a href={ templ.SafeURL("/counterparties/" + cp.ID) } class="font-medium hover:underline">
+								{ cp.LegalName }
+							</a>
+							<div class="text-xs text-muted-foreground">{ cp.ID }</div>
+						</td>
+						<td class="px-4 py-3">{ StringPtr(&cp.Jurisdiction) }</td>
+						<td class="px-4 py-3">
+							@Badge(kybStatusTone(cp.KYBStatus), string(cp.KYBStatus))
+						</td>
+						<td class="px-4 py-3 tabular-nums text-muted-foreground">{ Date(cp.CreatedAt) }</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</div>
+}
+
+templ CounterpartyDetail(p CounterpartyDetailPage) {
+	@Shell("Counterparty", "/counterparties") {
+		@Alert(ToneGood, p.Flash)
+		@Alert(ToneCritical, p.Error)
+		if p.Counterparty == nil {
+			@EmptyState("Counterparty not found.")
+		} else {
+			@Card(p.Counterparty.LegalName) {
+				<dl class="grid grid-cols-2 gap-4 text-sm">
+					<div>
+						<dt class="text-xs font-medium text-muted-foreground">KYB status</dt>
+						<dd class="mt-1">@Badge(kybStatusTone(p.Counterparty.KYBStatus), string(p.Counterparty.KYBStatus))</dd>
+					</div>
+					<div>
+						<dt class="text-xs font-medium text-muted-foreground">Registration number</dt>
+						<dd class="mt-1">{ StringPtr(&p.Counterparty.RegistrationNumber) }</dd>
+					</div>
+					<div>
+						<dt class="text-xs font-medium text-muted-foreground">Jurisdiction</dt>
+						<dd class="mt-1">{ StringPtr(&p.Counterparty.Jurisdiction) }</dd>
+					</div>
+					<div>
+						<dt class="text-xs font-medium text-muted-foreground">Elliptic customer reference</dt>
+						<dd class="mt-1 font-mono text-xs">{ p.Counterparty.EllipticCustomerReference }</dd>
+					</div>
+				</dl>
+				if p.Counterparty.KYBStatus == coremodels.CounterpartyKYBPending {
+					<div class="mt-4 flex gap-2 border-t pt-4">
+						<form method="post" action={ templ.SafeURL("/counterparties/" + p.Counterparty.ID + "/approve") }>
+							<button type="submit" class="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90">
+								Approve KYB
+							</button>
+						</form>
+						<form method="post" action={ templ.SafeURL("/counterparties/" + p.Counterparty.ID + "/reject") }>
+							<button type="submit" class="rounded-md border border-input px-3 py-2 text-sm hover:bg-muted/50">
+								Reject KYB
+							</button>
+						</form>
+					</div>
+				}
+			}
+			<div class="mt-6">
+				@Card("Addresses") {
+					<form method="post" action={ templ.SafeURL("/counterparties/" + p.Counterparty.ID + "/addresses") } class="mb-4 flex items-end gap-3">
+						<div class="flex-1">
+							<label class="text-xs font-medium text-muted-foreground">Stellar address</label>
+							<input
+								type="text"
+								name="address"
+								placeholder="G..."
+								class="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+							/>
+						</div>
+						<button type="submit" class="rounded-md border border-input px-3 py-2 text-sm hover:bg-muted/50">
+							Submit for screening
+						</button>
+					</form>
+					if len(p.Counterparty.Addresses) == 0 {
+						@EmptyState("No addresses submitted yet.")
+					} else {
+						@addressTable(p.Counterparty.Addresses)
+					}
+				}
+			</div>
+		}
+	}
+}
+
+templ addressTable(addrs []coremodels.CounterpartyAddress) {
+	<div class="overflow-hidden rounded-xl border bg-card">
+		<table class="w-full text-sm">
+			<thead class="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
+				<tr>
+					<th class="px-4 py-3 font-medium">Address</th>
+					<th class="px-4 py-3 font-medium">Status</th>
+					<th class="px-4 py-3 font-medium">On-chain</th>
+					<th class="px-4 py-3 font-medium">Screened</th>
+					<th class="px-4 py-3 font-medium">Expires</th>
+				</tr>
+			</thead>
+			<tbody>
+				for _, addr := range addrs {
+					<tr class="border-b last:border-0 hover:bg-muted/30">
+						<td class="px-4 py-3">
+							<a href={ templ.SafeURL("/screening/" + addr.ID) } class="font-mono text-xs hover:underline">
+								{ addr.Address }
+							</a>
+						</td>
+						<td class="px-4 py-3">@Badge(addressStatusTone(addr.Status), string(addr.Status))</td>
+						<td class="px-4 py-3">@Badge(onchainStateTone(addr.OnchainState), string(addr.OnchainState))</td>
+						<td class="px-4 py-3 tabular-nums text-muted-foreground">{ DatePtr(addr.ScreenedAt) }</td>
+						<td class="px-4 py-3 tabular-nums text-muted-foreground">{ DatePtr(addr.ExpiresAt) }</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</div>
+}

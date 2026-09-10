@@ -26,6 +26,7 @@ import (
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
 	"github.com/Shamba-Records-Limited/microvault/pkg/account"
 	"github.com/Shamba-Records-Limited/microvault/pkg/auth"
+	"github.com/Shamba-Records-Limited/microvault/pkg/compliance/elliptic"
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
 	"github.com/Shamba-Records-Limited/microvault/pkg/controllers"
 	"github.com/Shamba-Records-Limited/microvault/pkg/health"
@@ -47,6 +48,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/pin"
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
+	compliancesvc "github.com/Shamba-Records-Limited/microvault/pkg/services/compliance"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mpesapoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/vaultwatch"
@@ -786,6 +788,43 @@ func main() {
 	})
 	go vaultWatcher.Start(pollerCtx)
 	log.Println("vault compliance watcher started")
+
+	// On-chain writer + rescreening sweep — Phases 5/6. Deliberately built
+	// here, not in cmd/admin: the compliance role signing key must stay out
+	// of the web process (source design doc §14). The admin writes intent
+	// to counterparty_addresses; these two tickers are what actually acts
+	// on it.
+	ellipticClient := elliptic.NewClient(elliptic.Config{
+		APIKey:     cfg.Compliance.EllipticAPIKey,
+		APISecret:  cfg.Compliance.EllipticAPISecret,
+		BaseURL:    cfg.Compliance.EllipticBaseURL,
+		Thresholds: elliptic.Thresholds{}, // runtime-configurable per the source design doc §17 Q8 — not wired to an admin control yet
+	})
+	complianceService := compliancesvc.NewService(compliancesvc.Deps{
+		Repo:              coreRepos.Counterparty,
+		Screener:          ellipticClient,
+		ScreeningValidity: cfg.Compliance.ScreeningValidity,
+		Logger:            logger,
+	})
+
+	complianceSigner := stellarSvc.WithComplianceRole(cfg.Compliance.ComplianceRoleSecretKey)
+	onchainWriter := compliancesvc.NewOnchainWriter(compliancesvc.OnchainWriterDeps{
+		Repo:     coreRepos.Counterparty,
+		Signer:   complianceSigner,
+		Interval: cfg.Compliance.OnchainWriterInterval,
+		Logger:   logger,
+	})
+	go onchainWriter.Start(pollerCtx)
+	log.Println("compliance on-chain writer started")
+
+	rescreenSweep := compliancesvc.NewRescreenSweep(compliancesvc.RescreenSweepDeps{
+		Repo:     coreRepos.Counterparty,
+		Service:  complianceService,
+		Interval: cfg.Compliance.RescreenSweepInterval,
+		Logger:   logger,
+	})
+	go rescreenSweep.Start(pollerCtx)
+	log.Println("compliance rescreen sweep started")
 
 	// ---- 16. Fiber app + middleware + routes ----
 	// The proxy header is read only from a trusted hop: without the

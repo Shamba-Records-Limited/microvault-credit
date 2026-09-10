@@ -25,9 +25,11 @@ import (
 	loanlimitconfig "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_limit_config"
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
 	"github.com/Shamba-Records-Limited/microvault/pkg/auth"
+	"github.com/Shamba-Records-Limited/microvault/pkg/compliance/elliptic"
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
 	"github.com/Shamba-Records-Limited/microvault/pkg/middleware"
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
+	compliancesvc "github.com/Shamba-Records-Limited/microvault/pkg/services/compliance"
 	"github.com/Shamba-Records-Limited/microvault/platform/cache"
 	"github.com/Shamba-Records-Limited/microvault/platform/database"
 	"github.com/gofiber/fiber/v2"
@@ -88,6 +90,23 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize transaction repository: %v", err)
 	}
+	counterpartyRepo, err := corerepository.NewCounterpartyRepository(db)
+	if err != nil {
+		log.Fatalf("Failed to initialize counterparty repository: %v", err)
+	}
+
+	ellipticClient := elliptic.NewClient(elliptic.Config{
+		APIKey:     cfg.Compliance.EllipticAPIKey,
+		APISecret:  cfg.Compliance.EllipticAPISecret,
+		BaseURL:    cfg.Compliance.EllipticBaseURL,
+		Thresholds: elliptic.Thresholds{}, // runtime-configurable per the source design doc §17 Q8 — not wired to an admin control yet
+	})
+	complianceService := compliancesvc.NewService(compliancesvc.Deps{
+		Repo:              counterpartyRepo,
+		Screener:          ellipticClient,
+		ScreeningValidity: cfg.Compliance.ScreeningValidity,
+		Logger:            logger,
+	})
 
 	isDev := cfg.Server.ServerEnvironment == "development"
 	secureCookies := !isDev
@@ -137,6 +156,8 @@ func main() {
 	loansHandler := handlers.NewLoans(loanRepo)
 	usersHandler := handlers.NewUsers(userRepo)
 	transactionsHandler := handlers.NewTransactions(txRepo)
+	counterpartiesHandler := handlers.NewCounterparties(counterpartyRepo, complianceService)
+	screeningHandler := handlers.NewScreening(counterpartyRepo, complianceService)
 
 	app.Get("/", dashboardHandler.Show)
 	app.Get("/loan-products", loanProductHandler.List)
@@ -149,6 +170,19 @@ func main() {
 	app.Post("/limits", limitsHandler.Create)
 	app.Get("/config", configHandler.List)
 	app.Post("/config", configHandler.Create)
+
+	app.Get("/counterparties", counterpartiesHandler.List)
+	app.Post("/counterparties", counterpartiesHandler.Create)
+	app.Get("/counterparties/:id", counterpartiesHandler.Show)
+	app.Post("/counterparties/:id/approve", counterpartiesHandler.ApproveKYB)
+	app.Post("/counterparties/:id/reject", counterpartiesHandler.RejectKYB)
+	app.Post("/counterparties/:id/addresses", counterpartiesHandler.SubmitAddress)
+
+	app.Get("/screening", screeningHandler.List)
+	app.Get("/screening/:id", screeningHandler.Show)
+	app.Post("/screening/:id/approve", screeningHandler.Approve)
+	app.Post("/screening/:id/reject", screeningHandler.Reject)
+	app.Post("/screening/:id/rescreen", screeningHandler.Rescreen)
 
 	addr := listenAddr()
 	go func() {
