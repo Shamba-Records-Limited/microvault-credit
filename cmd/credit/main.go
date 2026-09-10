@@ -49,6 +49,7 @@ import (
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mpesapoller"
+	"github.com/Shamba-Records-Limited/microvault/pkg/services/vaultwatch"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	stellarrpc "github.com/Shamba-Records-Limited/microvault/pkg/stellar/rpc"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
@@ -772,6 +773,19 @@ func main() {
 	})
 	go balancePoller.Start(pollerCtx)
 	log.Println("M-Pesa balance poller started")
+
+	// Compliance watcher — the detect-and-quarantine canary alongside the
+	// vault's on-chain allowlist. See pkg/services/vaultwatch/doc.go.
+	vaultWatcher := vaultwatch.NewWatcher(vaultwatch.WatcherDeps{
+		Client:     rpcClient,
+		Allowlist:  stellarSvc,
+		Cursor:     coreRepos.VaultWatchCursor,
+		ContractID: cfg.Stellar.ContractID,
+		Interval:   cfg.Stellar.VaultWatchInterval,
+		Logger:     logger,
+	})
+	go vaultWatcher.Start(pollerCtx)
+	log.Println("vault compliance watcher started")
 
 	// ---- 16. Fiber app + middleware + routes ----
 	// The proxy header is read only from a trusted hop: without the

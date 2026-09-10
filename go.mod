@@ -2,7 +2,7 @@ module github.com/Shamba-Records-Limited/microvault-credit
 
 go 1.26.0
 
-require github.com/Shamba-Records-Limited/microvault v1.4.0
+require github.com/Shamba-Records-Limited/microvault v1.4.1
 
 replace github.com/Shamba-Records-Limited/microvault => ../microvault
 
@@ -77,7 +77,7 @@ require (
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-runewidth v0.0.30 // indirect
-	github.com/molecule-man/go-brrr v1.0.1 // indirect
+	github.com/molecule-man/go-brrr v1.1.0 // indirect
 	github.com/natefinch/atomic v1.0.1 // indirect
 	github.com/oklog/ulid/v2 v2.1.2 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
