@@ -60,7 +60,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/platform/database"
 )
 
-// @title microvault Credit API
+// @title Microvault Credit API
 // @version 1.0
 // @description Credit management and loan processing service for microvault.
 // @termsOfService http://swagger.io/terms/
