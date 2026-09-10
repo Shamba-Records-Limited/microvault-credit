@@ -208,6 +208,9 @@
   .mb-6 {
     margin-bottom: calc(var(--spacing) * 6);
   }
+  .-ml-1\.5 {
+    margin-left: calc(var(--spacing) * -1.5);
+  }
   .flex {
     display: flex;
   }
@@ -562,6 +565,9 @@
     border-width: 0px;
   }
   @media (hover: hover) {
+    .hover\:bg-accent:hover {
+      background-color: var(--accent);
+    }
     .hover\:bg-muted\/30:hover {
       background-color: var(--muted);
     }
@@ -580,6 +586,9 @@
     }
     .hover\:bg-sidebar-accent:hover {
       background-color: var(--sidebar-accent);
+    }
+    .hover\:text-accent-foreground:hover {
+      color: var(--accent-foreground);
     }
     .hover\:text-foreground:hover {
       color: var(--foreground);

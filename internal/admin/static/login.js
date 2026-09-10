@@ -12,6 +12,19 @@
 		button.textContent = "Sign in with Freighter";
 	};
 
+	// Freighter sometimes resolves (rather than throws) with `{ error }`, and
+	// that `error` can be a plain string, an Error-shaped object, or a nested
+	// `{ error: { message } }` — never assign it to textContent directly, or
+	// a non-string error stringifies to the useless "[object Object]".
+	const describeError = (value, fallback) => {
+		if (!value) return fallback;
+		if (typeof value === "string") return value;
+		if (typeof value.message === "string") return value.message;
+		if (typeof value.error === "string") return value.error;
+		if (value.error && typeof value.error.message === "string") return value.error.message;
+		return fallback;
+	};
+
 	// Freighter has changed this return shape across versions; accept both.
 	const unwrapSigned = (result) => {
 		if (typeof result === "string") return result;
@@ -43,9 +56,10 @@
 			const address = unwrapAddress(access);
 			if (!address) {
 				fail(
-					access && access.error
-						? access.error
-						: "Freighter was not detected. Install the extension and reload.",
+					describeError(
+						access && access.error,
+						"Freighter was not detected. Install the extension and reload.",
+					),
 				);
 				return;
 			}
@@ -64,9 +78,10 @@
 			const signed = unwrapSigned(signResult);
 			if (!signed) {
 				fail(
-					signResult && signResult.error
-						? signResult.error
-						: "Freighter did not return a signed transaction.",
+					describeError(
+						signResult && signResult.error,
+						"Freighter did not return a signed transaction.",
+					),
 				);
 				return;
 			}
@@ -84,7 +99,7 @@
 			const body = await verifyRes.json().catch(() => ({}));
 			fail(body.error || "Verification failed.");
 		} catch (err) {
-			fail(err && err.message ? err.message : "Signing was cancelled.");
+			fail(describeError(err, "Signing was cancelled."));
 		}
 	});
 })();

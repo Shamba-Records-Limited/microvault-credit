@@ -49,7 +49,7 @@ func Login(networkPassphrase, flash string) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</div><h1 class=\"text-lg font-semibold tracking-tight\">Microvault portal</h1><p class=\"mt-1 text-sm text-muted-foreground\">Sign a challenge with the admin wallet.</p></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</div><h1 class=\"text-lg font-semibold tracking-tight\">Microvault Portal</h1><p class=\"mt-1 text-sm text-muted-foreground\">Sign a challenge with wallet.</p></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -70,7 +70,7 @@ func Login(networkPassphrase, flash string) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\" class=\"w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50\">Sign in with Freighter</button><p id=\"signin-error\" class=\"mt-3 text-xs text-destructive\" role=\"alert\"></p><p class=\"mt-4 text-xs text-muted-foreground\">Requires the Freighter extension holding the configured admin key.</p></div></div><script src=\"/static/freighter-api.min.js\" defer></script> <script src=\"/static/login.js\" defer></script>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\" class=\"w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50\">Sign in with Freighter</button><p id=\"signin-error\" class=\"mt-3 text-xs text-destructive\" role=\"alert\"></p></div></div><script src=\"/static/freighter-api.min.js\" defer></script> <script src=\"/static/login.js\" defer></script>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
