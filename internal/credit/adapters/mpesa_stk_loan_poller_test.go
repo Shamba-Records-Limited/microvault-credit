@@ -202,7 +202,32 @@ func TestSTKDrive_LastAttemptExpires(t *testing.T) {
 	assert.Nil(t, r.updates[0].RepaymentNextPollAt)
 }
 
-func TestSTKDrive_OperationalFailureExpiresImmediately(t *testing.T) {
+// TestSTKDrive_DocumentedOperationalFailureExpiresImmediately covers a
+// result code mpesa.expressOutcomes actually documents as non-retryable
+// (2028 — Daraja's own "operator does not exist" family). This is the one
+// class of failure that still closes on the first poll: we know for
+// certain it won't resolve differently on a retry.
+func TestSTKDrive_DocumentedOperationalFailureExpiresImmediately(t *testing.T) {
+	q := &fakeQuerier{resp: queryResp("2028")}
+	m := &fakeSTKMpesaRepo{}
+	r := &fakeSTKLoanRepo{loan: stkLoan(0)}
+	loans := &fakeLoanSvc{}
+	d := newTestSTKDriver(t, q, m, r, loans)
+
+	d.Drive(context.Background(), stkLoan(0))
+
+	assert.Empty(t, loans.updates)
+	require.Len(t, r.updates, 1)
+	assert.Equal(t, models.LoanRepaymentStatusExpired, r.updates[0].RepaymentStatus)
+}
+
+// TestSTKDrive_UndocumentedFailureGetsARetryBudget covers a result code not
+// in mpesa.expressOutcomes at all (9999) — see
+// yellowcard-offramp-webhook-race-2026-09-10.md §3 in the knowledge vault
+// for why "undocumented" stopped meaning "expire with zero retries":
+// mpesa.ExpressOutcomeFor now gives an unknown code the same bounded retry
+// budget a known-transient one gets, rather than assuming it is permanent.
+func TestSTKDrive_UndocumentedFailureGetsARetryBudget(t *testing.T) {
 	q := &fakeQuerier{resp: queryResp("9999")}
 	m := &fakeSTKMpesaRepo{}
 	r := &fakeSTKLoanRepo{loan: stkLoan(0)}
@@ -210,6 +235,26 @@ func TestSTKDrive_OperationalFailureExpiresImmediately(t *testing.T) {
 	d := newTestSTKDriver(t, q, m, r, loans)
 
 	d.Drive(context.Background(), stkLoan(0))
+
+	assert.Empty(t, r.updates, "must not close on the first poll of an unknown code")
+	require.Len(t, loans.updates, 1)
+	require.NotNil(t, loans.updates[0].RepaymentSTKAttempts)
+	assert.Equal(t, 1, *loans.updates[0].RepaymentSTKAttempts)
+	require.NotNil(t, loans.updates[0].RepaymentNextPollAt)
+}
+
+// TestSTKDrive_UndocumentedFailureExpiresAfterMaxAttempts confirms the
+// retry budget from the test above is genuinely bounded — an undocumented
+// code that keeps recurring still closes once maxAttempts is exhausted,
+// exactly like a documented transient one would.
+func TestSTKDrive_UndocumentedFailureExpiresAfterMaxAttempts(t *testing.T) {
+	q := &fakeQuerier{resp: queryResp("9999")}
+	m := &fakeSTKMpesaRepo{}
+	r := &fakeSTKLoanRepo{loan: stkLoan(2)} // newTestSTKDriver's maxAttempts is 3
+	loans := &fakeLoanSvc{}
+	d := newTestSTKDriver(t, q, m, r, loans)
+
+	d.Drive(context.Background(), stkLoan(2))
 
 	assert.Empty(t, loans.updates)
 	require.Len(t, r.updates, 1)

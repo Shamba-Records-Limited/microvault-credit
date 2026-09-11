@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -105,11 +106,64 @@ func NewDisbursementStatusAdapter(deps DisbursementAdapterDeps) *DisbursementSta
 	}
 }
 
+// disbursementLookupRetries and disbursementLookupBackoff bound
+// getBySequenceIDWithRetry's wait for a race window observed in practice at
+// ~2 seconds (see the vault doc yellowcard-offramp-webhook-race-2026-09-10.md):
+// the off-ramp provider's Initiate() call creates the payment — which
+// triggers the provider's webhook almost immediately — but does not return,
+// and therefore does not let the caller persist ramp_sequence_id onto the
+// loan, until after it has waited for the on-chain treasury transfer to
+// confirm. A webhook for a very fresh payment can arrive before that
+// persist happens. Three attempts at 500ms give up to 1.5s of margin,
+// comfortably covering the observed window without holding the webhook's
+// HTTP response open indefinitely.
+const (
+	disbursementLookupRetries = 3
+	disbursementLookupBackoff = 500 * time.Millisecond
+)
+
+// getBySequenceIDWithRetry retries a not-found lookup briefly rather than
+// failing on the first attempt — see the constants' doc comment above. Any
+// other error (a real database failure, not a race) returns immediately.
+func (a *DisbursementStatusAdapter) getBySequenceIDWithRetry(ctx context.Context, sequenceID string) (*models.Loan, error) {
+	attempt := 0
+	return retryOnNotFound(
+		func() (*models.Loan, error) { return a.repo.GetBySequenceID(ctx, sequenceID) },
+		func(err error) bool { return errors.Is(err, repository.ErrLoanNotFound) },
+		func(d time.Duration) {
+			attempt++
+			a.logger.Debug("loan not yet findable by sequence id, retrying",
+				"sequence_id", sequenceID, "attempt", attempt)
+			time.Sleep(d)
+		},
+	)
+}
+
+// retryOnNotFound calls fetch up to disbursementLookupRetries times,
+// invoking wait (a hook for both the sleep and its own logging) between
+// attempts while the returned error satisfies isRace. A plain function
+// rather than a method so it is testable against closures — no fake
+// covering repository.LoanRepository's other 20-odd methods needed.
+func retryOnNotFound[T any](fetch func() (T, error), isRace func(error) bool, wait func(time.Duration)) (T, error) {
+	var result T
+	var err error
+	for attempt := 1; attempt <= disbursementLookupRetries; attempt++ {
+		result, err = fetch()
+		if err == nil || !isRace(err) {
+			return result, err
+		}
+		if attempt < disbursementLookupRetries {
+			wait(disbursementLookupBackoff)
+		}
+	}
+	return result, err
+}
+
 // UpdateDisbursementStatus updates the disbursement status for a loan identified by sequenceID.
 func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, status string) error {
 	ctx := context.Background()
 
-	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
+	loan, err := a.getBySequenceIDWithRetry(ctx, sequenceID)
 	if err != nil {
 		a.logger.Error("failed to find loan by sequence ID",
 			"sequence_id", sequenceID,
