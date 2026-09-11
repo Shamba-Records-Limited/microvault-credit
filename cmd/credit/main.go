@@ -663,7 +663,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("MoneyGram deposit adapter construction failed: %v", err)
 	}
-	repaymentNotifier, err := adapters.NewRepaymentNotifierAdapter(repos.Loan, loanNotifier, cfg.Server.PublicBaseURL, linkShortener, logger)
+	repaymentNotifier, err := adapters.NewRepaymentNotifierAdapter(repos.Loan, loanNotifier, cfg.Server.PublicBaseURL, linkShortener, offRampRegistry, logger)
 	if err != nil {
 		log.Fatalf("Repayment notifier construction failed: %v", err)
 	}

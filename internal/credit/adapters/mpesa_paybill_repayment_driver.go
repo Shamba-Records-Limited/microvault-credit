@@ -233,42 +233,9 @@ func (d *MpesaPaybillRepaymentDriver) lockPayoff(ctx context.Context, l *models.
 
 // fxRateForLoan resolves an FX sell rate per the disbursement provider's own
 // quote, falling back to YellowCard's if the disbursing provider has none —
-// the disbursing provider is the one whose rate the borrower was already
-// quoted against, so it is the more representative source when it has one.
+// see offrampSellRate, shared with RepaymentNotifierAdapter's SMS pricing.
 func (d *MpesaPaybillRepaymentDriver) fxRateForLoan(ctx context.Context, l *models.Loan) (float64, string, error) {
-	if l.RampProvider != nil && *l.RampProvider != "" {
-		if rate, source, err := d.quoteFrom(ctx, offramp.ProviderID(*l.RampProvider)); err == nil {
-			return rate, source, nil
-		}
-	}
-	if rate, source, err := d.quoteFrom(ctx, offramp.ProviderYellowCard); err == nil {
-		return rate, source, nil
-	}
-	return 0, "", adapterErr("paybill_fx", l.ID).
-		With("ramp_provider", l.RampProvider).
-		Errorf("no FX rate available from the disbursing provider or the YellowCard fallback")
-}
-
-func (d *MpesaPaybillRepaymentDriver) quoteFrom(ctx context.Context, id offramp.ProviderID) (float64, string, error) {
-	provider, ok := d.offRamps.Get(id)
-	if !ok {
-		return 0, "", adapterErr("paybill_fx", "").With("provider", string(id)).Errorf("provider not registered")
-	}
-	quoter, ok := provider.(offramp.Quoter)
-	if !ok {
-		return 0, "", adapterErr("paybill_fx", "").With("provider", string(id)).Errorf("provider does not quote FX")
-	}
-	rate, err := quoter.Quote(ctx, offramp.QuoteRequest{Currency: paybillFXCurrency})
-	if err != nil {
-		return 0, "", err
-	}
-	// Sell only — same direction fetchFXForQuote uses for a repayment quote,
-	// and for the same reason: pricing a repayment at the buy rate is wrong
-	// by the spread, silently.
-	if rate.SellRate <= 0 {
-		return 0, "", adapterErr("paybill_fx", "").With("provider", string(id)).Errorf("provider returned no sell rate")
-	}
-	return rate.SellRate, string(id), nil
+	return offrampSellRate(ctx, d.offRamps, l.RampProvider, paybillFXCurrency)
 }
 
 // recompute totals every applied observation for a loan and advances its
@@ -328,7 +295,7 @@ func (d *MpesaPaybillRepaymentDriver) notify(loanID string) {
 		d.logger.Warn("no repayment notifier configured, message not sent", "loan_id", loanID)
 		return
 	}
-	if err := d.notifier.NotifyRepaymentReceived(loanID); err != nil {
+	if err := d.notifier.NotifyRepaymentReceivedAmount(loanID, 0); err != nil {
 		d.logger.Warn("failed to send repayment received notification", "loan_id", loanID, "error", err)
 	}
 }

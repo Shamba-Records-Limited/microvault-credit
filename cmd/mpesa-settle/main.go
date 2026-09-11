@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"log/slog"
@@ -27,7 +26,11 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/sms"
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/sms/providers/africastalking"
+	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
 	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
+	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/platform/database"
 
@@ -65,13 +68,20 @@ func main() {
 // Fatalf calls, skips every pending defer in the program, not just the ones
 // in the function that called it.
 func settle(cfg *config.Config, args []string) error {
-	flags := flag.NewFlagSet("settle", flag.ExitOnError)
-	confirm := flags.Bool("confirm", false, "actually execute the on-chain repay")
-	_ = flags.Parse(args)
-	if flags.NArg() < 1 {
+	var confirm bool
+	var loanID string
+	for _, a := range args {
+		if a == "--confirm" || a == "-confirm" {
+			confirm = true
+			continue
+		}
+		if loanID == "" {
+			loanID = a
+		}
+	}
+	if loanID == "" {
 		log.Fatal("Usage: mpesa-settle settle <loan-id> [--confirm]")
 	}
-	loanID := flags.Arg(0)
 
 	db, err := database.GetConnection("mpesa-settle", &cfg.Postgres)
 	if err != nil {
@@ -80,6 +90,10 @@ func settle(cfg *config.Config, args []string) error {
 	repos, err := repository.NewRepositories(db)
 	if err != nil {
 		log.Fatalf("Failed to initialize repositories: %v", err)
+	}
+	coreRepos, err := corerepository.NewRepositories(db)
+	if err != nil {
+		log.Fatalf("Failed to initialize core repositories: %v", err)
 	}
 	loanSvc := loan.NewService(repos.Loan, cfg.Payments.LoanReferencePrefix)
 
@@ -109,7 +123,7 @@ func settle(cfg *config.Config, args []string) error {
 	fmt.Printf("  amount (stroops): %d\n", amountStroops)
 	fmt.Println("\nPrecondition, not enforced here: the OTC-desk USDC deposit for this amount has already landed in treasury.")
 
-	if !*confirm {
+	if !confirm {
 		fmt.Println("\nNothing was sent. Re-run with --confirm to execute the on-chain repay.")
 		return nil
 	}
@@ -182,10 +196,33 @@ func settle(cfg *config.Config, args []string) error {
 		return fmt.Errorf("could not construct the settlement adapter: %w", err)
 	}
 
-	// Minimal notification stack: no language resolver (defaults to English)
-	// and no link shortener (nil is accepted — NotifyLoanRepaid never renders
-	// a link, so there is nothing for it to shorten). This is a one-shot CLI
-	// with no user service to back a language lookup, unlike cmd/credit.
+	// A YellowCard-only offramp registry, just deep enough for
+	// RepaymentNotifierAdapter's FX lookup (Quote never touches Treasury, so
+	// nil is fine here — this registry never calls Initiate). Registered
+	// under its real ProviderID so it also serves as the disbursing
+	// provider's own rate whenever a settled loan's RampProvider is
+	// "yellowcard", not just the fallback.
+	ycAdapter := yellowcard.NewYellowcardAdapter(
+		cfg.Payments.YellowCard.PublicKey,
+		cfg.Payments.YellowCard.SecretKey,
+		cfg.Payments.YellowCard.BaseURL,
+	)
+	ycOffRamp := ussdadapters.NewYellowCardOffRampAdapter(ussdadapters.YellowCardOffRampConfig{
+		Adapter:      ycAdapter,
+		BusinessID:   cfg.Payments.YellowCard.BusinessID,
+		BusinessName: cfg.Payments.YellowCard.BusinessName,
+		Logger:       slog.Default(),
+	})
+	offRampRegistry := offramp.NewRegistry()
+	if err := offRampRegistry.Register(ycOffRamp); err != nil {
+		return fmt.Errorf("could not register the YellowCard FX source: %w", err)
+	}
+
+	// Minimal notification stack otherwise: no language resolver (defaults
+	// to English) and no link shortener (nil is accepted — NotifyLoanRepaid
+	// never renders a link, so there is nothing for it to shorten). This is
+	// a one-shot CLI with no user service to back a language lookup, unlike
+	// cmd/credit.
 	atSMSAdapter := africastalking.NewAfricasTalkingSMSAdapter(
 		cfg.Mobile.AfricasTalking.Username,
 		cfg.Mobile.AfricasTalking.APIKey,
@@ -200,7 +237,7 @@ func settle(cfg *config.Config, args []string) error {
 	if err != nil {
 		return fmt.Errorf("could not construct the loan notifier: %w", err)
 	}
-	repaymentNotifier, err := adapters.NewRepaymentNotifierAdapter(repos.Loan, loanNotifier, "", nil, slog.Default())
+	repaymentNotifier, err := adapters.NewRepaymentNotifierAdapter(repos.Loan, loanNotifier, "", nil, offRampRegistry, slog.Default())
 	if err != nil {
 		return fmt.Errorf("could not construct the repayment notifier: %w", err)
 	}
@@ -214,10 +251,13 @@ func settle(cfg *config.Config, args []string) error {
 		return fmt.Errorf("vault repay succeeded (tx %s) but recording settlement failed — fix the loan row by hand: %w", txHash, err)
 	}
 
-	// Best-effort: the on-chain settlement and its DB record are already
-	// durable at this point, so a failed SMS is a warning, not a reason to
-	// report the settlement itself as failed.
-	if err := repaymentNotifier.NotifyLoanRepaid(loanID); err != nil {
+	var amountKES int64
+	if loanRow.RepaymentMpesaTransID != nil {
+		if obs, err := coreRepos.Mpesa.GetByTransID(ctx, *loanRow.RepaymentMpesaTransID); err == nil {
+			amountKES = obs.AmountKes
+		}
+	}
+	if err := repaymentNotifier.NotifyLoanRepaidAmount(loanID, amountKES); err != nil {
 		log.Printf("warning: settled but could not notify the borrower: %v", err)
 	}
 

@@ -160,7 +160,7 @@ type Loan struct {
 	// movement afterwards does not change what the borrower owes.
 	// RepaymentMGTxID is MoneyGram's transaction ID and the idempotency key
 	// for the whole rail; it is uniquely indexed.
-	RepaymentStatus        string     `json:"repayment_status" gorm:"type:varchar(20);not null;default:'none'"`
+	RepaymentStatus        string     `json:"repayment_status" gorm:"type:varchar(30);not null;default:'none'"`
 	RepaymentPayoffStroops *int64     `json:"repayment_payoff_stroops,omitempty" gorm:"type:bigint"`
 	RepaymentLockedAt      *time.Time `json:"repayment_locked_at,omitempty" gorm:"type:timestamptz"`
 	RepaymentExpiresAt     *time.Time `json:"repayment_expires_at,omitempty" gorm:"type:timestamptz"`

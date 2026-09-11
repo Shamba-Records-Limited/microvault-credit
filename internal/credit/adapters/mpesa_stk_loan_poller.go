@@ -26,13 +26,14 @@ type stkQuerier interface {
 	ExpressQuery(ctx context.Context, checkoutRequestID string, shortcode uint) (*mpesa.ExpressQueryResponse, error)
 }
 
-// stkRepaymentNotifier is the one notification the STK driver sends — narrower
-// than mgpoller.RepaymentNotifier, which also carries MoneyGram-only concepts
-// (a deposit reference, a transaction page) this rail has no use for.
+// stkRepaymentNotifier is the one notification the STK and paybill drivers
+// send — narrower than mgpoller.RepaymentNotifier, which also carries
+// MoneyGram-only concepts this rail has no use for. amountKES 0 means "no
+// observed amount, fall back to the loan's payoff."
 // adapters.RepaymentNotifierAdapter already satisfies this structurally, so
 // the same instance wired for MoneyGram can be passed here too.
 type stkRepaymentNotifier interface {
-	NotifyRepaymentReceived(loanID string) error
+	NotifyRepaymentReceivedAmount(loanID string, amountKES int64) error
 }
 
 // MpesaSTKLoanDriver resolves loans whose repayment was initiated with an STK
@@ -132,6 +133,7 @@ func (d *MpesaSTKLoanDriver) settle(ctx context.Context, l *models.Loan) {
 	checkoutID := *l.RepaymentMpesaCheckoutID
 
 	var receipt *string
+	var amountKES int64
 	obs, err := d.mpesaRepo.GetByCheckoutID(ctx, checkoutID)
 	switch {
 	case err == nil:
@@ -140,6 +142,7 @@ func (d *MpesaSTKLoanDriver) settle(ctx context.Context, l *models.Loan) {
 				"loan_id", l.ID, "trans_id", obs.TransID, "error", err)
 		} else {
 			receipt = &obs.TransID
+			amountKES = obs.AmountKes
 		}
 	case errors.Is(err, corerepository.ErrMpesaNotFound):
 		d.logger.Warn("settling without a callback receipt; reconciliation must backfill",
@@ -160,23 +163,26 @@ func (d *MpesaSTKLoanDriver) settle(ctx context.Context, l *models.Loan) {
 	row.RepaymentStatus = models.LoanRepaymentStatusFundsReceived
 	row.RepaymentMpesaTransID = receipt
 	row.RepaymentNextPollAt = nil
+	if row.RepaymentPayoffStroops != nil {
+		received := *row.RepaymentPayoffStroops
+		row.RepaymentReceivedStroops = &received
+	}
 	if err := d.repo.Update(ctx, row); err != nil {
 		d.logger.Error("could not mark the repayment funds received", "loan_id", l.ID, "error", err)
 		return
 	}
-	d.notify(l.ID)
+	d.notify(l.ID, amountKES)
 }
 
 // notify tells the borrower their payment landed. Best-effort: the state
 // write above is already durable, so a missing notifier or a failed send
-// only logs — matching mgpoller.DepositDriver.notify's precedent for the
-// same reason (an SMS failure must never look like the money didn't arrive).
-func (d *MpesaSTKLoanDriver) notify(loanID string) {
+// only logs.
+func (d *MpesaSTKLoanDriver) notify(loanID string, amountKES int64) {
 	if d.notifier == nil {
 		d.logger.Warn("no repayment notifier configured, message not sent", "loan_id", loanID)
 		return
 	}
-	if err := d.notifier.NotifyRepaymentReceived(loanID); err != nil {
+	if err := d.notifier.NotifyRepaymentReceivedAmount(loanID, amountKES); err != nil {
 		d.logger.Warn("failed to send repayment received notification", "loan_id", loanID, "error", err)
 	}
 }

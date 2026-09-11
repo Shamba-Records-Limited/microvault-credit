@@ -13,6 +13,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
 	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
 	users "github.com/Shamba-Records-Limited/microvault/pkg/models"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
 	"github.com/Shamba-Records-Limited/microvault/pkg/urlshortener"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
@@ -20,8 +21,10 @@ import (
 
 type recordingLoanNotifier struct {
 	contracts.LoanNotifier
-	moreInfo       []contracts.LoanNotification
-	windowExpiring []contracts.LoanNotification
+	moreInfo          []contracts.LoanNotification
+	windowExpiring    []contracts.LoanNotification
+	repaymentReceived []contracts.LoanNotification
+	repaid            []contracts.LoanNotification
 }
 
 func (r *recordingLoanNotifier) NotifyRepaymentMoreInfo(_ context.Context, n contracts.LoanNotification) error {
@@ -31,6 +34,16 @@ func (r *recordingLoanNotifier) NotifyRepaymentMoreInfo(_ context.Context, n con
 
 func (r *recordingLoanNotifier) NotifyRepaymentWindowExpiring(_ context.Context, n contracts.LoanNotification) error {
 	r.windowExpiring = append(r.windowExpiring, n)
+	return nil
+}
+
+func (r *recordingLoanNotifier) NotifyRepaymentReceived(_ context.Context, n contracts.LoanNotification) error {
+	r.repaymentReceived = append(r.repaymentReceived, n)
+	return nil
+}
+
+func (r *recordingLoanNotifier) NotifyLoanRepaid(_ context.Context, n contracts.LoanNotification) error {
+	r.repaid = append(r.repaid, n)
 	return nil
 }
 
@@ -64,6 +77,7 @@ func newTestRepaymentNotifierWith(
 		notifier,
 		baseURL,
 		shortener,
+		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
 	require.NoError(t, err)
@@ -152,4 +166,155 @@ func TestNotifyRepaymentMoreInfo_FallsBackToTheRedirect(t *testing.T) {
 
 	require.Len(t, notifier.moreInfo, 1)
 	assert.Equal(t, "https://microvault.outray.app/r/Xk9f2aQ7ab", notifier.moreInfo[0].InteractiveURL)
+}
+
+// loanWithPayoff builds a fixture with a locked payoff, for the amount/
+// currency tests below. rampProvider drives which offramp the FX resolution
+// tries first.
+func loanWithPayoff(payoffStroops, receivedStroops int64, rampProvider string) *models.Loan {
+	payoff := payoffStroops
+	ref := "SHHS5W6PH"
+	loan := &models.Loan{
+		ID:                     "loan-1",
+		LoanReference:          &ref,
+		RepaymentPayoffStroops: &payoff,
+		User:                   &users.User{MobileNumber: "+254711222111"},
+	}
+	if receivedStroops > 0 {
+		received := receivedStroops
+		loan.RepaymentReceivedStroops = &received
+	}
+	if rampProvider != "" {
+		loan.RampProvider = &rampProvider
+	}
+	return loan
+}
+
+func newTestRepaymentNotifierWithOffRamps(t *testing.T, loanRow *models.Loan, offRamps *offramp.Registry) (*RepaymentNotifierAdapter, *recordingLoanNotifier) {
+	t.Helper()
+	notifier := &recordingLoanNotifier{}
+	a, err := NewRepaymentNotifierAdapter(
+		&fakeLoanRepo{loan: loanRow},
+		notifier,
+		"",
+		nil,
+		offRamps,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	require.NoError(t, err)
+	return a, notifier
+}
+
+// The bug this locks in: an SMS reading "Payment of USDC 8.35 received" is
+// meaningless to a borrower who has never heard of USDC. It must render in
+// the loan's local currency whenever a rate is reachable.
+func TestNotifyRepaymentReceived_RendersInLocalCurrency(t *testing.T) {
+	loanRow := loanWithPayoff(10_000_000, 0, "yellowcard") // 1.0 USDC payoff, fully received
+	offRamps := offramp.NewRegistry()
+	require.NoError(t, offRamps.Register(&fakeQuoteProvider{id: offramp.ProviderYellowCard, rate: 129.0}))
+	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, offRamps)
+
+	require.NoError(t, a.NotifyRepaymentReceived("loan-1"))
+
+	require.Len(t, notifier.repaymentReceived, 1)
+	n := notifier.repaymentReceived[0]
+	assert.Equal(t, "KES", n.DisplayCurrency)
+	assert.InDelta(t, 129.0, n.DisplayAmount, 0.01)
+}
+
+func TestNotifyRepaymentReceivedAmount_UsesTheObservedAmountOverThePayoff(t *testing.T) {
+	loanRow := loanWithPayoff(10_000_000, 0, "yellowcard")
+	offRamps := offramp.NewRegistry()
+	require.NoError(t, offRamps.Register(&fakeQuoteProvider{id: offramp.ProviderYellowCard, rate: 129.0}))
+	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, offRamps)
+
+	require.NoError(t, a.NotifyRepaymentReceivedAmount("loan-1", 5))
+
+	require.Len(t, notifier.repaymentReceived, 1)
+	n := notifier.repaymentReceived[0]
+	assert.Equal(t, "KES", n.DisplayCurrency)
+	assert.Equal(t, float64(5), n.DisplayAmount)
+}
+
+func TestNotifyRepaymentReceivedAmount_ZeroFallsBackToThePayoff(t *testing.T) {
+	loanRow := loanWithPayoff(10_000_000, 0, "yellowcard")
+	offRamps := offramp.NewRegistry()
+	require.NoError(t, offRamps.Register(&fakeQuoteProvider{id: offramp.ProviderYellowCard, rate: 129.0}))
+	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, offRamps)
+
+	require.NoError(t, a.NotifyRepaymentReceivedAmount("loan-1", 0))
+
+	require.Len(t, notifier.repaymentReceived, 1)
+	assert.InDelta(t, 129.0, notifier.repaymentReceived[0].DisplayAmount, 0.01)
+}
+
+// A loan disbursed in a non-default currency renders in that currency, not
+// the KES default.
+func TestNotifyRepaymentReceived_UsesTheLoansOwnCurrency(t *testing.T) {
+	loanRow := loanWithPayoff(10_000_000, 0, "yellowcard")
+	fiatCurr := "UGX"
+	loanRow.RampFiatCurr = &fiatCurr
+	offRamps := offramp.NewRegistry()
+	require.NoError(t, offRamps.Register(&fakeQuoteProvider{id: offramp.ProviderYellowCard, rate: 3700.0}))
+	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, offRamps)
+
+	require.NoError(t, a.NotifyRepaymentReceived("loan-1"))
+
+	require.Len(t, notifier.repaymentReceived, 1)
+	assert.Equal(t, "UGX", notifier.repaymentReceived[0].DisplayCurrency)
+}
+
+// No FX rate anywhere (no registry, or no provider registered) must not
+// fail the send — it falls back to USDC, matching the previous behaviour,
+// rather than leaving the borrower with no notification at all.
+func TestNotifyRepaymentReceived_FallsBackToUSDCWhenNoFXAvailable(t *testing.T) {
+	loanRow := loanWithPayoff(10_000_000, 0, "")
+	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, nil)
+
+	require.NoError(t, a.NotifyRepaymentReceived("loan-1"))
+
+	require.Len(t, notifier.repaymentReceived, 1)
+	assert.Equal(t, "USDC", notifier.repaymentReceived[0].DisplayCurrency)
+}
+
+// RemainingBalance must reflect what is actually still owed — see the "USDC
+// 0.00" bug report this fixed: the field was never populated at all before,
+// so it always read zero regardless of the loan's real state.
+func TestNotifyRepaymentReceived_RemainingBalanceReflectsPartialPayment(t *testing.T) {
+	loanRow := loanWithPayoff(10_000_000, 4_000_000, "yellowcard") // paid 0.4 of 1.0 USDC
+	offRamps := offramp.NewRegistry()
+	require.NoError(t, offRamps.Register(&fakeQuoteProvider{id: offramp.ProviderYellowCard, rate: 129.0}))
+	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, offRamps)
+
+	require.NoError(t, a.NotifyRepaymentReceived("loan-1"))
+
+	require.Len(t, notifier.repaymentReceived, 1)
+	// Remaining: 0.6 USDC * 129 KES/USDC = 77.4 KES.
+	assert.InDelta(t, 77.4, notifier.repaymentReceived[0].RemainingBalance, 0.01)
+}
+
+func TestNotifyLoanRepaid_RendersInLocalCurrency(t *testing.T) {
+	loanRow := loanWithPayoff(10_000_000, 10_000_000, "yellowcard")
+	offRamps := offramp.NewRegistry()
+	require.NoError(t, offRamps.Register(&fakeQuoteProvider{id: offramp.ProviderYellowCard, rate: 129.0}))
+	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, offRamps)
+
+	require.NoError(t, a.NotifyLoanRepaid("loan-1"))
+
+	require.Len(t, notifier.repaid, 1)
+	assert.Equal(t, "KES", notifier.repaid[0].DisplayCurrency)
+	assert.InDelta(t, 0, notifier.repaid[0].RemainingBalance, 0.01)
+}
+
+func TestNotifyLoanRepaidAmount_UsesTheObservedAmountOverThePayoff(t *testing.T) {
+	loanRow := loanWithPayoff(10_000_000, 10_000_000, "yellowcard")
+	offRamps := offramp.NewRegistry()
+	require.NoError(t, offRamps.Register(&fakeQuoteProvider{id: offramp.ProviderYellowCard, rate: 129.0}))
+	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, offRamps)
+
+	require.NoError(t, a.NotifyLoanRepaidAmount("loan-1", 5))
+
+	require.Len(t, notifier.repaid, 1)
+	assert.Equal(t, "KES", notifier.repaid[0].DisplayCurrency)
+	assert.Equal(t, float64(5), notifier.repaid[0].DisplayAmount)
 }
