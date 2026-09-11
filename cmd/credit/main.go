@@ -740,6 +740,7 @@ func main() {
 		MpesaRepo: coreRepos.Mpesa,
 		Repo:      repos.Loan,
 		LoanSvc:   loanSvc,
+		Notifier:  repaymentNotifier,
 		Config:    cfg.Payments.Mpesa,
 		Logger:    logger,
 	})
@@ -748,6 +749,25 @@ func main() {
 	}
 	go mpesaLoanRunner.Start(pollerCtx)
 	log.Println("M-Pesa STK loan poller started")
+
+	// Paybill repayment sweep — walk-up-and-pay, so nothing "initiates" it
+	// the way Prompt does for STK; this converts confirmed, loan-attributed
+	// mpesa_transactions rows as they land. loanAdapter satisfies
+	// repaymentQuoter (GetRepaymentQuote) for the lazy payoff lock.
+	mpesaPaybillDriver, err := adapters.NewMpesaPaybillRepaymentDriver(adapters.MpesaPaybillRepaymentDriverDeps{
+		MpesaRepo: coreRepos.Mpesa,
+		Repo:      repos.Loan,
+		Quoter:    loanAdapter,
+		OffRamps:  offRampRegistry,
+		Notifier:  repaymentNotifier,
+		Interval:  cfg.Payments.Mpesa.PaybillSweepInterval,
+		Logger:    logger,
+	})
+	if err != nil {
+		log.Fatalf("M-Pesa paybill repayment driver construction failed: %v", err)
+	}
+	go mpesaPaybillDriver.Start(pollerCtx)
+	log.Println("M-Pesa paybill repayment sweep started")
 
 	// Pull reconciliation sweep and Account Balance poll — both wall-clock
 	// tickers, not Runner[T] drivers, since neither is a queue of due rows;

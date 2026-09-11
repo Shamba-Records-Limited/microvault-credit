@@ -94,6 +94,12 @@ func (a *RepaymentNotifierAdapter) NotifyRepaymentReceived(loanID string) error 
 	return a.send(loanID, "received", a.loans.NotifyRepaymentReceived)
 }
 
+// NotifyLoanRepaid confirms the treasury-to-vault leg confirmed and the loan
+// is closed.
+func (a *RepaymentNotifierAdapter) NotifyLoanRepaid(loanID string) error {
+	return a.send(loanID, "repaid", a.loans.NotifyLoanRepaid)
+}
+
 // NotifyRepaymentReminder warns that an opened deposit is about to lapse.
 //
 // Routed to NotifyRepaymentWindowExpiring rather than the notifier's own

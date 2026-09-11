@@ -63,6 +63,16 @@ type fakeSTKLoanRepo struct {
 	updates []*models.Loan
 }
 
+type fakeSTKNotifier struct {
+	err      error
+	notified []string
+}
+
+func (f *fakeSTKNotifier) NotifyRepaymentReceived(loanID string) error {
+	f.notified = append(f.notified, loanID)
+	return f.err
+}
+
 func (f *fakeSTKLoanRepo) GetByID(_ context.Context, _ string) (*models.Loan, error) {
 	return f.loan, nil
 }
@@ -168,6 +178,50 @@ func TestSTKDrive_ConfirmFailureStillSettles(t *testing.T) {
 	require.Len(t, r.updates, 1)
 	assert.Equal(t, models.LoanRepaymentStatusFundsReceived, r.updates[0].RepaymentStatus)
 	assert.Nil(t, r.updates[0].RepaymentMpesaTransID)
+}
+
+func TestSTKDrive_SettleNotifiesTheBorrower(t *testing.T) {
+	q := &fakeQuerier{resp: queryResp("0")}
+	m := &fakeSTKMpesaRepo{obs: &txmodels.MpesaTransaction{TransID: "NLJ7RT61SV"}}
+	r := &fakeSTKLoanRepo{loan: stkLoan(0)}
+	loans := &fakeLoanSvc{}
+	n := &fakeSTKNotifier{}
+	d := newTestSTKDriver(t, q, m, r, loans)
+	d.notifier = n
+
+	d.Drive(context.Background(), stkLoan(0))
+
+	assert.Equal(t, []string{"loan-1"}, n.notified)
+}
+
+func TestSTKDrive_SettleNotifierFailureDoesNotBlockTheWrite(t *testing.T) {
+	q := &fakeQuerier{resp: queryResp("0")}
+	m := &fakeSTKMpesaRepo{obs: &txmodels.MpesaTransaction{TransID: "NLJ7RT61SV"}}
+	r := &fakeSTKLoanRepo{loan: stkLoan(0)}
+	loans := &fakeLoanSvc{}
+	n := &fakeSTKNotifier{err: errors.New("sms provider down")}
+	d := newTestSTKDriver(t, q, m, r, loans)
+	d.notifier = n
+
+	d.Drive(context.Background(), stkLoan(0))
+
+	require.Len(t, r.updates, 1, "the state write must land even though the notifier failed")
+	assert.Equal(t, models.LoanRepaymentStatusFundsReceived, r.updates[0].RepaymentStatus)
+	assert.Equal(t, []string{"loan-1"}, n.notified, "a send attempt was made despite the failure")
+}
+
+func TestSTKDrive_RetryableAnswerDoesNotNotify(t *testing.T) {
+	q := &fakeQuerier{resp: queryResp("1032")}
+	m := &fakeSTKMpesaRepo{}
+	r := &fakeSTKLoanRepo{loan: stkLoan(0)}
+	loans := &fakeLoanSvc{}
+	n := &fakeSTKNotifier{}
+	d := newTestSTKDriver(t, q, m, r, loans)
+	d.notifier = n
+
+	d.Drive(context.Background(), stkLoan(0))
+
+	assert.Empty(t, n.notified, "no settlement happened, so no notification should fire")
 }
 
 func TestSTKDrive_RetryableAnswerParksWithTheAttempt(t *testing.T) {

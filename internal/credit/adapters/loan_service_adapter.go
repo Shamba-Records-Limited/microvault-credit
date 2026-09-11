@@ -1469,9 +1469,10 @@ func (a *LoanServiceAdapter) PromptRepayment(ctx context.Context, loanID, phoneN
 			Code(pkgErrors.CodeUnsupportedOperation).Errorf("the resolved provider cannot push prompts")
 	}
 	if _, err := prompter.Prompt(ctx, cashin.PromptRequest{
-		LoanID:    loanID,
-		Payer:     phoneNumber,
-		AmountKES: amountKES,
+		LoanID:            loanID,
+		Payer:             phoneNumber,
+		AmountKES:         amountKES,
+		AmountUSDCStroops: quote.AmountUSDCStroops,
 	}); err != nil {
 		return lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
 			With(pkgErrors.AttrAmountLocal, amountKES).

@@ -176,6 +176,12 @@ type Loan struct {
 	RepaymentMpesaCheckoutID *string `json:"repayment_mpesa_checkout_id,omitempty" gorm:"column:repayment_mpesa_checkout_id;type:varchar(100)"`
 	RepaymentMpesaTransID    *string `json:"repayment_mpesa_trans_id,omitempty" gorm:"column:repayment_mpesa_trans_id;type:varchar(20)"`
 	RepaymentSTKAttempts     int     `json:"repayment_stk_attempts" gorm:"column:repayment_stk_attempts;not null;default:0"`
+	// RepaymentReceivedStroops is a cached display total for paybill's
+	// walk-up-and-pay progress — recomputed from
+	// mpesa_transactions.applied_stroops on every sweep tick, never itself
+	// the source of truth. Nil until the first paybill payment for this loan
+	// is converted.
+	RepaymentReceivedStroops *int64 `json:"repayment_received_stroops,omitempty" gorm:"column:repayment_received_stroops;type:bigint"`
 	// RepaymentReminderSentAt is written before the pre-expiry SMS, so a
 	// failing send is not retried on every poll tick. It records a
 	// notification rather than a movement of money, so nothing else on the
@@ -337,6 +343,12 @@ const (
 	// LoanRepaymentStatusFundsReceived means the cash reached the treasury as
 	// USDC. The borrower is told at this point, before the vault leg settles.
 	LoanRepaymentStatusFundsReceived = "funds_received"
+	// LoanRepaymentStatusPartialFundsReceived means one or more paybill
+	// payments have been confirmed and converted, but the running total
+	// (RepaymentReceivedStroops) has not yet reached RepaymentPayoffStroops.
+	// Paybill-only: STK and MoneyGram both settle their whole payoff in one
+	// shot and go straight to FundsReceived.
+	LoanRepaymentStatusPartialFundsReceived = "partial_funds_received"
 	// LoanRepaymentStatusSettled means the treasury-to-vault leg confirmed.
 	// This is the only state that flips loans.status to repaid.
 	LoanRepaymentStatusSettled = "settled"
@@ -359,7 +371,7 @@ const (
 // idx_loans_repayment_open index; keep the two in step.
 func (l *Loan) IsRepaymentOpen() bool {
 	switch l.RepaymentStatus {
-	case LoanRepaymentStatusInitiated, LoanRepaymentStatusFundsReceived:
+	case LoanRepaymentStatusInitiated, LoanRepaymentStatusFundsReceived, LoanRepaymentStatusPartialFundsReceived:
 		return true
 	default:
 		return false

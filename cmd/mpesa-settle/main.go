@@ -25,6 +25,9 @@ import (
 	_ "github.com/joho/godotenv/autoload"
 
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
+	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/sms"
+	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/sms/providers/africastalking"
+	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/platform/database"
 
@@ -179,6 +182,29 @@ func settle(cfg *config.Config, args []string) error {
 		return fmt.Errorf("could not construct the settlement adapter: %w", err)
 	}
 
+	// Minimal notification stack: no language resolver (defaults to English)
+	// and no link shortener (nil is accepted — NotifyLoanRepaid never renders
+	// a link, so there is nothing for it to shorten). This is a one-shot CLI
+	// with no user service to back a language lookup, unlike cmd/credit.
+	atSMSAdapter := africastalking.NewAfricasTalkingSMSAdapter(
+		cfg.Mobile.AfricasTalking.Username,
+		cfg.Mobile.AfricasTalking.APIKey,
+		cfg.Mobile.AfricasTalking.BaseURL,
+		cfg.Mobile.AfricasTalking.HTTPTimeout,
+	)
+	smsService := sms.NewSMSService()
+	smsService.RegisterProvider("africastalking", atSMSAdapter)
+	atProvider, _ := smsService.GetProvider("africastalking")
+	smsNotifier := mvnotifications.NewSMSNotifier(atProvider, cfg.Mobile.AfricasTalking.ResolveSenderID())
+	loanNotifier, err := mvnotifications.NewSMSLoanNotifier(smsNotifier)
+	if err != nil {
+		return fmt.Errorf("could not construct the loan notifier: %w", err)
+	}
+	repaymentNotifier, err := adapters.NewRepaymentNotifierAdapter(repos.Loan, loanNotifier, "", nil, slog.Default())
+	if err != nil {
+		return fmt.Errorf("could not construct the repayment notifier: %w", err)
+	}
+
 	ctx := context.Background()
 	txHash, err := depositAdapter.RepayForBorrower(ctx, loanID, loanRow.Account.PublicKey, amountStroops)
 	if err != nil {
@@ -186,6 +212,13 @@ func settle(cfg *config.Config, args []string) error {
 	}
 	if err := depositAdapter.MarkSettled(ctx, loanID, txHash); err != nil {
 		return fmt.Errorf("vault repay succeeded (tx %s) but recording settlement failed — fix the loan row by hand: %w", txHash, err)
+	}
+
+	// Best-effort: the on-chain settlement and its DB record are already
+	// durable at this point, so a failed SMS is a warning, not a reason to
+	// report the settlement itself as failed.
+	if err := repaymentNotifier.NotifyLoanRepaid(loanID); err != nil {
+		log.Printf("warning: settled but could not notify the borrower: %v", err)
 	}
 
 	fmt.Printf("\nSettled. txHash=%s\n", txHash)

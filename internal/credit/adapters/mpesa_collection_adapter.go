@@ -177,12 +177,20 @@ func (a *MpesaCollectionAdapter) Prompt(ctx context.Context, req cashin.PromptRe
 		return nil, adapterErr("mpesa_prompt", req.LoanID).Wrapf(mpesa.ExpressRejection(resp), "express push was declined")
 	}
 
+	// The payoff lock is req.AmountUSDCStroops, never derived from amountKES
+	// — amountKES may be the sandbox override above, a fixed tiny figure with
+	// no relationship to what the loan actually owes. mpesa-settle's on-chain
+	// repay reads this column, so a sandbox run must still lock the real
+	// payoff, not the amount charged on the test handset.
 	nextPoll := a.now().Add(a.cfg.STKPollInterval)
+	lockedAt := a.now()
 	if _, err := a.loanSvc.Update(ctx, req.LoanID, loan.UpdateLoanRequest{
 		RepaymentProvider:        lo.ToPtr(models.LoanRepaymentProviderMpesa),
 		RepaymentStatus:          lo.ToPtr(models.LoanRepaymentStatusInitiated),
 		RepaymentMpesaCheckoutID: lo.ToPtr(resp.CheckoutRequestID),
 		RepaymentNextPollAt:      &nextPoll,
+		RepaymentPayoffStroops:   lo.ToPtr(req.AmountUSDCStroops),
+		RepaymentLockedAt:        &lockedAt,
 	}); err != nil {
 		return nil, adapterErr("mpesa_prompt", req.LoanID).Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not mark the repayment initiated")
 	}

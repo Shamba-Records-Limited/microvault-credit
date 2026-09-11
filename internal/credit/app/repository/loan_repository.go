@@ -577,6 +577,7 @@ func loanUpdateMap(loan *models.Loan) map[string]interface{} {
 		"repayment_mpesa_checkout_id": loan.RepaymentMpesaCheckoutID,
 		"repayment_mpesa_trans_id":    loan.RepaymentMpesaTransID,
 		"repayment_stk_attempts":      loan.RepaymentSTKAttempts,
+		"repayment_received_stroops":  loan.RepaymentReceivedStroops,
 	}
 }
 
