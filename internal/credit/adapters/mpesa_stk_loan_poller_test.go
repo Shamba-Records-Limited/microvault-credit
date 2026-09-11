@@ -63,6 +63,18 @@ type fakeSTKLoanRepo struct {
 	updates []*models.Loan
 }
 
+type fakeSTKNotifier struct {
+	err      error
+	notified []string
+	amounts  []int64
+}
+
+func (f *fakeSTKNotifier) NotifyRepaymentReceivedAmount(loanID string, amountKES int64) error {
+	f.notified = append(f.notified, loanID)
+	f.amounts = append(f.amounts, amountKES)
+	return f.err
+}
+
 func (f *fakeSTKLoanRepo) GetByID(_ context.Context, _ string) (*models.Loan, error) {
 	return f.loan, nil
 }
@@ -170,6 +182,68 @@ func TestSTKDrive_ConfirmFailureStillSettles(t *testing.T) {
 	assert.Nil(t, r.updates[0].RepaymentMpesaTransID)
 }
 
+func TestSTKDrive_SettleNotifiesTheBorrower(t *testing.T) {
+	q := &fakeQuerier{resp: queryResp("0")}
+	m := &fakeSTKMpesaRepo{obs: &txmodels.MpesaTransaction{TransID: "NLJ7RT61SV", AmountKes: 1000}}
+	r := &fakeSTKLoanRepo{loan: stkLoan(0)}
+	loans := &fakeLoanSvc{}
+	n := &fakeSTKNotifier{}
+	d := newTestSTKDriver(t, q, m, r, loans)
+	d.notifier = n
+
+	d.Drive(context.Background(), stkLoan(0))
+
+	assert.Equal(t, []string{"loan-1"}, n.notified)
+	assert.Equal(t, []int64{1000}, n.amounts, "the observed callback amount, not the payoff, is passed through")
+}
+
+func TestSTKDrive_SettleRecordsReceivedStroopsFromThePayoff(t *testing.T) {
+	q := &fakeQuerier{resp: queryResp("0")}
+	m := &fakeSTKMpesaRepo{obs: &txmodels.MpesaTransaction{TransID: "NLJ7RT61SV", AmountKes: 5}}
+	loanRow := stkLoan(0)
+	payoff := int64(84_402_678)
+	loanRow.RepaymentPayoffStroops = &payoff
+	r := &fakeSTKLoanRepo{loan: loanRow}
+	loans := &fakeLoanSvc{}
+	d := newTestSTKDriver(t, q, m, r, loans)
+
+	d.Drive(context.Background(), loanRow)
+
+	require.Len(t, r.updates, 1)
+	require.NotNil(t, r.updates[0].RepaymentReceivedStroops)
+	assert.Equal(t, payoff, *r.updates[0].RepaymentReceivedStroops)
+}
+
+func TestSTKDrive_SettleNotifierFailureDoesNotBlockTheWrite(t *testing.T) {
+	q := &fakeQuerier{resp: queryResp("0")}
+	m := &fakeSTKMpesaRepo{obs: &txmodels.MpesaTransaction{TransID: "NLJ7RT61SV"}}
+	r := &fakeSTKLoanRepo{loan: stkLoan(0)}
+	loans := &fakeLoanSvc{}
+	n := &fakeSTKNotifier{err: errors.New("sms provider down")}
+	d := newTestSTKDriver(t, q, m, r, loans)
+	d.notifier = n
+
+	d.Drive(context.Background(), stkLoan(0))
+
+	require.Len(t, r.updates, 1, "the state write must land even though the notifier failed")
+	assert.Equal(t, models.LoanRepaymentStatusFundsReceived, r.updates[0].RepaymentStatus)
+	assert.Equal(t, []string{"loan-1"}, n.notified, "a send attempt was made despite the failure")
+}
+
+func TestSTKDrive_RetryableAnswerDoesNotNotify(t *testing.T) {
+	q := &fakeQuerier{resp: queryResp("1032")}
+	m := &fakeSTKMpesaRepo{}
+	r := &fakeSTKLoanRepo{loan: stkLoan(0)}
+	loans := &fakeLoanSvc{}
+	n := &fakeSTKNotifier{}
+	d := newTestSTKDriver(t, q, m, r, loans)
+	d.notifier = n
+
+	d.Drive(context.Background(), stkLoan(0))
+
+	assert.Empty(t, n.notified, "no settlement happened, so no notification should fire")
+}
+
 func TestSTKDrive_RetryableAnswerParksWithTheAttempt(t *testing.T) {
 	q := &fakeQuerier{resp: queryResp("1032")}
 	m := &fakeSTKMpesaRepo{}
@@ -202,7 +276,32 @@ func TestSTKDrive_LastAttemptExpires(t *testing.T) {
 	assert.Nil(t, r.updates[0].RepaymentNextPollAt)
 }
 
-func TestSTKDrive_OperationalFailureExpiresImmediately(t *testing.T) {
+// TestSTKDrive_DocumentedOperationalFailureExpiresImmediately covers a
+// result code mpesa.expressOutcomes actually documents as non-retryable
+// (2028 — Daraja's own "operator does not exist" family). This is the one
+// class of failure that still closes on the first poll: we know for
+// certain it won't resolve differently on a retry.
+func TestSTKDrive_DocumentedOperationalFailureExpiresImmediately(t *testing.T) {
+	q := &fakeQuerier{resp: queryResp("2028")}
+	m := &fakeSTKMpesaRepo{}
+	r := &fakeSTKLoanRepo{loan: stkLoan(0)}
+	loans := &fakeLoanSvc{}
+	d := newTestSTKDriver(t, q, m, r, loans)
+
+	d.Drive(context.Background(), stkLoan(0))
+
+	assert.Empty(t, loans.updates)
+	require.Len(t, r.updates, 1)
+	assert.Equal(t, models.LoanRepaymentStatusExpired, r.updates[0].RepaymentStatus)
+}
+
+// TestSTKDrive_UndocumentedFailureGetsARetryBudget covers a result code not
+// in mpesa.expressOutcomes at all (9999) — see
+// yellowcard-offramp-webhook-race-2026-09-10.md §3 in the knowledge vault
+// for why "undocumented" stopped meaning "expire with zero retries":
+// mpesa.ExpressOutcomeFor now gives an unknown code the same bounded retry
+// budget a known-transient one gets, rather than assuming it is permanent.
+func TestSTKDrive_UndocumentedFailureGetsARetryBudget(t *testing.T) {
 	q := &fakeQuerier{resp: queryResp("9999")}
 	m := &fakeSTKMpesaRepo{}
 	r := &fakeSTKLoanRepo{loan: stkLoan(0)}
@@ -210,6 +309,26 @@ func TestSTKDrive_OperationalFailureExpiresImmediately(t *testing.T) {
 	d := newTestSTKDriver(t, q, m, r, loans)
 
 	d.Drive(context.Background(), stkLoan(0))
+
+	assert.Empty(t, r.updates, "must not close on the first poll of an unknown code")
+	require.Len(t, loans.updates, 1)
+	require.NotNil(t, loans.updates[0].RepaymentSTKAttempts)
+	assert.Equal(t, 1, *loans.updates[0].RepaymentSTKAttempts)
+	require.NotNil(t, loans.updates[0].RepaymentNextPollAt)
+}
+
+// TestSTKDrive_UndocumentedFailureExpiresAfterMaxAttempts confirms the
+// retry budget from the test above is genuinely bounded — an undocumented
+// code that keeps recurring still closes once maxAttempts is exhausted,
+// exactly like a documented transient one would.
+func TestSTKDrive_UndocumentedFailureExpiresAfterMaxAttempts(t *testing.T) {
+	q := &fakeQuerier{resp: queryResp("9999")}
+	m := &fakeSTKMpesaRepo{}
+	r := &fakeSTKLoanRepo{loan: stkLoan(2)} // newTestSTKDriver's maxAttempts is 3
+	loans := &fakeLoanSvc{}
+	d := newTestSTKDriver(t, q, m, r, loans)
+
+	d.Drive(context.Background(), stkLoan(2))
 
 	assert.Empty(t, loans.updates)
 	require.Len(t, r.updates, 1)

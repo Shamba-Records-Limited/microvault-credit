@@ -26,6 +26,16 @@ type stkQuerier interface {
 	ExpressQuery(ctx context.Context, checkoutRequestID string, shortcode uint) (*mpesa.ExpressQueryResponse, error)
 }
 
+// stkRepaymentNotifier is the one notification the STK and paybill drivers
+// send — narrower than mgpoller.RepaymentNotifier, which also carries
+// MoneyGram-only concepts this rail has no use for. amountKES 0 means "no
+// observed amount, fall back to the loan's payoff."
+// adapters.RepaymentNotifierAdapter already satisfies this structurally, so
+// the same instance wired for MoneyGram can be passed here too.
+type stkRepaymentNotifier interface {
+	NotifyRepaymentReceivedAmount(loanID string, amountKES int64) error
+}
+
 // MpesaSTKLoanDriver resolves loans whose repayment was initiated with an STK
 // prompt. The callback path carries no bill reference, so attribution lives on
 // the loan row: repayment_mpesa_checkout_id is what this driver asks Daraja
@@ -35,6 +45,7 @@ type MpesaSTKLoanDriver struct {
 	mpesaRepo   corerepository.MpesaTransactionRepository
 	repo        repository.LoanRepository
 	loanSvc     loan.Service
+	notifier    stkRepaymentNotifier
 	logger      *slog.Logger
 	shortcode   uint
 	interval    time.Duration
@@ -43,12 +54,16 @@ type MpesaSTKLoanDriver struct {
 }
 
 // MpesaSTKLoanDriverDeps are the collaborators the driver needs; all required
-// except the logger.
+// except the logger and Notifier. A nil Notifier is tolerated the same way
+// mgpoller.DepositDriver treats one — the state write is the fact of record
+// and must never be blocked by an SMS failure; a missing or failing notifier
+// only logs a warning.
 type MpesaSTKLoanDriverDeps struct {
 	Client    *mpesa.Client
 	MpesaRepo corerepository.MpesaTransactionRepository
 	Repo      repository.LoanRepository
 	LoanSvc   loan.Service
+	Notifier  stkRepaymentNotifier
 	Config    config.MpesaConfig
 	Logger    *slog.Logger
 }
@@ -72,6 +87,7 @@ func NewMpesaSTKLoanDriver(deps MpesaSTKLoanDriverDeps) (*MpesaSTKLoanDriver, er
 		mpesaRepo:   deps.MpesaRepo,
 		repo:        deps.Repo,
 		loanSvc:     deps.LoanSvc,
+		notifier:    deps.Notifier,
 		logger:      logger.With("component", "mpesa_stk_loan_driver"),
 		shortcode:   deps.Config.CollectionShortcode,
 		interval:    deps.Config.STKPollInterval,
@@ -117,6 +133,7 @@ func (d *MpesaSTKLoanDriver) settle(ctx context.Context, l *models.Loan) {
 	checkoutID := *l.RepaymentMpesaCheckoutID
 
 	var receipt *string
+	var amountKES int64
 	obs, err := d.mpesaRepo.GetByCheckoutID(ctx, checkoutID)
 	switch {
 	case err == nil:
@@ -125,6 +142,7 @@ func (d *MpesaSTKLoanDriver) settle(ctx context.Context, l *models.Loan) {
 				"loan_id", l.ID, "trans_id", obs.TransID, "error", err)
 		} else {
 			receipt = &obs.TransID
+			amountKES = obs.AmountKes
 		}
 	case errors.Is(err, corerepository.ErrMpesaNotFound):
 		d.logger.Warn("settling without a callback receipt; reconciliation must backfill",
@@ -145,8 +163,27 @@ func (d *MpesaSTKLoanDriver) settle(ctx context.Context, l *models.Loan) {
 	row.RepaymentStatus = models.LoanRepaymentStatusFundsReceived
 	row.RepaymentMpesaTransID = receipt
 	row.RepaymentNextPollAt = nil
+	if row.RepaymentPayoffStroops != nil {
+		received := *row.RepaymentPayoffStroops
+		row.RepaymentReceivedStroops = &received
+	}
 	if err := d.repo.Update(ctx, row); err != nil {
 		d.logger.Error("could not mark the repayment funds received", "loan_id", l.ID, "error", err)
+		return
+	}
+	d.notify(l.ID, amountKES)
+}
+
+// notify tells the borrower their payment landed. Best-effort: the state
+// write above is already durable, so a missing notifier or a failed send
+// only logs.
+func (d *MpesaSTKLoanDriver) notify(loanID string, amountKES int64) {
+	if d.notifier == nil {
+		d.logger.Warn("no repayment notifier configured, message not sent", "loan_id", loanID)
+		return
+	}
+	if err := d.notifier.NotifyRepaymentReceivedAmount(loanID, amountKES); err != nil {
+		d.logger.Warn("failed to send repayment received notification", "loan_id", loanID, "error", err)
 	}
 }
 

@@ -26,6 +26,7 @@ import (
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
 	"github.com/Shamba-Records-Limited/microvault/pkg/account"
 	"github.com/Shamba-Records-Limited/microvault/pkg/auth"
+	"github.com/Shamba-Records-Limited/microvault/pkg/compliance/elliptic"
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
 	"github.com/Shamba-Records-Limited/microvault/pkg/controllers"
 	"github.com/Shamba-Records-Limited/microvault/pkg/health"
@@ -47,8 +48,10 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/pin"
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
+	compliancesvc "github.com/Shamba-Records-Limited/microvault/pkg/services/compliance"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mpesapoller"
+	"github.com/Shamba-Records-Limited/microvault/pkg/services/vaultwatch"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	stellarrpc "github.com/Shamba-Records-Limited/microvault/pkg/stellar/rpc"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
@@ -660,7 +663,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("MoneyGram deposit adapter construction failed: %v", err)
 	}
-	repaymentNotifier, err := adapters.NewRepaymentNotifierAdapter(repos.Loan, loanNotifier, cfg.Server.PublicBaseURL, linkShortener, logger)
+	repaymentNotifier, err := adapters.NewRepaymentNotifierAdapter(repos.Loan, loanNotifier, cfg.Server.PublicBaseURL, linkShortener, offRampRegistry, logger)
 	if err != nil {
 		log.Fatalf("Repayment notifier construction failed: %v", err)
 	}
@@ -737,6 +740,7 @@ func main() {
 		MpesaRepo: coreRepos.Mpesa,
 		Repo:      repos.Loan,
 		LoanSvc:   loanSvc,
+		Notifier:  repaymentNotifier,
 		Config:    cfg.Payments.Mpesa,
 		Logger:    logger,
 	})
@@ -745,6 +749,25 @@ func main() {
 	}
 	go mpesaLoanRunner.Start(pollerCtx)
 	log.Println("M-Pesa STK loan poller started")
+
+	// Paybill repayment sweep — walk-up-and-pay, so nothing "initiates" it
+	// the way Prompt does for STK; this converts confirmed, loan-attributed
+	// mpesa_transactions rows as they land. loanAdapter satisfies
+	// repaymentQuoter (GetRepaymentQuote) for the lazy payoff lock.
+	mpesaPaybillDriver, err := adapters.NewMpesaPaybillRepaymentDriver(adapters.MpesaPaybillRepaymentDriverDeps{
+		MpesaRepo: coreRepos.Mpesa,
+		Repo:      repos.Loan,
+		Quoter:    loanAdapter,
+		OffRamps:  offRampRegistry,
+		Notifier:  repaymentNotifier,
+		Interval:  cfg.Payments.Mpesa.PaybillSweepInterval,
+		Logger:    logger,
+	})
+	if err != nil {
+		log.Fatalf("M-Pesa paybill repayment driver construction failed: %v", err)
+	}
+	go mpesaPaybillDriver.Start(pollerCtx)
+	log.Println("M-Pesa paybill repayment sweep started")
 
 	// Pull reconciliation sweep and Account Balance poll — both wall-clock
 	// tickers, not Runner[T] drivers, since neither is a queue of due rows;
@@ -767,11 +790,63 @@ func main() {
 		Queries:               coreRepos.MpesaBalance,
 		CollectionShortcode:   cfg.Payments.Mpesa.CollectionShortcode,
 		DisbursementShortcode: cfg.Payments.Mpesa.DisbursementShortcode,
+		ResultURL:             cfg.Payments.Mpesa.DarajaCallbackURL("balance/result"),
+		QueueTimeOutURL:       cfg.Payments.Mpesa.DarajaCallbackURL("balance/timeout"),
 		Interval:              cfg.Payments.Mpesa.BalancePollInterval,
 		Logger:                logger,
 	})
 	go balancePoller.Start(pollerCtx)
 	log.Println("M-Pesa balance poller started")
+
+	// Compliance watcher — the detect-and-quarantine canary alongside the
+	// vault's on-chain allowlist. See pkg/services/vaultwatch/doc.go.
+	vaultWatcher := vaultwatch.NewWatcher(vaultwatch.WatcherDeps{
+		Client:     rpcClient,
+		Allowlist:  stellarSvc,
+		Cursor:     coreRepos.VaultWatchCursor,
+		ContractID: cfg.Stellar.ContractID,
+		Interval:   cfg.Stellar.VaultWatchInterval,
+		Logger:     logger,
+	})
+	go vaultWatcher.Start(pollerCtx)
+	log.Println("vault compliance watcher started")
+
+	// On-chain writer + rescreening sweep — Phases 5/6. Deliberately built
+	// here, not in cmd/admin: the compliance role signing key must stay out
+	// of the web process (source design doc §14). The admin writes intent
+	// to counterparty_addresses; these two tickers are what actually acts
+	// on it.
+	ellipticClient := elliptic.NewClient(elliptic.Config{
+		APIKey:     cfg.Compliance.EllipticAPIKey,
+		APISecret:  cfg.Compliance.EllipticAPISecret,
+		BaseURL:    cfg.Compliance.EllipticBaseURL,
+		Thresholds: elliptic.Thresholds{}, // runtime-configurable per the source design doc §17 Q8 — not wired to an admin control yet
+	})
+	complianceService := compliancesvc.NewService(compliancesvc.Deps{
+		Repo:              coreRepos.Counterparty,
+		Screener:          ellipticClient,
+		ScreeningValidity: cfg.Compliance.ScreeningValidity,
+		Logger:            logger,
+	})
+
+	complianceSigner := stellarSvc.WithComplianceRole(cfg.Compliance.ComplianceRoleSecretKey)
+	onchainWriter := compliancesvc.NewOnchainWriter(compliancesvc.OnchainWriterDeps{
+		Repo:     coreRepos.Counterparty,
+		Signer:   complianceSigner,
+		Interval: cfg.Compliance.OnchainWriterInterval,
+		Logger:   logger,
+	})
+	go onchainWriter.Start(pollerCtx)
+	log.Println("compliance on-chain writer started")
+
+	rescreenSweep := compliancesvc.NewRescreenSweep(compliancesvc.RescreenSweepDeps{
+		Repo:     coreRepos.Counterparty,
+		Service:  complianceService,
+		Interval: cfg.Compliance.RescreenSweepInterval,
+		Logger:   logger,
+	})
+	go rescreenSweep.Start(pollerCtx)
+	log.Println("compliance rescreen sweep started")
 
 	// ---- 16. Fiber app + middleware + routes ----
 	// The proxy header is read only from a trusted hop: without the

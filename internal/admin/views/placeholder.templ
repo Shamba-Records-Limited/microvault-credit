@@ -1,0 +1,9 @@
+package views
+
+// Placeholder stands in for screens that are routed but not yet built, so the
+// sidebar never leads to a 404.
+templ Placeholder(title, current, note string) {
+	@Shell(title, current) {
+		@EmptyState(note)
+	}
+}

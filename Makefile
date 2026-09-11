@@ -13,12 +13,19 @@ help:
 	@echo "  make migrate-force V=N   - Force credit migration to version N"
 	@echo ""
 	@echo "Build Commands:"
-	@echo "  make build               - Build all applications (credit + migrate)"
+	@echo "  make build               - Build all applications (credit + migrate + admin)"
 	@echo "  make build-credit        - Build credit application"
 	@echo "  make build-migrate       - Build migration CLI"
+	@echo "  make build-admin         - Build admin dashboard (regenerates templ + CSS)"
 	@echo ""
 	@echo "Run Commands:"
 	@echo "  make run                 - Run credit application"
+	@echo "  make run-admin           - Run admin dashboard"
+	@echo ""
+	@echo "Admin Asset Commands:"
+	@echo "  make admin-generate      - Regenerate templ Go from .templ files"
+	@echo "  make admin-assets        - Rebuild the admin stylesheet"
+	@echo "  make admin-watch         - Rebuild the stylesheet on change"
 	@echo ""
 	@echo "Docker Commands:"
 	@echo "  make up                  - Start the dev stack in the background"
@@ -61,7 +68,7 @@ endif
 	@go run cmd/migrate/main.go force $(V)
 
 # Build commands
-build: build-credit build-migrate
+build: build-credit build-migrate build-admin
 	@echo "All applications built successfully"
 
 build-credit:
@@ -73,6 +80,22 @@ build-migrate:
 	@echo "Building migration CLI..."
 	@go build -o bin/migrate cmd/migrate/main.go
 	@echo "Build complete: bin/migrate"
+
+build-admin: admin-generate admin-assets
+	@echo "Building admin dashboard..."
+	@go build -o bin/admin ./cmd/admin
+	@echo "Build complete: bin/admin"
+
+# Admin asset pipeline. templ compiles .templ to _templ.go; Tailwind scans the
+# .templ sources directly, so generate is not a prerequisite of the CSS build.
+admin-generate:
+	@go tool templ generate
+
+admin-assets:
+	@cd $(ADMIN_ASSETS) && npm install --silent && npm run build
+
+admin-watch:
+	@cd $(ADMIN_ASSETS) && npm run watch
 
 # Run commands
 run:

@@ -1,0 +1,126 @@
+package views
+
+import (
+	coremodels "github.com/Shamba-Records-Limited/microvault/pkg/models"
+)
+
+// UsersPage is the state the users screen renders from.
+type UsersPage struct {
+	Users      []*coremodels.User
+	Status     string
+	KYC        string
+	Page       int
+	PageSize   int
+	TotalCount int64
+	Flash      string
+	Error      string
+}
+
+var UserStatusFilters = []FilterOption{
+	{Value: "", Label: "All statuses"},
+	{Value: coremodels.StatusActive, Label: "Active"},
+	{Value: coremodels.StatusSuspended, Label: "Suspended"},
+	{Value: coremodels.StatusBlocked, Label: "Blocked"},
+}
+
+var UserKYCFilters = []FilterOption{
+	{Value: "", Label: "All KYC"},
+	{Value: coremodels.KYCStatusPending, Label: "Pending"},
+	{Value: coremodels.KYCStatusVerified, Label: "Verified"},
+	{Value: coremodels.KYCStatusRejected, Label: "Rejected"},
+	{Value: coremodels.KYCStatusExpired, Label: "Expired"},
+}
+
+func userStatusTone(status string) Tone {
+	switch status {
+	case coremodels.StatusActive:
+		return ToneGood
+	case coremodels.StatusSuspended:
+		return ToneWarning
+	case coremodels.StatusBlocked:
+		return ToneCritical
+	default:
+		return ToneNeutral
+	}
+}
+
+func kycTone(status string) Tone {
+	switch status {
+	case coremodels.KYCStatusVerified:
+		return ToneGood
+	case coremodels.KYCStatusPending:
+		return ToneWarning
+	case coremodels.KYCStatusRejected, coremodels.KYCStatusExpired:
+		return ToneSerious
+	default:
+		return ToneNeutral
+	}
+}
+
+func userQuery(status, kyc string) string {
+	q := queryString("status", status)
+	if kyc != "" {
+		if q != "" {
+			q += "&"
+		}
+		q += "kyc=" + kyc
+	}
+	return q
+}
+
+templ Users(p UsersPage) {
+	@Shell("Users", "/users") {
+		@Alert(ToneGood, p.Flash)
+		@Alert(ToneCritical, p.Error)
+		@filterBar("/users", []FilterSpec{
+			{Name: "status", Label: "Status", Options: UserStatusFilters, Current: p.Status},
+			{Name: "kyc", Label: "KYC", Options: UserKYCFilters, Current: p.KYC},
+		})
+		if len(p.Users) == 0 {
+			@EmptyState("No users match this filter.")
+		} else {
+			@userTable(p.Users)
+			@pager(Pager{
+				Path:       "/users",
+				Page:       p.Page,
+				PageSize:   p.PageSize,
+				TotalCount: p.TotalCount,
+				Query:      userQuery(p.Status, p.KYC),
+			})
+		}
+	}
+}
+
+templ userTable(users []*coremodels.User) {
+	<div class="overflow-hidden rounded-xl border bg-card">
+		<table class="w-full text-sm">
+			<thead class="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
+				<tr>
+					<th class="px-4 py-3 font-medium">User</th>
+					<th class="px-4 py-3 font-medium">Mobile</th>
+					<th class="px-4 py-3 font-medium">KYC</th>
+					<th class="px-4 py-3 font-medium">Status</th>
+					<th class="px-4 py-3 font-medium">Joined</th>
+				</tr>
+			</thead>
+			<tbody>
+				for _, user := range users {
+					<tr class="border-b last:border-0 hover:bg-muted/30">
+						<td class="px-4 py-3">
+							<div class="font-medium">{ deref(user.FullName) }</div>
+							<div class="text-xs text-muted-foreground">{ user.ID }</div>
+						</td>
+						<td class="px-4 py-3 tabular-nums">{ user.MobileNumber }</td>
+						<td class="px-4 py-3">
+							@Badge(kycTone(user.KYCStatus), user.KYCStatus)
+						</td>
+						<td class="px-4 py-3">
+							@Badge(userStatusTone(user.Status), user.Status)
+						</td>
+						<td class="px-4 py-3 tabular-nums text-muted-foreground">{ Date(user.CreatedAt) }</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</div>
+}

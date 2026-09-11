@@ -12,9 +12,14 @@ import (
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/offramp"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/urlshortener"
 )
+
+// notifyDefaultCurrency is what a repayment SMS shows when a loan has no
+// RampFiatCurr on file — every current corridor is Kenyan.
+const notifyDefaultCurrency = "KES"
 
 // Compile-time check.
 var _ mgpoller.RepaymentNotifier = (*RepaymentNotifierAdapter)(nil)
@@ -26,16 +31,20 @@ type RepaymentNotifierAdapter struct {
 	loans         contracts.LoanNotifier
 	publicBaseURL string
 	shortener     urlshortener.Shortener
+	offRamps      *offramp.Registry
 	logger        *slog.Logger
 }
 
 // NewRepaymentNotifierAdapter builds the adapter. repo and notifier are
-// required; logger may be nil.
+// required; logger may be nil. offRamps is optional — nil means every
+// amount falls back to USDC, matching the previous behaviour, rather than
+// failing to construct over what is only a display nicety.
 func NewRepaymentNotifierAdapter(
 	repo repository.LoanRepository,
 	notifier contracts.LoanNotifier,
 	publicBaseURL string,
 	shortener urlshortener.Shortener,
+	offRamps *offramp.Registry,
 	logger *slog.Logger,
 ) (*RepaymentNotifierAdapter, error) {
 	if repo == nil {
@@ -58,6 +67,7 @@ func NewRepaymentNotifierAdapter(
 		loans:         notifier,
 		publicBaseURL: strings.TrimSuffix(publicBaseURL, "/"),
 		shortener:     shortener,
+		offRamps:      offRamps,
 		logger:        logger.With("component", "repayment_notifier"),
 	}, nil
 }
@@ -91,7 +101,27 @@ func (a *RepaymentNotifierAdapter) NotifyRepaymentMoreInfo(loanID string) error 
 
 // NotifyRepaymentReceived confirms the borrower's cash reached the treasury.
 func (a *RepaymentNotifierAdapter) NotifyRepaymentReceived(loanID string) error {
-	return a.send(loanID, "received", a.loans.NotifyRepaymentReceived)
+	return a.sendAmount(loanID, "received", 0, a.loans.NotifyRepaymentReceived)
+}
+
+// NotifyRepaymentReceivedAmount is NotifyRepaymentReceived with the amount
+// actually observed (e.g. an STK callback's AmountKES), which can differ
+// from the loan's locked payoff. amountKES 0 falls back to the payoff.
+func (a *RepaymentNotifierAdapter) NotifyRepaymentReceivedAmount(loanID string, amountKES int64) error {
+	return a.sendAmount(loanID, "received", amountKES, a.loans.NotifyRepaymentReceived)
+}
+
+// NotifyLoanRepaid confirms the treasury-to-vault leg confirmed and the loan
+// is closed.
+func (a *RepaymentNotifierAdapter) NotifyLoanRepaid(loanID string) error {
+	return a.sendAmount(loanID, "repaid", 0, a.loans.NotifyLoanRepaid)
+}
+
+// NotifyLoanRepaidAmount is NotifyLoanRepaid with the amount actually
+// observed (e.g. an STK callback's AmountKES). amountKES 0 falls back to
+// the payoff.
+func (a *RepaymentNotifierAdapter) NotifyLoanRepaidAmount(loanID string, amountKES int64) error {
+	return a.sendAmount(loanID, "repaid", amountKES, a.loans.NotifyLoanRepaid)
 }
 
 // NotifyRepaymentReminder warns that an opened deposit is about to lapse.
@@ -131,6 +161,12 @@ func (a *RepaymentNotifierAdapter) moreInfoLink(ctx context.Context, loanRow *mo
 // send loads the loan and hands a populated notification to one notifier
 // method.
 func (a *RepaymentNotifierAdapter) send(loanID, kind string, notify func(context.Context, contracts.LoanNotification) error) error {
+	return a.sendAmount(loanID, kind, 0, notify)
+}
+
+// sendAmount is send with an optional observed-amount override; see
+// NotifyRepaymentReceivedAmount.
+func (a *RepaymentNotifierAdapter) sendAmount(loanID, kind string, observedAmountKES int64, notify func(context.Context, contracts.LoanNotification) error) error {
 	ctx := context.Background()
 
 	errb := oops.In(errDomain).
@@ -163,11 +199,34 @@ func (a *RepaymentNotifierAdapter) send(loanID, kind string, notify func(context
 	if loanRow.RepaymentPayoffStroops != nil {
 		n.Amount = *loanRow.RepaymentPayoffStroops
 		n.DisplayAmount = float64(*loanRow.RepaymentPayoffStroops) / 1e7
+
+		received := int64(0)
+		if loanRow.RepaymentReceivedStroops != nil {
+			received = *loanRow.RepaymentReceivedStroops
+		}
+		remainingStroops := *loanRow.RepaymentPayoffStroops - received
+		if remainingStroops < 0 {
+			remainingStroops = 0
+		}
+		n.RemainingBalance = float64(remainingStroops) / 1e7
+
+		currency := notifyDefaultCurrency
+		if loanRow.RampFiatCurr != nil && *loanRow.RampFiatCurr != "" {
+			currency = *loanRow.RampFiatCurr
+		}
+		if rate, _, err := offrampSellRate(ctx, a.offRamps, loanRow.RampProvider, currency); err == nil {
+			n.DisplayCurrency = currency
+			n.DisplayAmount = n.DisplayAmount * rate
+			n.RemainingBalance = n.RemainingBalance * rate
+		} else {
+			a.logger.Warn("no FX rate available to render a repayment notification in local currency, sending in USDC",
+				pkgErrors.AttrLoanID, loanID, "error", err)
+		}
 	}
-	// The stored payoff is USDC — that is what settles the loan and what the
-	// deposit is denominated in. The local figure the borrower was quoted at
-	// initiation is not persisted, so these messages stay in USDC rather than
-	// re-quoting FX at a different moment and showing a third number.
+	if observedAmountKES > 0 {
+		n.DisplayCurrency = notifyDefaultCurrency
+		n.DisplayAmount = float64(observedAmountKES)
+	}
 
 	// No phone, no SMS. Worth its own error rather than a silent success: a
 	// borrower who is never told their repayment landed will call support.

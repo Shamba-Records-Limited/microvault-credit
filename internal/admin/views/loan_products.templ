@@ -1,0 +1,207 @@
+package views
+
+import loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
+
+// LoanProductsPage is the state the loan-products screen renders from.
+type LoanProductsPage struct {
+	Products []loanproduct.LoanProductResponse
+	Page     int
+	PageSize int
+	Flash    string
+	Error    string
+	Form     LoanProductForm
+	ShowForm bool
+}
+
+// LoanProductForm carries submitted values back so a rejected form redisplays them.
+type LoanProductForm struct {
+	Name                   string
+	Description            string
+	InterestRateBps        string
+	InterestType           string
+	OriginationFeeBps      string
+	MinAmount              string
+	MaxAmount              string
+	Currency               string
+	MinDurationDays        string
+	MaxDurationDays        string
+	RepaymentSchedules     string
+	MaxCreditMultiplierBps string
+	PriorityOrder          string
+	IsActive               bool
+}
+
+// DefaultLoanProductForm mirrors the seeded product so the form opens on sane values.
+func DefaultLoanProductForm() LoanProductForm {
+	return LoanProductForm{
+		InterestType:           "simple",
+		Currency:               "KES",
+		RepaymentSchedules:     "lump_sum",
+		MaxCreditMultiplierBps: "10000",
+		PriorityOrder:          "1",
+		IsActive:               true,
+	}
+}
+
+templ LoanProducts(p LoanProductsPage) {
+	@Shell("Loan products", "/loan-products") {
+		@Alert(ToneGood, p.Flash)
+		@Alert(ToneCritical, p.Error)
+		<div class="mb-4 flex items-center justify-between">
+			<p class="text-sm text-muted-foreground">
+				Amounts are fiat minor units. Rates are basis points.
+			</p>
+			<a
+				href="/loan-products?new=1"
+				class="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+			>
+				New product
+			</a>
+		</div>
+		if p.ShowForm {
+			<div class="mb-6">
+				@loanProductForm(p.Form)
+			</div>
+		}
+		if len(p.Products) == 0 {
+			@EmptyState("No loan products yet.")
+		} else {
+			@loanProductTable(p.Products)
+		}
+	}
+}
+
+templ loanProductTable(products []loanproduct.LoanProductResponse) {
+	<div class="overflow-hidden rounded-xl border bg-card">
+		<table class="w-full text-sm">
+			<thead class="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
+				<tr>
+					<th class="px-4 py-3 font-medium">Name</th>
+					<th class="px-4 py-3 font-medium">Rate</th>
+					<th class="px-4 py-3 font-medium">Origination</th>
+					<th class="px-4 py-3 text-right font-medium">Min</th>
+					<th class="px-4 py-3 text-right font-medium">Max</th>
+					<th class="px-4 py-3 font-medium">Term</th>
+					<th class="px-4 py-3 font-medium">Schedules</th>
+					<th class="px-4 py-3 font-medium">Status</th>
+				</tr>
+			</thead>
+			<tbody>
+				for _, product := range products {
+					<tr class="border-b last:border-0 hover:bg-muted/30">
+						<td class="px-4 py-3">
+							<div class="font-medium">{ product.Name }</div>
+							if product.Description != nil {
+								<div class="text-xs text-muted-foreground">{ *product.Description }</div>
+							}
+						</td>
+						<td class="px-4 py-3 tabular-nums">
+							{ Bps(product.InterestRateBps) }
+							<span class="text-muted-foreground">{ product.InterestType }</span>
+						</td>
+						<td class="px-4 py-3 tabular-nums">{ BpsPtr(product.OriginationFeeBps) }</td>
+						<td class="px-4 py-3 text-right tabular-nums">{ Money(product.MinAmount, product.Currency) }</td>
+						<td class="px-4 py-3 text-right tabular-nums">{ Money(product.MaxAmount, product.Currency) }</td>
+						<td class="px-4 py-3">{ Days(product.MinDurationDays, product.MaxDurationDays) }</td>
+						<td class="px-4 py-3 text-muted-foreground">{ Schedules(product.AllowedRepaymentSchedules) }</td>
+						<td class="px-4 py-3">
+							if product.IsActive {
+								@Badge(ToneGood, "Active")
+							} else {
+								@Badge(ToneNeutral, "Inactive")
+							}
+						</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</div>
+}
+
+templ loanProductForm(f LoanProductForm) {
+	@Card("New loan product") {
+		<form method="post" action="/loan-products" class="grid grid-cols-2 gap-4">
+			@textField("name", "Name", f.Name, "shamba_instant_loan", true)
+			@textField("currency", "Currency", f.Currency, "KES", true)
+			<div class="col-span-2">
+				@textField("description", "Description", f.Description, "", false)
+			</div>
+			@numberField("interest_rate_bps", "Interest rate (bps)", f.InterestRateBps, true)
+			@selectField("interest_type", "Interest type", f.InterestType, []string{"simple", "compound"})
+			@numberField("origination_fee_bps", "Origination fee (bps)", f.OriginationFeeBps, false)
+			@numberField("max_credit_multiplier_bps", "Max credit multiplier (bps)", f.MaxCreditMultiplierBps, true)
+			@numberField("min_amount", "Min amount (minor units)", f.MinAmount, true)
+			@numberField("max_amount", "Max amount (minor units)", f.MaxAmount, true)
+			@numberField("min_duration_days", "Min duration (days)", f.MinDurationDays, true)
+			@numberField("max_duration_days", "Max duration (days)", f.MaxDurationDays, true)
+			@textField("repayment_schedules", "Repayment schedules (comma separated)", f.RepaymentSchedules, "lump_sum", true)
+			@numberField("priority_order", "Priority order", f.PriorityOrder, false)
+			<div class="col-span-2 flex items-center gap-2">
+				<input
+					id="is_active"
+					name="is_active"
+					type="checkbox"
+					value="true"
+					checked?={ f.IsActive }
+					class="size-4 rounded border-input"
+				/>
+				<label for="is_active" class="text-sm">Active</label>
+			</div>
+			<div class="col-span-2 flex items-center gap-2 border-t pt-4">
+				<button
+					type="submit"
+					class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+				>
+					Create product
+				</button>
+				<a href="/loan-products" class="px-3 py-2 text-sm text-muted-foreground hover:text-foreground">
+					Cancel
+				</a>
+			</div>
+		</form>
+	}
+}
+
+templ textField(name, label, value, placeholder string, required bool) {
+	<div>
+		<label for={ name } class="text-xs font-medium text-muted-foreground">{ label }</label>
+		<input
+			id={ name }
+			name={ name }
+			type="text"
+			value={ value }
+			placeholder={ placeholder }
+			required?={ required }
+			class="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+		/>
+	</div>
+}
+
+templ numberField(name, label, value string, required bool) {
+	<div>
+		<label for={ name } class="text-xs font-medium text-muted-foreground">{ label }</label>
+		<input
+			id={ name }
+			name={ name }
+			type="number"
+			value={ value }
+			required?={ required }
+			class="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-ring"
+		/>
+	</div>
+}
+
+templ selectField(name, label, value string, options []string) {
+	<div>
+		<label for={ name } class="text-xs font-medium text-muted-foreground">{ label }</label>
+		<select
+			id={ name }
+			name={ name }
+			class="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+		>
+			for _, option := range options {
+				<option value={ option } selected?={ option == value }>{ option }</option>
+			}
+		</select>
+	</div>
+}

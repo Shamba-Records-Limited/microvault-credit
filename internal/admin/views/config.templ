@@ -1,0 +1,129 @@
+package views
+
+import globallendinglimit "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/global_lending_limit"
+
+// ConfigPage is the state the global lending config screen renders from.
+type ConfigPage struct {
+	Limits   []globallendinglimit.GlobalLendingLimitResponse
+	Page     int
+	PageSize int
+	Flash    string
+	Error    string
+	Form     ConfigForm
+	ShowForm bool
+}
+
+// ConfigForm carries submitted values back so a rejected form redisplays them.
+type ConfigForm struct {
+	ConfigKey   string
+	ConfigValue string
+	ValueType   string
+	Description string
+	Category    string
+	IsActive    bool
+}
+
+// ConfigValueTypes and ConfigCategories mirror the constants the service validates against.
+var (
+	ConfigValueTypes = []string{"integer", "decimal", "boolean", "string"}
+	ConfigCategories = []string{"limits", "fees", "operational"}
+)
+
+func DefaultConfigForm() ConfigForm {
+	return ConfigForm{ValueType: "integer", Category: "limits", IsActive: true}
+}
+
+templ Config(p ConfigPage) {
+	@Shell("Config", "/config") {
+		@Alert(ToneGood, p.Flash)
+		@Alert(ToneCritical, p.Error)
+		<div class="mb-4 flex items-center justify-between">
+			<p class="text-sm text-muted-foreground">
+				Global lending limits, stored as typed key/value pairs. Changes take effect on the next loan request.
+			</p>
+			<a
+				href="/config?new=1"
+				class="flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+			>
+				<i class="ph ph-plus text-base" aria-hidden="true"></i>
+				New setting
+			</a>
+		</div>
+		if p.ShowForm {
+			<div class="mb-6">
+				@configForm(p.Form)
+			</div>
+		}
+		if len(p.Limits) == 0 {
+			@EmptyState("No global lending limits configured yet.")
+		} else {
+			@configTable(p.Limits)
+		}
+	}
+}
+
+templ configTable(limits []globallendinglimit.GlobalLendingLimitResponse) {
+	<div class="overflow-hidden rounded-xl border bg-card">
+		<table class="w-full text-sm">
+			<thead class="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
+				<tr>
+					<th class="px-4 py-3 font-medium">Key</th>
+					<th class="px-4 py-3 font-medium">Value</th>
+					<th class="px-4 py-3 font-medium">Type</th>
+					<th class="px-4 py-3 font-medium">Category</th>
+					<th class="px-4 py-3 font-medium">Updated</th>
+					<th class="px-4 py-3 font-medium">Status</th>
+				</tr>
+			</thead>
+			<tbody>
+				for _, limit := range limits {
+					<tr class="border-b last:border-0 hover:bg-muted/30">
+						<td class="px-4 py-3">
+							<div class="font-mono text-xs font-medium">{ limit.ConfigKey }</div>
+							if limit.Description != nil {
+								<div class="mt-0.5 text-xs text-muted-foreground">{ *limit.Description }</div>
+							}
+						</td>
+						<td class="px-4 py-3 font-mono text-xs tabular-nums">{ limit.ConfigValue }</td>
+						<td class="px-4 py-3 text-muted-foreground">{ limit.ValueType }</td>
+						<td class="px-4 py-3 text-muted-foreground">{ StringPtr(limit.Category) }</td>
+						<td class="px-4 py-3 text-muted-foreground">{ Date(limit.UpdatedAt) }</td>
+						<td class="px-4 py-3">
+							if limit.IsActive {
+								@Badge(ToneGood, "Active")
+							} else {
+								@Badge(ToneNeutral, "Inactive")
+							}
+						</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</div>
+}
+
+templ configForm(f ConfigForm) {
+	@Card("New global setting") {
+		<form method="post" action="/config" class="grid grid-cols-2 gap-4">
+			@textField("config_key", "Key", f.ConfigKey, "max_total_exposure", true)
+			@textField("config_value", "Value", f.ConfigValue, "1000000", true)
+			@selectField("value_type", "Value type", f.ValueType, ConfigValueTypes)
+			@selectField("category", "Category", f.Category, ConfigCategories)
+			<div class="col-span-2">
+				@textField("description", "Description", f.Description, "", false)
+			</div>
+			<div class="col-span-2 flex items-center gap-2">
+				<input
+					id="is_active"
+					name="is_active"
+					type="checkbox"
+					value="true"
+					checked?={ f.IsActive }
+					class="size-4 rounded border-input"
+				/>
+				<label for="is_active" class="text-sm">Active</label>
+			</div>
+			@formActions("Create setting", "/config")
+		</form>
+	}
+}

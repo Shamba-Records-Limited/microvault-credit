@@ -1,0 +1,111 @@
+package views
+
+import (
+	creditmodels "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
+)
+
+// LoansPage is the state the loans screen renders from.
+type LoansPage struct {
+	Loans      []*creditmodels.Loan
+	Status     string
+	Page       int
+	PageSize   int
+	TotalCount int64
+	Flash      string
+	Error      string
+}
+
+// LoanStatusFilters is the filter dropdown's option set, in workflow order.
+var LoanStatusFilters = []FilterOption{
+	{Value: "", Label: "All statuses"},
+	{Value: creditmodels.LoanStatusPending, Label: "Pending"},
+	{Value: creditmodels.LoanStatusApproved, Label: "Approved"},
+	{Value: creditmodels.LoanStatusDisbursing, Label: "Disbursing"},
+	{Value: creditmodels.LoanStatusDisbursed, Label: "Disbursed"},
+	{Value: creditmodels.LoanStatusRepaid, Label: "Repaid"},
+	{Value: creditmodels.LoanStatusDefaulted, Label: "Defaulted"},
+	{Value: creditmodels.LoanStatusCancelled, Label: "Cancelled"},
+	{Value: creditmodels.LoanStatusOffRampFailed, Label: "Off-ramp failed"},
+}
+
+func loanStatusTone(status string) Tone {
+	switch status {
+	case creditmodels.LoanStatusDisbursed:
+		return ToneGood
+	case creditmodels.LoanStatusRepaid:
+		return ToneGood
+	case creditmodels.LoanStatusPending, creditmodels.LoanStatusApproved:
+		return ToneNeutral
+	case creditmodels.LoanStatusDisbursing:
+		return ToneWarning
+	case creditmodels.LoanStatusOffRampFailed:
+		return ToneSerious
+	case creditmodels.LoanStatusDefaulted:
+		return ToneCritical
+	default:
+		return ToneNeutral
+	}
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return "—"
+	}
+	return *s
+}
+
+templ Loans(p LoansPage) {
+	@Shell("Loans", "/loans") {
+		@Alert(ToneGood, p.Flash)
+		@Alert(ToneCritical, p.Error)
+		@filterBar("/loans", []FilterSpec{
+			{Name: "status", Label: "Status", Options: LoanStatusFilters, Current: p.Status},
+		})
+		if len(p.Loans) == 0 {
+			@EmptyState("No loans match this filter.")
+		} else {
+			@loanTable(p.Loans)
+			@pager(Pager{
+				Path:       "/loans",
+				Page:       p.Page,
+				PageSize:   p.PageSize,
+				TotalCount: p.TotalCount,
+				Query:      queryString("status", p.Status),
+			})
+		}
+	}
+}
+
+templ loanTable(loans []*creditmodels.Loan) {
+	<div class="overflow-hidden rounded-xl border bg-card">
+		<table class="w-full text-sm">
+			<thead class="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
+				<tr>
+					<th class="px-4 py-3 font-medium">Reference</th>
+					<th class="px-4 py-3 text-right font-medium">Principal</th>
+					<th class="px-4 py-3 font-medium">Term</th>
+					<th class="px-4 py-3 font-medium">Status</th>
+					<th class="px-4 py-3 font-medium">Due</th>
+					<th class="px-4 py-3 font-medium">Created</th>
+				</tr>
+			</thead>
+			<tbody>
+				for _, loan := range loans {
+					<tr class="border-b last:border-0 hover:bg-muted/30">
+						<td class="px-4 py-3">
+							<div class="font-medium">{ deref(loan.LoanReference) }</div>
+							<div class="text-xs text-muted-foreground">{ loan.ID }</div>
+						</td>
+						<td class="px-4 py-3 text-right tabular-nums">{ Money(loan.PrincipalAmount, loan.PrincipalAsset) }</td>
+						<td class="px-4 py-3">{ Days(loan.DurationDays, loan.DurationDays) }</td>
+						<td class="px-4 py-3">
+							@Badge(loanStatusTone(loan.Status), loan.Status)
+						</td>
+						<td class="px-4 py-3 tabular-nums">{ DatePtr(loan.DueDate) }</td>
+						<td class="px-4 py-3 tabular-nums text-muted-foreground">{ Date(loan.CreatedAt) }</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</div>
+}
