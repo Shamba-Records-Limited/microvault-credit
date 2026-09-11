@@ -1104,7 +1104,7 @@ var SwaggerInfo = &swag.Spec{
 	Host:             "localhost:8081",
 	BasePath:         "/",
 	Schemes:          []string{},
-	Title:            "microvault Credit API",
+	Title:            "Microvault Credit API",
 	Description:      "Credit management and loan processing service for microvault.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,

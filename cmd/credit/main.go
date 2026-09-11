@@ -770,6 +770,8 @@ func main() {
 		Queries:               coreRepos.MpesaBalance,
 		CollectionShortcode:   cfg.Payments.Mpesa.CollectionShortcode,
 		DisbursementShortcode: cfg.Payments.Mpesa.DisbursementShortcode,
+		ResultURL:             cfg.Payments.Mpesa.DarajaCallbackURL("balance/result"),
+		QueueTimeOutURL:       cfg.Payments.Mpesa.DarajaCallbackURL("balance/timeout"),
 		Interval:              cfg.Payments.Mpesa.BalancePollInterval,
 		Logger:                logger,
 	})

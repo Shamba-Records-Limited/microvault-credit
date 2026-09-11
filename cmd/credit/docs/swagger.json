@@ -2,7 +2,7 @@
     "swagger": "2.0",
     "info": {
         "description": "Credit management and loan processing service for microvault.",
-        "title": "microvault Credit API",
+        "title": "Microvault Credit API",
         "termsOfService": "http://swagger.io/terms/",
         "contact": {
             "name": "API Support",
