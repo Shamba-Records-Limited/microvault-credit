@@ -30,6 +30,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/middleware"
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
 	compliancesvc "github.com/Shamba-Records-Limited/microvault/pkg/services/compliance"
+	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/platform/cache"
 	"github.com/Shamba-Records-Limited/microvault/platform/database"
 	"github.com/gofiber/fiber/v2"
@@ -108,6 +109,17 @@ func main() {
 		Logger:            logger,
 	})
 
+	// Read-only: the admin never signs with these keys, only uses the admin
+	// key as a simulation source account for view calls.
+	stellarSvc := stellar.NewService(
+		cfg.Stellar.NewRpcClient(),
+		cfg.Stellar.NetworkPassphrase,
+		cfg.Stellar.TreasurySecretKey,
+		cfg.Stellar.AdminSecretKey,
+		cfg.Stellar.ContractID,
+		cfg.Stellar.USDCIssuer,
+	)
+
 	isDev := cfg.Server.ServerEnvironment == "development"
 	secureCookies := !isDev
 
@@ -157,7 +169,7 @@ func main() {
 	usersHandler := handlers.NewUsers(userRepo)
 	transactionsHandler := handlers.NewTransactions(txRepo)
 	counterpartiesHandler := handlers.NewCounterparties(counterpartyRepo, complianceService)
-	screeningHandler := handlers.NewScreening(counterpartyRepo, complianceService)
+	screeningHandler := handlers.NewScreening(counterpartyRepo, complianceService, stellarSvc)
 
 	app.Get("/", dashboardHandler.Show)
 	app.Get("/loan-products", loanProductHandler.List)

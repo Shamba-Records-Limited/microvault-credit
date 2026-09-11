@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/views"
@@ -8,6 +10,14 @@ import (
 	corerepo "github.com/Shamba-Records-Limited/microvault/pkg/repository"
 	compliancesvc "github.com/Shamba-Records-Limited/microvault/pkg/services/compliance"
 )
+
+// vaultInfo is the two on-chain reads the screening queue's governance
+// panel needs — narrow enough that a fake can stand in for it in tests
+// without a real RPC client.
+type vaultInfo interface {
+	ComplianceRole(ctx context.Context) (string, error)
+	AllowlistEnforced(ctx context.Context) (bool, error)
+}
 
 // screeningQueueStatuses is everything the queue shows: review, pending,
 // and expired — the source design doc §14's full list. The rescreening
@@ -21,10 +31,11 @@ var screeningQueueStatuses = []string{"review", "pending", "expired"}
 type Screening struct {
 	repo       corerepo.CounterpartyRepository
 	compliance *compliancesvc.Service
+	vault      vaultInfo
 }
 
-func NewScreening(repo corerepo.CounterpartyRepository, compliance *compliancesvc.Service) *Screening {
-	return &Screening{repo: repo, compliance: compliance}
+func NewScreening(repo corerepo.CounterpartyRepository, compliance *compliancesvc.Service, vault vaultInfo) *Screening {
+	return &Screening{repo: repo, compliance: compliance, vault: vault}
 }
 
 func (h *Screening) List(c *fiber.Ctx) error {
@@ -34,6 +45,19 @@ func (h *Screening) List(c *fiber.Ctx) error {
 		Flash:    c.Query("flash"),
 	}
 	offset := (page.Page - 1) * page.PageSize
+
+	// Best-effort: an RPC hiccup here shouldn't stop a compliance officer
+	// from working the queue. VaultInfoError, not a false AllowlistEnforced,
+	// is what a read failure produces — false reads as "confirmed off",
+	// which a stale/unreadable RPC call must never claim.
+	role, roleErr := h.vault.ComplianceRole(c.UserContext())
+	enforced, enforcedErr := h.vault.AllowlistEnforced(c.UserContext())
+	if roleErr != nil || enforcedErr != nil {
+		page.VaultInfoError = "Could not read on-chain compliance state."
+	} else {
+		page.ComplianceRole = role
+		page.AllowlistEnforced = enforced
+	}
 
 	addrs, err := h.repo.ListAddressesByStatus(c.UserContext(), screeningQueueStatuses, page.PageSize, offset)
 	if err != nil {

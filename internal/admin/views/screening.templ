@@ -18,6 +18,13 @@ type ScreeningQueuePage struct {
 	TotalCount int64
 	Flash      string
 	Error      string
+
+	// On-chain governance state — see handlers/screening.go's List.
+	// VaultInfoError set means ComplianceRole/AllowlistEnforced are stale
+	// zero values, not a confirmed read.
+	ComplianceRole    string
+	AllowlistEnforced bool
+	VaultInfoError    string
 }
 
 // ScreeningDetailPage is the state one address's full screening history
@@ -58,6 +65,7 @@ templ ScreeningQueue(p ScreeningQueuePage) {
 	@Shell("Screening queue", "/screening") {
 		@Alert(ToneGood, p.Flash)
 		@Alert(ToneCritical, p.Error)
+		@vaultInfoPanel(p)
 		if len(p.Addresses) == 0 {
 			@EmptyState("Nothing in the screening queue.")
 		} else {
@@ -82,6 +90,34 @@ templ ScreeningQueue(p ScreeningQueuePage) {
 			</div>
 			@pager(Pager{Path: "/screening", Page: p.Page, PageSize: p.PageSize, TotalCount: p.TotalCount})
 		}
+	}
+}
+
+// vaultInfoPanel shows the vault's on-chain governance state — read-only,
+// not sensitive: both compliance_role and allowlist_enforced are public
+// view calls anyone can already query directly.
+templ vaultInfoPanel(p ScreeningQueuePage) {
+	if p.VaultInfoError != "" {
+		@Alert(ToneWarning, p.VaultInfoError)
+	} else {
+		<div class="mb-6 flex flex-wrap items-center gap-6 rounded-xl border bg-card px-4 py-3 text-sm">
+			<div class="flex items-center gap-2">
+				<span class="text-xs font-medium text-muted-foreground">Allowlist enforcement</span>
+				if p.AllowlistEnforced {
+					@Badge(ToneGood, "enforced")
+				} else {
+					@Badge(ToneWarning, "not enforced")
+				}
+			</div>
+			<div class="flex items-center gap-2">
+				<span class="text-xs font-medium text-muted-foreground">Compliance role</span>
+				if p.ComplianceRole == "" {
+					@Badge(ToneSerious, "unset")
+				} else {
+					<span class="font-mono text-xs">{ p.ComplianceRole }</span>
+				}
+			</div>
+		</div>
 	}
 }
 
