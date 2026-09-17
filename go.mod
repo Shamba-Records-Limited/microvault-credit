@@ -2,7 +2,7 @@ module github.com/Shamba-Records-Limited/microvault-credit
 
 go 1.26.0
 
-require github.com/Shamba-Records-Limited/microvault v1.5.0
+require github.com/Shamba-Records-Limited/microvault v1.5.1
 
 replace github.com/Shamba-Records-Limited/microvault => ../microvault
 
@@ -20,7 +20,7 @@ require (
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/samber/do/v2 v2.1.0
 	github.com/samber/lo v1.53.0
-	github.com/samber/oops v1.23.1
+	github.com/samber/oops v1.23.2
 	github.com/stretchr/testify v1.12.1
 	github.com/swaggo/swag v1.16.6
 	gorm.io/datatypes v1.2.7
@@ -105,7 +105,7 @@ require (
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/tools v0.50.0 // indirect
 	gorm.io/driver/mysql v1.6.0 // indirect
-	gorm.io/driver/postgres v1.6.2 // indirect
+	gorm.io/driver/postgres v1.6.3 // indirect
 )
 
 tool github.com/a-h/templ/cmd/templ
