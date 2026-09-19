@@ -76,6 +76,10 @@ type LoanRepository interface {
 	// vault repay.
 	GetDueRepayments(ctx context.Context, limit int) ([]*models.Loan, error)
 
+	// GetDueAirtelRepayments returns Airtel Money repayments whose prompt may
+	// have resolved and whose enquiry is due.
+	GetDueAirtelRepayments(ctx context.Context, limit int) ([]*models.Loan, error)
+
 	// GetDueSTKRepayments returns M-Pesa Express repayments whose prompt may
 	// have resolved and whose poll is due.
 	GetDueSTKRepayments(ctx context.Context, limit int) ([]*models.Loan, error)
@@ -503,6 +507,28 @@ func (r *loanRepository) GetDueSTKRepayments(ctx context.Context, limit int) ([]
 	return loans, nil
 }
 
+// GetDueAirtelRepayments returns Airtel Money repayments whose prompt may
+// have resolved and whose enquiry is due.
+func (r *loanRepository) GetDueAirtelRepayments(ctx context.Context, limit int) ([]*models.Loan, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var loans []*models.Loan
+	result := r.db.WithContext(ctx).
+		Where("repayment_status = ?", models.LoanRepaymentStatusInitiated).
+		Where("repayment_provider = ?", models.LoanRepaymentProviderAirtel).
+		Where("repayment_airtel_txn_id IS NOT NULL AND deleted_at IS NULL").
+		Where("repayment_next_poll_at IS NULL OR repayment_next_poll_at <= ?", time.Now()).
+		Order("repayment_next_poll_at ASC NULLS FIRST").
+		Limit(limit).
+		Find(&loans)
+	if result.Error != nil {
+		log.Printf("GetDueAirtelRepayments: database error: %v", result.Error)
+		return nil, ErrFailedToGetDueRepayments
+	}
+	return loans, nil
+}
+
 // --- Update Operations ---
 
 // loanUpdateMap is the single source of truth for which loan columns may be
@@ -577,6 +603,9 @@ func loanUpdateMap(loan *models.Loan) map[string]interface{} {
 		"repayment_mpesa_checkout_id": loan.RepaymentMpesaCheckoutID,
 		"repayment_mpesa_trans_id":    loan.RepaymentMpesaTransID,
 		"repayment_stk_attempts":      loan.RepaymentSTKAttempts,
+		"repayment_airtel_txn_id":     loan.RepaymentAirtelTxnID,
+		"repayment_airtel_money_id":   loan.RepaymentAirtelMoneyID,
+		"repayment_airtel_attempts":   loan.RepaymentAirtelAttempts,
 		"repayment_received_stroops":  loan.RepaymentReceivedStroops,
 	}
 }

@@ -1439,11 +1439,74 @@ func (a *LoanServiceAdapter) GetRepaymentQuote(ctx context.Context, loanID strin
 // rounded up — M-Pesa accepts whole KES only, and a shilling short is a loan
 // that never settles.
 func (a *LoanServiceAdapter) PromptRepayment(ctx context.Context, loanID, phoneNumber string) error {
+	provider, err := a.resolvePrompter(loanID, "")
+	if err != nil {
+		return err
+	}
+	return a.promptVia(ctx, provider, loanID, phoneNumber)
+}
+
+// PromptRepaymentVia implements ussd.CarrierRepaymentPrompter: the same push,
+// against a provider the caller names.
+//
+// The borrower picks their network from the repay menu, so the rail is a
+// choice rather than something inferred from their MSISDN. A carrier guessed
+// from a number prefix goes stale silently as the regulator reallocates
+// ranges, and a mis-routed prompt is a support call; when prefix detection is
+// added it belongs on top of this, choosing the menu's default rather than
+// making the decision.
+func (a *LoanServiceAdapter) PromptRepaymentVia(ctx context.Context, loanID, phoneNumber, providerID string) error {
+	provider, err := a.resolvePrompter(loanID, cashin.ProviderID(providerID))
+	if err != nil {
+		return err
+	}
+	return a.promptVia(ctx, provider, loanID, phoneNumber)
+}
+
+// resolvePrompter finds the prompt-capable provider. An empty id falls back
+// to the registry's CollectionMethodPrompt alias, which is what the
+// unpinned PromptRepayment has always used.
+func (a *LoanServiceAdapter) resolvePrompter(loanID string, id cashin.ProviderID) (cashin.Prompter, error) {
 	if a.cashIn == nil {
-		return lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
+		return nil, lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
 			Code(pkgErrors.CodeAnchorNotWired).Errorf("no cash-in provider is configured")
 	}
 
+	var provider cashin.Provider
+	if id != "" {
+		found, ok := a.cashIn.Get(id)
+		if !ok {
+			return nil, lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
+				With(pkgErrors.AttrProvider, string(id)).
+				Code(pkgErrors.CodeNotFound).Errorf("the named provider is not registered")
+		}
+		provider = found
+	} else {
+		resolved, err := a.cashIn.Resolve(cashin.Request{
+			LoanID:           loanID,
+			CollectionMethod: cashin.CollectionMethodPrompt,
+		})
+		if err != nil {
+			return nil, lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
+				Wrapf(err, "could not resolve a prompt provider")
+		}
+		provider = resolved
+	}
+
+	prompter, ok := provider.(cashin.Prompter)
+	if !ok {
+		return nil, lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
+			With(pkgErrors.AttrProvider, string(provider.ID())).
+			Code(pkgErrors.CodeUnsupportedOperation).Errorf("the resolved provider cannot push prompts")
+	}
+	return prompter, nil
+}
+
+// promptVia quotes the payoff and pushes it at the borrower's handset.
+//
+// The amount is rounded up to whole shillings: both prompt rails collect in
+// whole KES, and a shilling short is a loan that never settles.
+func (a *LoanServiceAdapter) promptVia(ctx context.Context, prompter cashin.Prompter, loanID, phoneNumber string) error {
 	quote, err := a.GetRepaymentQuote(ctx, loanID)
 	if err != nil {
 		return err
@@ -1451,23 +1514,10 @@ func (a *LoanServiceAdapter) PromptRepayment(ctx context.Context, loanID, phoneN
 	if quote.LocalCurrency != "KES" {
 		return lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
 			With(pkgErrors.AttrCurrency, quote.LocalCurrency).
-			Code(pkgErrors.CodeUnsupportedOperation).Errorf("prompts push M-Pesa, which collects in KES")
+			Code(pkgErrors.CodeUnsupportedOperation).Errorf("prompt rails collect in KES")
 	}
 	amountKES := (quote.AmountLocalCents + 99) / 100
 
-	provider, err := a.cashIn.Resolve(cashin.Request{
-		LoanID:           loanID,
-		CollectionMethod: cashin.CollectionMethodPrompt,
-	})
-	if err != nil {
-		return lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
-			Wrapf(err, "could not resolve a prompt provider")
-	}
-	prompter, ok := provider.(cashin.Prompter)
-	if !ok {
-		return lendingErr("prompt_repayment").With(pkgErrors.AttrLoanID, loanID).
-			Code(pkgErrors.CodeUnsupportedOperation).Errorf("the resolved provider cannot push prompts")
-	}
 	if _, err := prompter.Prompt(ctx, cashin.PromptRequest{
 		LoanID:            loanID,
 		Payer:             phoneNumber,

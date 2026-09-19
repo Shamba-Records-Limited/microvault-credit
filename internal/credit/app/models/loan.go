@@ -176,6 +176,15 @@ type Loan struct {
 	RepaymentMpesaCheckoutID *string `json:"repayment_mpesa_checkout_id,omitempty" gorm:"column:repayment_mpesa_checkout_id;type:varchar(100)"`
 	RepaymentMpesaTransID    *string `json:"repayment_mpesa_trans_id,omitempty" gorm:"column:repayment_mpesa_trans_id;type:varchar(20)"`
 	RepaymentSTKAttempts     int     `json:"repayment_stk_attempts" gorm:"column:repayment_stk_attempts;not null;default:0"`
+	// Airtel Money repayment state. RepaymentAirtelTxnID is the id we mint
+	// and send, which is both the idempotency key and the only key an
+	// enquiry accepts; RepaymentAirtelMoneyID is Airtel's own receipt, which
+	// exists only once the transaction succeeds and is the only key a refund
+	// accepts. The two are separate columns because they are minted by
+	// different parties at different times.
+	RepaymentAirtelTxnID    *string `json:"repayment_airtel_txn_id,omitempty" gorm:"column:repayment_airtel_txn_id;type:varchar(64)"`
+	RepaymentAirtelMoneyID  *string `json:"repayment_airtel_money_id,omitempty" gorm:"column:repayment_airtel_money_id;type:varchar(64)"`
+	RepaymentAirtelAttempts int     `json:"repayment_airtel_attempts" gorm:"column:repayment_airtel_attempts;not null;default:0"`
 	// RepaymentReceivedStroops is a cached display total for paybill's
 	// walk-up-and-pay progress — recomputed from
 	// mpesa_transactions.applied_stroops on every sweep tick, never itself
@@ -364,6 +373,7 @@ const (
 	// Loan Repayment Provider — which rail owns the in-flight repayment.
 	LoanRepaymentProviderMoneyGram = "moneygram"
 	LoanRepaymentProviderMpesa     = "mpesa"
+	LoanRepaymentProviderAirtel    = "airtel"
 )
 
 // IsRepaymentOpen reports whether a borrower repayment is in flight and owned

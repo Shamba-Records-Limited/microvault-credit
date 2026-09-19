@@ -595,6 +595,10 @@ func main() {
 		LoanNotifier:    loanNotifier,
 		RepayPaybill:    repayPaybill,
 		MpesaPrompter:   true,
+		// The Airtel rail appears in the repay menu only when the
+		// integration is configured. The borrower picks their network; the
+		// menu must not offer one that cannot be resolved.
+		AirtelPrompter: cfg.Payments.Airtel.Enabled(),
 	})
 	ussdService := ussd.NewUSSDService(ussdHandler)
 
@@ -822,6 +826,39 @@ func main() {
 		if err != nil {
 			log.Fatalf("Airtel client construction failed: %v", err)
 		}
+
+		// The collection adapter is registered but deliberately not aliased
+		// to any CollectionMethod: the method aliases stay pointed at
+		// M-Pesa, and the Airtel rail is reached by the borrower naming it
+		// in the repay menu, which resolves the provider by id.
+		airtelCollection, err := adapters.NewAirtelCollectionAdapter(adapters.AirtelCollectionAdapterDeps{
+			Client:  airtelClient,
+			Repo:    repos.Loan,
+			LoanSvc: loanSvc,
+			Config:  cfg.Payments.Airtel,
+			Logger:  logger,
+		})
+		if err != nil {
+			log.Fatalf("Airtel collection adapter construction failed: %v", err)
+		}
+		if err := cashInRegistry.Register(airtelCollection); err != nil {
+			log.Fatalf("Failed to register Airtel cash-in: %v", err)
+		}
+
+		airtelLoanRunner, err := adapters.NewAirtelPromptLoanRunner(adapters.AirtelPromptLoanDriverDeps{
+			Client:     airtelClient,
+			AirtelRepo: coreRepos.Airtel,
+			Repo:       repos.Loan,
+			LoanSvc:    loanSvc,
+			Notifier:   repaymentNotifier,
+			Config:     cfg.Payments.Airtel,
+			Logger:     logger,
+		})
+		if err != nil {
+			log.Fatalf("Airtel prompt loan poller construction failed: %v", err)
+		}
+		go airtelLoanRunner.Start(pollerCtx)
+		log.Println("Airtel prompt loan poller started")
 
 		airtelSweeper := airtelpoller.NewSummarySweeper(airtelpoller.SummarySweeperDeps{
 			Client:   airtelClient,
