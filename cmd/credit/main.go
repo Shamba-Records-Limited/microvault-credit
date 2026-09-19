@@ -37,6 +37,7 @@ import (
 	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
 	atussd "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/providers/africastalking"
 	mvnotifications "github.com/Shamba-Records-Limited/microvault/pkg/notifications"
+	"github.com/Shamba-Records-Limited/microvault/pkg/payment/airtel"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/cashin"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/fonbnk"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/moneygram"
@@ -48,6 +49,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/pin"
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
+	"github.com/Shamba-Records-Limited/microvault/pkg/services/airtelpoller"
 	compliancesvc "github.com/Shamba-Records-Limited/microvault/pkg/services/compliance"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mpesapoller"
@@ -797,6 +799,40 @@ func main() {
 	})
 	go balancePoller.Start(pollerCtx)
 	log.Println("M-Pesa balance poller started")
+
+	// Airtel Money is gated on its credentials rather than wired
+	// unconditionally like M-Pesa: the rail is new, most deployments do not
+	// have an Airtel developer account yet, and a boot failure for a rail
+	// nobody is using would be a worse default than an absent one.
+	//
+	// Only the reconciliation sweep runs today. Confirming an individual
+	// collection needs the loan that minted the transaction id, and that
+	// adapter is not built — see the vault plan's open prompt-routing
+	// decision.
+	if cfg.Payments.Airtel.Enabled() {
+		airtelClient, err := airtel.New(airtel.Config{
+			Environment:     cfg.Payments.Airtel.Environment,
+			ClientID:        cfg.Payments.Airtel.ClientID,
+			ClientSecret:    cfg.Payments.Airtel.ClientSecret,
+			Country:         cfg.Payments.Airtel.Country,
+			Currency:        cfg.Payments.Airtel.Currency,
+			SigningEnabled:  cfg.Payments.Airtel.SigningEnabled,
+			CallbackHMACKey: cfg.Payments.Airtel.CallbackHMACKey,
+		})
+		if err != nil {
+			log.Fatalf("Airtel client construction failed: %v", err)
+		}
+
+		airtelSweeper := airtelpoller.NewSummarySweeper(airtelpoller.SummarySweeperDeps{
+			Client:   airtelClient,
+			Repo:     coreRepos.Airtel,
+			Cursor:   coreRepos.AirtelSummaryCursor,
+			Interval: cfg.Payments.Airtel.SummarySweepInterval,
+			Logger:   logger,
+		})
+		go airtelSweeper.Start(pollerCtx)
+		log.Println("Airtel summary sweeper started")
+	}
 
 	// Compliance watcher — the detect-and-quarantine canary alongside the
 	// vault's on-chain allowlist. See pkg/services/vaultwatch/doc.go.
