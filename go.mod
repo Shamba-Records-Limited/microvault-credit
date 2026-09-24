@@ -2,7 +2,7 @@ module github.com/Shamba-Records-Limited/microvault-credit
 
 go 1.26.0
 
-require github.com/Shamba-Records-Limited/microvault v1.5.1
+require github.com/Shamba-Records-Limited/microvault v1.6.0
 
 replace github.com/Shamba-Records-Limited/microvault => ../microvault
 
