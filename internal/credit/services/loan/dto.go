@@ -83,6 +83,11 @@ type UpdateLoanRequest struct {
 	RepaymentMpesaCheckoutID *string `json:"repayment_mpesa_checkout_id,omitempty"`
 	RepaymentMpesaTransID    *string `json:"repayment_mpesa_trans_id,omitempty"`
 	RepaymentSTKAttempts     *int    `json:"repayment_stk_attempts,omitempty"`
+
+	// Airtel Money fields.
+	RepaymentAirtelTxnID    *string `json:"repayment_airtel_txn_id,omitempty"`
+	RepaymentAirtelMoneyID  *string `json:"repayment_airtel_money_id,omitempty"`
+	RepaymentAirtelAttempts *int    `json:"repayment_airtel_attempts,omitempty"`
 }
 
 // ApproveLoanRequest represents the request to approve a loan
@@ -370,6 +375,15 @@ func (r UpdateLoanRequest) changedFields() map[string]any {
 	}
 	if r.RepaymentSTKAttempts != nil {
 		f["repayment_stk_attempts"] = r.RepaymentSTKAttempts
+	}
+	if r.RepaymentAirtelTxnID != nil {
+		f["repayment_airtel_txn_id"] = r.RepaymentAirtelTxnID
+	}
+	if r.RepaymentAirtelMoneyID != nil {
+		f["repayment_airtel_money_id"] = r.RepaymentAirtelMoneyID
+	}
+	if r.RepaymentAirtelAttempts != nil {
+		f["repayment_airtel_attempts"] = r.RepaymentAirtelAttempts
 	}
 	if r.RepaymentVaultTxHash != nil {
 		f["repayment_vault_tx_hash"] = r.RepaymentVaultTxHash

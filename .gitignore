@@ -40,3 +40,6 @@ bin/
 
 # Node dependencies, at any depth
 node_modules/
+
+#Misc
+mg-list.json

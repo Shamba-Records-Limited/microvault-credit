@@ -2,8 +2,9 @@ package adapters
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -120,18 +121,15 @@ func (a *MoneyGramPollerAdapter) RecordTransactionUpdate(ctx context.Context, lo
 		req.RampFiatCurr = &v
 		any = true
 	}
-	var feeCents int64
-	if v := strings.TrimSpace(tx.AmountFee); v != "" {
-		cents, ok := decimalToCents(v)
-		if ok {
-			req.ServiceFeeLocal = &cents
-			feeCents = cents
+	if tx.FeeDetails != nil {
+		if cents, ok := moneyGramFeeUSDCents(tx.FeeDetails); ok {
+			req.PartnerFeeUSD = &cents
 			any = true
+		} else {
+			a.logger.Warn("moneygram fee not recorded: unrecognised fee_details",
+				"loan_id", loanID, "fee_total", tx.FeeDetails.Total, "fee_asset", tx.FeeDetails.Asset)
 		}
 	}
-	// MG's SEP-24 amount_out is the value the user receives, already net of
-	// amount_fee — so it equals delivered_amount_local.
-	_ = feeCents
 	if grossKnown {
 		delivered := grossCents
 		req.DeliveredAmountLocal = &delivered
@@ -517,17 +515,51 @@ func projectLoanRecord(l *models.Loan) mgpoller.LoanRecord {
 }
 
 // decimalToCents converts a SEP-24 decimal string (e.g. "1250.00") to an
-// int64 in cents. Returns (0, false) on malformed input — callers should
-// skip the field rather than write a zero.
+// int64 in cents, exactly. Returns (0, false) on malformed, negative, or
+// sub-cent input — callers should skip the field rather than write a zero.
 func decimalToCents(s string) (int64, bool) {
-	var v float64
-	if _, err := fmt.Sscanf(s, "%f", &v); err != nil {
+	whole, frac, _ := strings.Cut(s, ".")
+	if !isASCIIDigits(whole) || (frac != "" && !isASCIIDigits(frac)) {
 		return 0, false
 	}
-	if v < 0 {
+	if len(frac) > 2 {
+		if strings.TrimRight(frac[2:], "0") != "" {
+			return 0, false
+		}
+		frac = frac[:2]
+	}
+	frac += strings.Repeat("0", 2-len(frac))
+	w, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil || w > (math.MaxInt64-99)/100 {
 		return 0, false
 	}
-	return int64(v * 100), true
+	f, err := strconv.ParseInt(frac, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return w*100 + f, true
+}
+
+func isASCIIDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// moneyGramFeeUSDCents returns the fee_details total in USD cents when its
+// asset is USD or USDC. See the vault doc moneygram-fees.
+func moneyGramFeeUSDCents(fd *stellaranchor.FeeDetails) (int64, bool) {
+	asset := strings.TrimSpace(fd.Asset)
+	if asset != "iso4217:USD" && asset != "iso4217:USDC" && !strings.HasPrefix(asset, "stellar:USDC:") {
+		return 0, false
+	}
+	return decimalToCents(strings.TrimSpace(fd.Total))
 }
 
 // needsMoreInfoShortCode reports whether the loan still lacks a support-link
