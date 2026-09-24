@@ -274,3 +274,79 @@ func TestLegsOfOneWithdrawalShareExternalID(t *testing.T) {
 	assert.Equal(t, byType["anchor_transfer"], byType["off_ramp"],
 		"both legs belong to the same anchor transaction")
 }
+
+func TestRecordTransactionUpdate_RecordsMoneyGramFeeAsPartnerFeeUSD(t *testing.T) {
+	cases := []struct {
+		name string
+		fee  *stellaranchor.FeeDetails
+		want *int64
+	}{
+		{"withdrawal iso4217:USDC", &stellaranchor.FeeDetails{Total: "3.00", Asset: "iso4217:USDC"}, ptrInt64(300)},
+		{"deposit iso4217:USD", &stellaranchor.FeeDetails{Total: "3.00", Asset: "iso4217:USD"}, ptrInt64(300)},
+		{"sep-38 stellar asset", &stellaranchor.FeeDetails{Total: "0.00", Asset: "stellar:USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"}, ptrInt64(0)},
+		{"local-currency fee is not a USD amount", &stellaranchor.FeeDetails{Total: "380", Asset: "iso4217:KES"}, nil},
+		{"unparseable total", &stellaranchor.FeeDetails{Total: "", Asset: "iso4217:USDC"}, nil},
+		{"no fee_details", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, loans := newTestAdapter(t, &fakeLoanRepo{loan: unlockedLoan()}, &fakeTxnSvc{})
+			tx := lockedTx(stellaranchor.StatusPendingUserTransferStart)
+			tx.FeeDetails = tc.fee
+
+			require.NoError(t, a.RecordTransactionUpdate(context.Background(), "loan-1", tx))
+
+			require.Len(t, loans.updates, 1)
+			got := loans.updates[0]
+			assert.Equal(t, tc.want, got.PartnerFeeUSD)
+			assert.Nil(t, got.ServiceFeeUSD, "service_fee_usd is charged to the borrower; MG's fee payer is unconfirmed")
+			assert.Nil(t, got.ServiceFeeLocal)
+		})
+	}
+}
+
+func TestRecordTransactionUpdate_DeliveredAmountIsGrossAmountOut(t *testing.T) {
+	a, loans := newTestAdapter(t, &fakeLoanRepo{loan: unlockedLoan()}, &fakeTxnSvc{})
+	tx := lockedTx(stellaranchor.StatusPendingUserTransferStart)
+	tx.FeeDetails = &stellaranchor.FeeDetails{Total: "3.00", Asset: "iso4217:USDC"}
+
+	require.NoError(t, a.RecordTransactionUpdate(context.Background(), "loan-1", tx))
+
+	require.Len(t, loans.updates, 1)
+	require.NotNil(t, loans.updates[0].DeliveredAmountLocal)
+	assert.Equal(t, int64(645000), *loans.updates[0].DeliveredAmountLocal)
+}
+
+func ptrInt64(v int64) *int64 { return &v }
+
+func TestDecimalToCents(t *testing.T) {
+	cases := []struct {
+		in     string
+		want   int64
+		wantOK bool
+	}{
+		{"19.49", 1949, true},
+		{"0.29", 29, true},
+		{"3.00", 300, true},
+		{"2508", 250800, true},
+		{"6450.5", 645050, true},
+		{"23.4300000", 2343, true},
+		{"1.", 100, true},
+		{"23.4301780", 0, false},
+		{"1.005", 0, false},
+		{"-3.00", 0, false},
+		{"3.00xyz", 0, false},
+		{"1e3", 0, false},
+		{".50", 0, false},
+		{"", 0, false},
+		{" 3.00", 0, false},
+		{"92233720368547758.07", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, ok := decimalToCents(tc.in)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
