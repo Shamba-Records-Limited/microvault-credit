@@ -1,4 +1,4 @@
-.PHONY: help migrate-up migrate-down migrate-version migrate-force build build-credit build-migrate run up up-build down test test-integration test-integration-down docs clean lint lint-new lint-fix fmt
+.PHONY: help migrate-up migrate-down migrate-version migrate-force build build-credit build-migrate run up up-build down test test-integration test-integration-down docs clean lint lint-new lint-fix fmt yc-tx yc-seq yc-list yc-all yc-account yc-get mg-tx mg-list mg-all
 
 COMPOSE := docker compose
 COMPOSE_TEST := docker compose -f docker-compose.test.yml
@@ -42,6 +42,17 @@ help:
 	@echo "  make lint-new            - Report only issues in code changed against main"
 	@echo "  make lint-fix            - Apply the auto-fixable subset"
 	@echo "  make fmt                 - Format with gofumpt + goimports"
+	@echo ""
+	@echo "Provider Console Commands (require the provider env vars exported):"
+	@echo "  make yc-tx ID=<payment_id> - Look up one YellowCard payment"
+	@echo "  make yc-seq SEQ=<sequence_id> - Look up a YellowCard payment by our sequenceId"
+	@echo "  make yc-list [N=50]      - List recent YellowCard payments"
+	@echo "  make yc-all [N=100]      - Page through every YellowCard payment as JSON"
+	@echo "  make yc-account          - Show YellowCard balances"
+	@echo "  make yc-get P=<path> [Q=<query>] - Signed GET against any YellowCard path"
+	@echo "  make mg-tx TX=<hash>     - Look up one MoneyGram SEP-24 transaction"
+	@echo "  make mg-list [N=50]      - List recent MoneyGram SEP-24 transactions"
+	@echo "  make mg-all              - Page through every MoneyGram SEP-24 transaction"
 	@echo ""
 	@echo "Documentation Commands:"
 	@echo "  make docs                - Generate API documentation"
@@ -153,6 +164,52 @@ test-integration:
 
 test-integration-down:
 	@$(COMPOSE_TEST) down
+
+# Provider consoles. Both scripts read their credentials from the environment,
+# so export the provider vars in the calling shell first. Make treats bare words
+# as goals, hence the named variables rather than positional arguments.
+yc-tx:
+ifndef ID
+	@echo "Error: payment ID required. Usage: make yc-tx ID=abc123"
+	@exit 1
+endif
+	@scripts/yc-payments.sh tx $(ID)
+
+yc-seq:
+ifndef SEQ
+	@echo "Error: sequence ID required. Usage: make yc-seq SEQ=<sequence_id>"
+	@exit 1
+endif
+	@scripts/yc-payments.sh seq $(SEQ)
+
+yc-list:
+	@scripts/yc-payments.sh list $(or $(N),50)
+
+yc-all:
+	@scripts/yc-payments.sh all $(or $(N),100)
+
+yc-account:
+	@scripts/yc-payments.sh account
+
+yc-get:
+ifndef P
+	@echo "Error: path required. Usage: make yc-get P=/send/abc123 [Q=country=KE]"
+	@exit 1
+endif
+	@scripts/yc-payments.sh get $(P) $(Q)
+
+mg-tx:
+ifndef TX
+	@echo "Error: stellar tx hash required. Usage: make mg-tx TX=<hash>"
+	@exit 1
+endif
+	@scripts/mg-sep24.sh $(TX)
+
+mg-list:
+	@scripts/mg-sep24.sh list $(or $(N),50)
+
+mg-all:
+	@scripts/mg-sep24.sh all
 
 # Documentation commands
 docs:
