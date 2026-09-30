@@ -73,8 +73,8 @@ func NewRepaymentNotifierAdapter(
 }
 
 // NotifyRepaymentReference sends the code the borrower quotes at the counter.
-func (a *RepaymentNotifierAdapter) NotifyRepaymentReference(loanID, reference string) error {
-	return a.send(loanID, "reference", func(ctx context.Context, n contracts.LoanNotification) error {
+func (a *RepaymentNotifierAdapter) NotifyRepaymentReference(ctx context.Context, loanID, reference string) error {
+	return a.send(ctx, loanID, "reference", func(ctx context.Context, n contracts.LoanNotification) error {
 		n.CashPickupRef = reference
 		return a.loans.NotifyRepaymentReference(ctx, n)
 	})
@@ -87,8 +87,8 @@ func (a *RepaymentNotifierAdapter) NotifyRepaymentReference(loanID, reference st
 // this notification is the URL, and copy that trails off after "open this for
 // your MoneyGram payment details:" tells the borrower nothing while consuming
 // the one-shot send marker.
-func (a *RepaymentNotifierAdapter) NotifyRepaymentMoreInfo(loanID string) error {
-	return a.send(loanID, "more_info", func(ctx context.Context, n contracts.LoanNotification) error {
+func (a *RepaymentNotifierAdapter) NotifyRepaymentMoreInfo(ctx context.Context, loanID string) error {
+	return a.send(ctx, loanID, "more_info", func(ctx context.Context, n contracts.LoanNotification) error {
 		if n.InteractiveURL == "" {
 			return oops.In(errDomain).
 				Code(pkgErrors.CodeIncompleteResponse).
@@ -100,28 +100,28 @@ func (a *RepaymentNotifierAdapter) NotifyRepaymentMoreInfo(loanID string) error 
 }
 
 // NotifyRepaymentReceived confirms the borrower's cash reached the treasury.
-func (a *RepaymentNotifierAdapter) NotifyRepaymentReceived(loanID string) error {
-	return a.sendAmount(loanID, "received", 0, a.loans.NotifyRepaymentReceived)
+func (a *RepaymentNotifierAdapter) NotifyRepaymentReceived(ctx context.Context, loanID string) error {
+	return a.sendAmount(ctx, loanID, "received", 0, a.loans.NotifyRepaymentReceived)
 }
 
 // NotifyRepaymentReceivedAmount is NotifyRepaymentReceived with the amount
 // actually observed (e.g. an STK callback's AmountKES), which can differ
 // from the loan's locked payoff. amountKES 0 falls back to the payoff.
-func (a *RepaymentNotifierAdapter) NotifyRepaymentReceivedAmount(loanID string, amountKES int64) error {
-	return a.sendAmount(loanID, "received", amountKES, a.loans.NotifyRepaymentReceived)
+func (a *RepaymentNotifierAdapter) NotifyRepaymentReceivedAmount(ctx context.Context, loanID string, amountKES int64) error {
+	return a.sendAmount(ctx, loanID, "received", amountKES, a.loans.NotifyRepaymentReceived)
 }
 
 // NotifyLoanRepaid confirms the treasury-to-vault leg confirmed and the loan
 // is closed.
-func (a *RepaymentNotifierAdapter) NotifyLoanRepaid(loanID string) error {
-	return a.sendAmount(loanID, "repaid", 0, a.loans.NotifyLoanRepaid)
+func (a *RepaymentNotifierAdapter) NotifyLoanRepaid(ctx context.Context, loanID string) error {
+	return a.sendAmount(ctx, loanID, "repaid", 0, a.loans.NotifyLoanRepaid)
 }
 
 // NotifyLoanRepaidAmount is NotifyLoanRepaid with the amount actually
 // observed (e.g. an STK callback's AmountKES). amountKES 0 falls back to
 // the payoff.
-func (a *RepaymentNotifierAdapter) NotifyLoanRepaidAmount(loanID string, amountKES int64) error {
-	return a.sendAmount(loanID, "repaid", amountKES, a.loans.NotifyLoanRepaid)
+func (a *RepaymentNotifierAdapter) NotifyLoanRepaidAmount(ctx context.Context, loanID string, amountKES int64) error {
+	return a.sendAmount(ctx, loanID, "repaid", amountKES, a.loans.NotifyLoanRepaid)
 }
 
 // NotifyRepaymentReminder warns that an opened deposit is about to lapse.
@@ -129,13 +129,13 @@ func (a *RepaymentNotifierAdapter) NotifyLoanRepaidAmount(loanID string, amountK
 // Routed to NotifyRepaymentWindowExpiring rather than the notifier's own
 // NotifyRepaymentReminder, which is driven by the loan's due date and would
 // tell the borrower the wrong thing entirely.
-func (a *RepaymentNotifierAdapter) NotifyRepaymentReminder(loanID string) error {
-	return a.send(loanID, "window_expiring", a.loans.NotifyRepaymentWindowExpiring)
+func (a *RepaymentNotifierAdapter) NotifyRepaymentReminder(ctx context.Context, loanID string) error {
+	return a.send(ctx, loanID, "window_expiring", a.loans.NotifyRepaymentWindowExpiring)
 }
 
 // NotifyRepaymentExpired reports that a deposit lapsed unused.
-func (a *RepaymentNotifierAdapter) NotifyRepaymentExpired(loanID string) error {
-	return a.send(loanID, "expired", a.loans.NotifyRepaymentExpired)
+func (a *RepaymentNotifierAdapter) NotifyRepaymentExpired(ctx context.Context, loanID string) error {
+	return a.send(ctx, loanID, "expired", a.loans.NotifyRepaymentExpired)
 }
 
 // moreInfoLink builds the SMS link to MoneyGram's transaction page.
@@ -152,7 +152,7 @@ func (a *RepaymentNotifierAdapter) moreInfoLink(ctx context.Context, loanRow *mo
 
 	link, err := shortenedLink(ctx, a.shortener, rawURL, fallback)
 	if err != nil {
-		a.logger.Warn("dub shorten failed; sending the redirect link instead",
+		a.logger.WarnContext(ctx, "dub shorten failed; sending the redirect link instead",
 			pkgErrors.AttrLoanID, loanRow.ID, "error", err)
 	}
 	return link
@@ -160,15 +160,13 @@ func (a *RepaymentNotifierAdapter) moreInfoLink(ctx context.Context, loanRow *mo
 
 // send loads the loan and hands a populated notification to one notifier
 // method.
-func (a *RepaymentNotifierAdapter) send(loanID, kind string, notify func(context.Context, contracts.LoanNotification) error) error {
-	return a.sendAmount(loanID, kind, 0, notify)
+func (a *RepaymentNotifierAdapter) send(ctx context.Context, loanID, kind string, notify func(context.Context, contracts.LoanNotification) error) error {
+	return a.sendAmount(ctx, loanID, kind, 0, notify)
 }
 
 // sendAmount is send with an optional observed-amount override; see
 // NotifyRepaymentReceivedAmount.
-func (a *RepaymentNotifierAdapter) sendAmount(loanID, kind string, observedAmountKES int64, notify func(context.Context, contracts.LoanNotification) error) error {
-	ctx := context.Background()
-
+func (a *RepaymentNotifierAdapter) sendAmount(ctx context.Context, loanID, kind string, observedAmountKES int64, notify func(context.Context, contracts.LoanNotification) error) error {
 	errb := oops.In(errDomain).
 		Tags("notification").
 		With(pkgErrors.AttrLoanID, loanID).
@@ -219,7 +217,7 @@ func (a *RepaymentNotifierAdapter) sendAmount(loanID, kind string, observedAmoun
 			n.DisplayAmount = n.DisplayAmount * rate
 			n.RemainingBalance = n.RemainingBalance * rate
 		} else {
-			a.logger.Warn("no FX rate available to render a repayment notification in local currency, sending in USDC",
+			a.logger.WarnContext(ctx, "no FX rate available to render a repayment notification in local currency, sending in USDC",
 				pkgErrors.AttrLoanID, loanID, "error", err)
 		}
 	}

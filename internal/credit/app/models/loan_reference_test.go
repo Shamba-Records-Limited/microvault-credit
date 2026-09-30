@@ -4,8 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Shamba-Records-Limited/microvault/pkg/loanref"
 	"gorm.io/gorm"
+
+	"github.com/Shamba-Records-Limited/microvault/pkg/loanref"
 )
 
 // The fallback hook must mint the new short format for any creation path that

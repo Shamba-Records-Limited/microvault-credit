@@ -3,7 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 
 	"gorm.io/gorm"
 
@@ -62,7 +62,7 @@ func NewLoanProductRepository(db *gorm.DB) (LoanProductRepository, error) {
 func (r *loanProductRepository) Create(ctx context.Context, product *models.LoanProduct) error {
 	result := r.db.WithContext(ctx).Create(product)
 	if result.Error != nil {
-		log.Printf("Create: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Create: database error", slog.Any("error", result.Error))
 		return ErrFailedToCreateLoanProduct
 	}
 	return nil
@@ -76,7 +76,7 @@ func (r *loanProductRepository) BatchCreate(ctx context.Context, products []*mod
 
 	result := r.db.WithContext(ctx).Create(products)
 	if result.Error != nil {
-		log.Printf("CreateBatch: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "CreateBatch: database error", slog.Any("error", result.Error))
 		return ErrFailedToCreateBatchLoanProducts
 	}
 	return nil
@@ -94,7 +94,7 @@ func (r *loanProductRepository) GetByID(ctx context.Context, id string) (*models
 		return nil, ErrLoanProductNotFound
 	}
 	if result.Error != nil {
-		log.Printf("GetByID: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetByID: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetLoanProduct
 	}
 	return &product, nil
@@ -110,7 +110,7 @@ func (r *loanProductRepository) GetAllActive(ctx context.Context, limit int, off
 		Limit(limit).
 		Find(&products)
 	if result.Error != nil {
-		log.Printf("GetAllActive: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetAllActive: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetActiveLoanProducts
 	}
 	return products, nil
@@ -125,7 +125,7 @@ func (r *loanProductRepository) GetAll(ctx context.Context, limit int, offset in
 		Limit(limit).
 		Find(&products)
 	if result.Error != nil {
-		log.Printf("GetAll: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetAll: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetAllLoanProducts
 	}
 	return products, nil
@@ -161,7 +161,7 @@ func (r *loanProductRepository) Update(ctx context.Context, product *models.Loan
 		return ErrLoanProductNotFound
 	}
 	if result.Error != nil {
-		log.Printf("Update: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Update: database error", slog.Any("error", result.Error))
 		return ErrFailedToUpdateLoanProduct
 	}
 	return nil
@@ -178,7 +178,7 @@ func (r *loanProductRepository) Restore(ctx context.Context, id string) error {
 		return ErrLoanProductNotFound
 	}
 	if result.Error != nil {
-		log.Printf("Restore: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Restore: database error", slog.Any("error", result.Error))
 		return ErrFailedToRestoreLoanProduct
 	}
 	return nil
@@ -195,7 +195,7 @@ func (r *loanProductRepository) Delete(ctx context.Context, id string) error {
 		return ErrLoanProductNotFound
 	}
 	if result.Error != nil {
-		log.Printf("Delete: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Delete: database error", slog.Any("error", result.Error))
 		return ErrFailedToDeleteLoanProduct
 	}
 	return nil

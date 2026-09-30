@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/samber/do/v2"
@@ -27,10 +27,10 @@ func (s *shutdownFunc) Shutdown() error {
 	if err := s.stop(); err != nil {
 		// Logged rather than returned upward: one resource failing to close
 		// must not stop the rest from being closed.
-		log.Printf("%s shutdown error: %v", s.name, err)
+		slog.Error("shutdown error", slog.String("name", s.name), slog.Any("error", err))
 		return err
 	}
-	log.Printf("%s shut down.", s.name)
+	slog.Info("shut down", slog.String("name", s.name))
 	return nil
 }
 
@@ -43,7 +43,7 @@ type pollerGroup struct {
 // Shutdown implements do.ShutdownerWithError.
 func (p *pollerGroup) Shutdown() error {
 	p.cancel()
-	log.Println("Pollers stopped.")
+	slog.Info("Pollers stopped")
 	return nil
 }
 

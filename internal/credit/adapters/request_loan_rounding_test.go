@@ -2,7 +2,6 @@ package adapters
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -82,7 +81,7 @@ func newRoundingAdapter(t *testing.T, round bool) (*LoanServiceAdapter, *capture
 		loanSvc:       loans,
 		stellarSvc:    stel,
 		offRamps:      reg,
-		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:        slog.New(slog.DiscardHandler),
 		productConfig: &ussd.LoanProductConfig{InterestRateBps: 500},
 		fxBuffer:      offramp.NewRateBuffer(offramp.Fraction(0.02), DefaultFXBufferPct),
 		dedupe:        newDedupeGate(60 * time.Second),

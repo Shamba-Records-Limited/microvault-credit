@@ -4,8 +4,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/static"
 	"github.com/a-h/templ"
+
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/static"
 )
 
 // logoSVG is the mark with its opening tag pre-marked decorative and its

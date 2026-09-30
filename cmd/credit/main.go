@@ -30,6 +30,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
 	"github.com/Shamba-Records-Limited/microvault/pkg/controllers"
 	"github.com/Shamba-Records-Limited/microvault/pkg/health"
+	"github.com/Shamba-Records-Limited/microvault/pkg/logging"
 	"github.com/Shamba-Records-Limited/microvault/pkg/middleware"
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/sms"
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/sms/providers/africastalking"
@@ -76,7 +77,7 @@ import (
 // @host localhost:8081
 // @BasePath /
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger := logging.Setup()
 
 	// ---- 1. Configuration ----
 	cfg, err := config.New()
@@ -89,14 +90,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	log.Println("Database connected successfully")
+	slog.Info("Database connected successfully")
 
 	// ---- 3. Redis ----
 	redisClient, err := cache.GetConnection("credit", &cfg.Redis)
 	if err != nil {
 		log.Fatalf("Failed to connect to Redis: %v", err)
 	}
-	log.Println("Redis connected successfully")
+	slog.Info("Redis connected successfully")
 
 	// ---- 3b. Auth services ----
 	challengeStore, err := auth.NewRedisStore(redisClient, "microvault:auth")
@@ -137,7 +138,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to floor account index sequence: %v", err)
 	}
-	log.Printf("Account index sequence floored; next allocation is %d", nextIndex)
+	slog.Info("account index sequence floored", slog.Int64("next_index", nextIndex))
 
 	// ---- 5. Loan service ----
 	loanSvc := loan.NewService(repos.Loan, cfg.Payments.LoanReferencePrefix)
@@ -306,7 +307,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("MoneyGram auth address derivation failed: %v", err)
 	}
-	logger.Info("moneygram wallets resolved", "auth_address", mgAuthAddr, "funds_address", mgFundsAddr)
+	logger.InfoContext(tomlCtx, "moneygram wallets resolved", "auth_address", mgAuthAddr, "funds_address", mgFundsAddr)
 
 	mgAdapter, err := ussdadapters.NewMoneyGramOffRampAdapter(ussdadapters.MoneyGramOffRampConfig{
 		Client:      mgClient,
@@ -322,8 +323,7 @@ func main() {
 	if err := offRampRegistry.Alias(offramp.PayoutMethodCashPickup, offramp.ProviderMoneyGram); err != nil {
 		log.Fatalf("Failed to alias cash_pickup → moneygram: %v", err)
 	}
-	log.Printf("MoneyGram cash-pickup registered (home: %s, REST: %t)",
-		cfg.Payments.MoneyGram.HomeDomain, cfg.Payments.MoneyGram.HasRESTCredentials())
+	slog.InfoContext(tomlCtx, "MoneyGram cash-pickup registered", slog.String("home_domain", cfg.Payments.MoneyGram.HomeDomain), slog.Bool("has_rest_credentials", cfg.Payments.MoneyGram.HasRESTCredentials()))
 
 	// ---- 10c. Fonbnk off-ramp and the provider relay ----
 	// Fonbnk names the asset by network, and carrier codes come from its own
@@ -383,9 +383,9 @@ func main() {
 		if err := relayRegistry.Register(fonbnkSource); err != nil {
 			log.Fatalf("Failed to register the Fonbnk rate source: %v", err)
 		}
-		log.Printf("Fonbnk off-ramp registered (base: %s)", cfg.Payments.Fonbnk.BaseURL)
+		slog.InfoContext(tomlCtx, "Fonbnk off-ramp registered", slog.String("base_url", cfg.Payments.Fonbnk.BaseURL))
 	} else {
-		log.Print("Fonbnk credentials absent — off-ramp and rate source not registered")
+		slog.InfoContext(tomlCtx, "Fonbnk credentials absent — off-ramp and rate source not registered")
 	}
 
 	relayRouter, err := relay.New(relay.Config{
@@ -397,8 +397,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Payment relay construction failed: %v", err)
 	}
-	log.Printf("Payment relay: enabled=%t, sources=%v",
-		relayRouter.Enabled(), relayRegistry.Names())
+	slog.InfoContext(tomlCtx, "payment relay configured", slog.Bool("enabled", relayRouter.Enabled()), slog.Any("names", relayRegistry.Names()))
 
 	// 10d. FX orchestrator: MG primary, YC fallback, stale cache last resort.
 	ycFallback := moneygram.FallbackRateFunc(func(ctx context.Context, currency string) (float64, error) {
@@ -426,7 +425,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("MoneyGram FX orchestrator init failed: %v", err)
 	}
-	logger.Info("moneygram FX orchestrator wired",
+	logger.InfoContext(tomlCtx, "moneygram FX orchestrator wired",
 		"primary_active", mgClient.HasFXRate(),
 		"fallback_active", true,
 		"entry_buffer_pct", fxOrch.EntryBufferPct(),
@@ -500,7 +499,7 @@ func main() {
 		if target == "" {
 			target = "https://api.dub.co"
 		}
-		log.Printf("Link shortener enabled — cash-pickup SMS links are sent to %s", target)
+		slog.InfoContext(tomlCtx, "link shortener enabled", slog.String("target", target))
 	}
 
 	// Where borrower cash deposits are credited. The treasury, not a child
@@ -537,7 +536,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create loan service adapter: %v", err)
 	}
-	logger.Info("loan entry-rate buffer configured", "buffer_pct", loanAdapter.FXBufferPct())
+	logger.InfoContext(ctx, "loan entry-rate buffer configured", "buffer_pct", loanAdapter.FXBufferPct())
 
 	// MoneyGram is a cashin.Collector too — loanAdapter already owns the
 	// anchor/treasury dependencies InitiateRepayment needs, so it registers
@@ -577,7 +576,7 @@ func main() {
 	}
 	pinRepo := pin.NewSecurityQuestionRepository(db)
 	pinService := pin.NewService(coreRepos.User, pinRepo, accountNotifier, cfg.Auth.PINLockoutDuration)
-	log.Println("PIN service initialized")
+	slog.InfoContext(ctx, "PIN service initialized")
 
 	// ---- 13. USSD stack ----
 	sessionManager := ussd.NewSessionManager(redisClient, cfg.Mobile.SessionTimeout)
@@ -658,7 +657,7 @@ func main() {
 		log.Fatalf("MoneyGram poller construction failed: %v", err)
 	}
 	go mgP.Start(pollerCtx)
-	log.Println("MoneyGram poller started")
+	slog.InfoContext(ctx, "MoneyGram poller started")
 
 	// MoneyGram deposit driver — the borrower repayment cash-in rail.
 	//
@@ -694,7 +693,7 @@ func main() {
 		log.Fatalf("MoneyGram deposit driver construction failed: %v", err)
 	}
 	go depositDriver.Start(pollerCtx)
-	log.Println("MoneyGram deposit driver started")
+	slog.InfoContext(ctx, "MoneyGram deposit driver started")
 
 	// M-Pesa is a platform rail, wired unconditionally like MoneyGram and
 	// YellowCard: a misconfigured Daraja credential is a boot failure, not a
@@ -746,7 +745,7 @@ func main() {
 	if err := cashInRegistry.Alias(cashin.CollectionMethodPrompt, cashin.ProviderMpesa); err != nil {
 		log.Fatalf("Failed to alias prompt → mpesa: %v", err)
 	}
-	log.Print("M-Pesa cash-in registered (cash-in providers: moneygram, mpesa)")
+	slog.InfoContext(ctx, "M-Pesa cash-in registered (cash-in providers: moneygram, mpesa)")
 
 	mpesaLoanRunner, err := adapters.NewMpesaSTKLoanRunner(adapters.MpesaSTKLoanDriverDeps{
 		Client:    mpesaClient,
@@ -761,7 +760,7 @@ func main() {
 		log.Fatalf("M-Pesa STK loan poller construction failed: %v", err)
 	}
 	go mpesaLoanRunner.Start(pollerCtx)
-	log.Println("M-Pesa STK loan poller started")
+	slog.InfoContext(ctx, "M-Pesa STK loan poller started")
 
 	// Paybill repayment sweep — walk-up-and-pay, so nothing "initiates" it
 	// the way Prompt does for STK; this converts confirmed, loan-attributed
@@ -780,7 +779,7 @@ func main() {
 		log.Fatalf("M-Pesa paybill repayment driver construction failed: %v", err)
 	}
 	go mpesaPaybillDriver.Start(pollerCtx)
-	log.Println("M-Pesa paybill repayment sweep started")
+	slog.InfoContext(ctx, "M-Pesa paybill repayment sweep started")
 
 	// Pull reconciliation sweep and Account Balance poll — both wall-clock
 	// tickers, not Runner[T] drivers, since neither is a queue of due rows;
@@ -796,7 +795,7 @@ func main() {
 		Logger:    logger,
 	})
 	go pullSweeper.Start(pollerCtx)
-	log.Println("M-Pesa pull sweeper started")
+	slog.InfoContext(ctx, "M-Pesa pull sweeper started")
 
 	balancePoller := mpesapoller.NewBalancePoller(mpesapoller.BalancePollerDeps{
 		Client:                mpesaClient,
@@ -809,7 +808,7 @@ func main() {
 		Logger:                logger,
 	})
 	go balancePoller.Start(pollerCtx)
-	log.Println("M-Pesa balance poller started")
+	slog.InfoContext(ctx, "M-Pesa balance poller started")
 
 	// Airtel Money is gated on its credentials rather than wired
 	// unconditionally like M-Pesa: the rail is new, most deployments do not
@@ -865,7 +864,7 @@ func main() {
 			log.Fatalf("Airtel prompt loan poller construction failed: %v", err)
 		}
 		go airtelLoanRunner.Start(pollerCtx)
-		log.Println("Airtel prompt loan poller started")
+		slog.InfoContext(ctx, "Airtel prompt loan poller started")
 
 		airtelSweeper := airtelpoller.NewSummarySweeper(airtelpoller.SummarySweeperDeps{
 			Client:   airtelClient,
@@ -875,7 +874,7 @@ func main() {
 			Logger:   logger,
 		})
 		go airtelSweeper.Start(pollerCtx)
-		log.Println("Airtel summary sweeper started")
+		slog.InfoContext(ctx, "Airtel summary sweeper started")
 	}
 
 	// Compliance watcher — the detect-and-quarantine canary alongside the
@@ -889,7 +888,7 @@ func main() {
 		Logger:     logger,
 	})
 	go vaultWatcher.Start(pollerCtx)
-	log.Println("vault compliance watcher started")
+	slog.InfoContext(ctx, "vault compliance watcher started")
 
 	// On-chain writer + rescreening sweep — Phases 5/6. Deliberately built
 	// here, not in cmd/admin: the compliance role signing key must stay out
@@ -917,7 +916,7 @@ func main() {
 		Logger:   logger,
 	})
 	go onchainWriter.Start(pollerCtx)
-	log.Println("compliance on-chain writer started")
+	slog.InfoContext(ctx, "compliance on-chain writer started")
 
 	rescreenSweep := compliancesvc.NewRescreenSweep(compliancesvc.RescreenSweepDeps{
 		Repo:     coreRepos.Counterparty,
@@ -926,7 +925,7 @@ func main() {
 		Logger:   logger,
 	})
 	go rescreenSweep.Start(pollerCtx)
-	log.Println("compliance rescreen sweep started")
+	slog.InfoContext(ctx, "compliance rescreen sweep started")
 
 	// ---- 16. Fiber app + middleware + routes ----
 	// The proxy header is read only from a trusted hop: without the
@@ -939,7 +938,7 @@ func main() {
 	})
 
 	healthCheck := health.NewCheckerWithoutStellar("credit", "credit")
-	middleware.FiberMiddleware(app, healthCheck)
+	middleware.FiberMiddleware(app, healthCheck, logger)
 
 	// Swagger
 	app.Get("/swagger/*", swagger.New(swagger.Config{
@@ -1014,9 +1013,9 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("Starting credit server on %s", cfg.Server.CreditAddr())
+		slog.InfoContext(ctx, "starting credit server", slog.String("credit_addr", cfg.Server.CreditAddr()))
 		if err := app.Listen(cfg.Server.CreditAddr()); err != nil {
-			log.Printf("Server Listen error: %v", err)
+			slog.ErrorContext(ctx, "Server Listen error", slog.Any("error", err))
 		}
 	}()
 
@@ -1026,14 +1025,14 @@ func main() {
 	// down in reverse of the order newLifecycle provided them, so the pollers
 	// stop before the database and cache they read through. See lifecycle.go.
 	sig := <-sigChan
-	log.Printf("Received signal %s. Shutting down gracefully...", sig)
+	slog.InfoContext(ctx, "received signal, shutting down", slog.String("signal", sig.String()))
 
 	lifecycle := newLifecycle(pollerCancel, app)
 	if errs := lifecycle.Shutdown(); errs != nil {
-		log.Printf("Shutdown completed with errors: %v", errs)
+		slog.ErrorContext(ctx, "Shutdown completed with errors", slog.Any("error", errs))
 	}
 
-	log.Println("Application shutdown complete.")
+	slog.InfoContext(ctx, "Application shutdown complete")
 }
 
 // mgPollerConfig overlays the MoneyGram poller settings from the environment
@@ -1057,7 +1056,7 @@ func mgPollerConfig(cfg *config.Config) mgpoller.PollerConfig {
 	if addr, err := mg.FundsAddress(); err == nil {
 		c.RefundDestination = addr
 	} else {
-		log.Printf("MoneyGram funds address unresolved, refund destination falls back to the SEP-10 account: %v", err)
+		slog.Error("MoneyGram funds address unresolved, refund destination falls back to the SEP-10 account", slog.Any("error", err))
 	}
 	// Borrower repayment cash-in. Left at DefaultConfig's values when unset,
 	// rather than config restating the defaults.

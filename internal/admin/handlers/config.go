@@ -3,10 +3,11 @@ package handlers
 import (
 	"strings"
 
+	"github.com/gofiber/fiber/v2"
+
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/views"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services"
 	globallendinglimit "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/global_lending_limit"
-	"github.com/gofiber/fiber/v2"
 )
 
 // Config lists and creates global lending limits.

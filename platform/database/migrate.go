@@ -3,7 +3,7 @@ package database
 import (
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
@@ -16,13 +16,13 @@ import (
 // RunMigrations executes all pending database migrations (core + credit)
 func RunMigrations(cfg *config.PostgresConfig) error {
 	// Run core migrations first
-	log.Println("Running core migrations...")
+	slog.Info("Running core migrations")
 	if err := microvaultdb.RunMigrations(cfg); err != nil {
 		return fmt.Errorf("failed to run core migrations: %w", err)
 	}
 
 	// Run credit migrations
-	log.Println("Running credit migrations...")
+	slog.Info("Running credit migrations")
 	if err := runCreditMigrations(cfg); err != nil {
 		return fmt.Errorf("failed to run credit migrations: %w", err)
 	}
@@ -54,10 +54,10 @@ func runCreditMigrations(cfg *config.PostgresConfig) error {
 	defer func() {
 		sourceErr, dbErr := m.Close()
 		if sourceErr != nil {
-			log.Printf("Error closing migrate source: %v", sourceErr)
+			slog.Error("Error closing migrate source", slog.Any("error", sourceErr))
 		}
 		if dbErr != nil {
-			log.Printf("Error closing migrate database: %v", dbErr)
+			slog.Error("Error closing migrate database", slog.Any("error", dbErr))
 		}
 	}()
 
@@ -66,9 +66,9 @@ func runCreditMigrations(cfg *config.PostgresConfig) error {
 	}
 
 	if errors.Is(err, migrate.ErrNoChange) {
-		log.Println("Credit migrations: no changes to apply")
+		slog.Info("Credit migrations: no changes to apply")
 	} else {
-		log.Println("Credit migrations: applied successfully")
+		slog.Info("Credit migrations: applied successfully")
 	}
 
 	return nil
@@ -98,10 +98,10 @@ func RollbackMigration(cfg *config.PostgresConfig) error {
 	defer func() {
 		sourceErr, dbErr := m.Close()
 		if sourceErr != nil {
-			log.Printf("Error closing migrate source: %v", sourceErr)
+			slog.Error("Error closing migrate source", slog.Any("error", sourceErr))
 		}
 		if dbErr != nil {
-			log.Printf("Error closing migrate database: %v", dbErr)
+			slog.Error("Error closing migrate database", slog.Any("error", dbErr))
 		}
 	}()
 
@@ -110,9 +110,9 @@ func RollbackMigration(cfg *config.PostgresConfig) error {
 	}
 
 	if errors.Is(err, migrate.ErrNoChange) {
-		log.Println("Credit rollback: no migrations to rollback")
+		slog.Info("Credit rollback: no migrations to rollback")
 	} else {
-		log.Println("Credit rollback: completed successfully")
+		slog.Info("Credit rollback: completed successfully")
 	}
 
 	return nil
@@ -142,10 +142,10 @@ func MigrationVersion(cfg *config.PostgresConfig) (uint, bool, error) {
 	defer func() {
 		sourceErr, dbErr := m.Close()
 		if sourceErr != nil {
-			log.Printf("Error closing migrate source: %v", sourceErr)
+			slog.Error("Error closing migrate source", slog.Any("error", sourceErr))
 		}
 		if dbErr != nil {
-			log.Printf("Error closing migrate database: %v", dbErr)
+			slog.Error("Error closing migrate database", slog.Any("error", dbErr))
 		}
 	}()
 
@@ -181,10 +181,10 @@ func ForceMigrationVersion(cfg *config.PostgresConfig, version int) error {
 	defer func() {
 		sourceErr, dbErr := m.Close()
 		if sourceErr != nil {
-			log.Printf("Error closing migrate source: %v", sourceErr)
+			slog.Error("Error closing migrate source", slog.Any("error", sourceErr))
 		}
 		if dbErr != nil {
-			log.Printf("Error closing migrate database: %v", dbErr)
+			slog.Error("Error closing migrate database", slog.Any("error", dbErr))
 		}
 	}()
 
@@ -192,6 +192,6 @@ func ForceMigrationVersion(cfg *config.PostgresConfig, version int) error {
 		return fmt.Errorf("failed to force migration version: %w", err)
 	}
 
-	log.Printf("Credit migration: forced to version %d", version)
+	slog.Info("Credit migration: forced to version", slog.Int("version", version))
 	return nil
 }

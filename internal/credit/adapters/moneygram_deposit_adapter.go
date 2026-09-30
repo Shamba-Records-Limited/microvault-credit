@@ -161,7 +161,7 @@ func (a *MoneyGramDepositAdapter) RecordDepositUpdate(ctx context.Context, loanI
 	if moreInfoURL != "" && (loanRow.RampMoreInfoShortCode == nil || *loanRow.RampMoreInfoShortCode == "") {
 		code, codeErr := newShortCode()
 		if codeErr != nil {
-			a.logger.Warn("more-info short-code generation failed",
+			a.logger.WarnContext(ctx, "more-info short-code generation failed",
 				"loan_id", loanID, "error", codeErr)
 		} else {
 			req.RampMoreInfoShortCode = &code
@@ -181,11 +181,11 @@ func (a *MoneyGramDepositAdapter) RecordDepositUpdate(ctx context.Context, loanI
 	}
 
 	if req.RepaymentExpiresAt != nil {
-		a.logger.Info("repayment deadline set from the anchor",
+		a.logger.InfoContext(ctx, "repayment deadline set from the anchor",
 			"loan_id", loanID, "expires_at", deadline.Format(time.RFC3339))
 	}
 	if req.RampMoreInfoShortCode != nil {
-		a.logger.Info("minted more-info short code for repayment",
+		a.logger.InfoContext(ctx, "minted more-info short code for repayment",
 			"loan_id", loanID, "short_code", *req.RampMoreInfoShortCode)
 	}
 	return nil
@@ -252,7 +252,7 @@ func (a *MoneyGramDepositAdapter) MarkExpired(ctx context.Context, loanID string
 
 // MarkFailed ends the rail before any funds moved.
 func (a *MoneyGramDepositAdapter) MarkFailed(ctx context.Context, loanID, reason string) error {
-	a.logger.Info("repayment rail failed", "loan_id", loanID, "reason", reason)
+	a.logger.InfoContext(ctx, "repayment rail failed", "loan_id", loanID, "reason", reason)
 	return a.closeRepayment(ctx, loanID, models.LoanRepaymentStatusFailed)
 }
 
@@ -356,7 +356,7 @@ func (a *MoneyGramDepositAdapter) recordCashInTransactions(ctx context.Context, 
 	}
 	loanRow, err := a.repo.GetByID(ctx, loanID)
 	if err != nil {
-		a.logger.Warn("could not load loan to record cash-in transactions",
+		a.logger.WarnContext(ctx, "could not load loan to record cash-in transactions",
 			"loan_id", loanID, "error", err)
 		return
 	}
@@ -389,7 +389,7 @@ func (a *MoneyGramDepositAdapter) recordCashInTransactions(ctx context.Context, 
 		ExternalProvider: &provider,
 		Description:      &cashDesc,
 	}); err != nil {
-		a.logger.Warn("failed to record loan repayment transaction",
+		a.logger.WarnContext(ctx, "failed to record loan repayment transaction",
 			"loan_id", loanID, "error", err)
 	} else if txnResp != nil {
 		a.settleTransaction(ctx, txnResp.ID, "loan_repayment", loanID, txmodels.TxStatusSuccess)
@@ -423,7 +423,7 @@ func (a *MoneyGramDepositAdapter) recordCashInTransactions(ctx context.Context, 
 		ExternalProvider: &provider,
 		Description:      &depositDesc,
 	}); err != nil {
-		a.logger.Warn("failed to record anchor deposit transaction",
+		a.logger.WarnContext(ctx, "failed to record anchor deposit transaction",
 			"loan_id", loanID, "error", err)
 	} else if txnResp != nil {
 		a.settleTransaction(ctx, txnResp.ID, "anchor_deposit", loanID, txmodels.TxStatusSuccess)
@@ -466,7 +466,7 @@ func (a *MoneyGramDepositAdapter) recordVaultRepayTransaction(ctx context.Contex
 		Description:      &desc,
 	})
 	if err != nil {
-		a.logger.Warn("failed to record vault repay transaction",
+		a.logger.WarnContext(ctx, "failed to record vault repay transaction",
 			"loan_id", loanRow.ID, "error", err)
 		return
 	}
@@ -488,7 +488,7 @@ func (a *MoneyGramDepositAdapter) settleTransaction(ctx context.Context, txnID, 
 		if _, err := a.txnSvc.Update(ctx, txnID, transaction.UpdateTransactionRequest{
 			Status: &status,
 		}); err != nil {
-			a.logger.Warn("failed to advance transaction status",
+			a.logger.WarnContext(ctx, "failed to advance transaction status",
 				"kind", kind, "loan_id", loanID, "transaction_id", txnID,
 				"to", status, "error", err)
 			return

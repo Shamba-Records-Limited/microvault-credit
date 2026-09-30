@@ -3,7 +3,6 @@ package adapters
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"testing"
 
@@ -78,7 +77,7 @@ func newTestRepaymentNotifierWith(
 		baseURL,
 		shortener,
 		nil,
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		slog.New(slog.DiscardHandler),
 	)
 	require.NoError(t, err)
 	return a, notifier
@@ -90,7 +89,7 @@ func newTestRepaymentNotifierWith(
 func TestNotifyRepaymentMoreInfo_RedirectWhenNoShortener(t *testing.T) {
 	a, notifier := newTestRepaymentNotifier(t, loanWithMoreInfo("Xk9f2aQ7ab"), "https://microvault.outray.app")
 
-	require.NoError(t, a.NotifyRepaymentMoreInfo("loan-1"))
+	require.NoError(t, a.NotifyRepaymentMoreInfo(context.Background(), "loan-1"))
 
 	require.Len(t, notifier.moreInfo, 1)
 	assert.Equal(t, "https://microvault.outray.app/r/Xk9f2aQ7ab", notifier.moreInfo[0].InteractiveURL)
@@ -102,7 +101,7 @@ func TestNotifyRepaymentMoreInfo_RedirectWhenNoShortener(t *testing.T) {
 func TestNotifyRepaymentMoreInfo_RefusesToSendWithoutALink(t *testing.T) {
 	a, notifier := newTestRepaymentNotifier(t, loanWithMoreInfo(""), "https://microvault.outray.app")
 
-	err := a.NotifyRepaymentMoreInfo("loan-1")
+	err := a.NotifyRepaymentMoreInfo(context.Background(), "loan-1")
 
 	require.Error(t, err)
 	assert.Empty(t, notifier.moreInfo)
@@ -114,7 +113,7 @@ func TestNotifyRepaymentMoreInfo_RefusesToSendWithoutALink(t *testing.T) {
 func TestNotifyRepaymentReminder_CarriesTheLink(t *testing.T) {
 	a, notifier := newTestRepaymentNotifier(t, loanWithMoreInfo("Xk9f2aQ7ab"), "https://microvault.outray.app")
 
-	require.NoError(t, a.NotifyRepaymentReminder("loan-1"))
+	require.NoError(t, a.NotifyRepaymentReminder(context.Background(), "loan-1"))
 
 	require.Len(t, notifier.windowExpiring, 1)
 	assert.Equal(t, "https://microvault.outray.app/r/Xk9f2aQ7ab", notifier.windowExpiring[0].InteractiveURL)
@@ -129,7 +128,7 @@ func TestNotifyRepayment_RequiresThePreloadedUser(t *testing.T) {
 	loanRow.User = nil // what an un-preloaded row looks like
 	a, notifier := newTestRepaymentNotifier(t, loanRow, "https://microvault.outray.app")
 
-	err := a.NotifyRepaymentMoreInfo("loan-1")
+	err := a.NotifyRepaymentMoreInfo(context.Background(), "loan-1")
 
 	require.Error(t, err)
 	assert.Equal(t, pkgErrors.CodeMissingPhoneNumber, corridorCode(t, err))
@@ -139,7 +138,7 @@ func TestNotifyRepayment_RequiresThePreloadedUser(t *testing.T) {
 func TestNotifyRepaymentMoreInfo_NoBaseURLConfigured(t *testing.T) {
 	a, _ := newTestRepaymentNotifier(t, loanWithMoreInfo("Xk9f2aQ7ab"), "")
 
-	assert.Error(t, a.NotifyRepaymentMoreInfo("loan-1"))
+	assert.Error(t, a.NotifyRepaymentMoreInfo(context.Background(), "loan-1"))
 }
 
 // dub is pointed at MoneyGram's own URL, not at our redirect, so the link
@@ -149,7 +148,7 @@ func TestNotifyRepaymentMoreInfo_ShortensTheMoneyGramURL(t *testing.T) {
 	sh := &fakeShortener{short: "https://dub.sh/mg7x2"}
 	a, notifier := newTestRepaymentNotifierWith(t, loanWithMoreInfo("Xk9f2aQ7ab"), "https://microvault.outray.app", sh)
 
-	require.NoError(t, a.NotifyRepaymentMoreInfo("loan-1"))
+	require.NoError(t, a.NotifyRepaymentMoreInfo(context.Background(), "loan-1"))
 
 	assert.Equal(t, moneyGramInfoURL, sh.gotURL, "dub shortens the destination, not our redirect")
 	require.Len(t, notifier.moreInfo, 1)
@@ -162,7 +161,7 @@ func TestNotifyRepaymentMoreInfo_FallsBackToTheRedirect(t *testing.T) {
 	sh := &fakeShortener{err: errors.New("dub is down")}
 	a, notifier := newTestRepaymentNotifierWith(t, loanWithMoreInfo("Xk9f2aQ7ab"), "https://microvault.outray.app", sh)
 
-	require.NoError(t, a.NotifyRepaymentMoreInfo("loan-1"))
+	require.NoError(t, a.NotifyRepaymentMoreInfo(context.Background(), "loan-1"))
 
 	require.Len(t, notifier.moreInfo, 1)
 	assert.Equal(t, "https://microvault.outray.app/r/Xk9f2aQ7ab", notifier.moreInfo[0].InteractiveURL)
@@ -199,7 +198,7 @@ func newTestRepaymentNotifierWithOffRamps(t *testing.T, loanRow *models.Loan, of
 		"",
 		nil,
 		offRamps,
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		slog.New(slog.DiscardHandler),
 	)
 	require.NoError(t, err)
 	return a, notifier
@@ -214,7 +213,7 @@ func TestNotifyRepaymentReceived_RendersInLocalCurrency(t *testing.T) {
 	require.NoError(t, offRamps.Register(&fakeQuoteProvider{id: offramp.ProviderYellowCard, rate: 129.0}))
 	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, offRamps)
 
-	require.NoError(t, a.NotifyRepaymentReceived("loan-1"))
+	require.NoError(t, a.NotifyRepaymentReceived(context.Background(), "loan-1"))
 
 	require.Len(t, notifier.repaymentReceived, 1)
 	n := notifier.repaymentReceived[0]
@@ -228,7 +227,7 @@ func TestNotifyRepaymentReceivedAmount_UsesTheObservedAmountOverThePayoff(t *tes
 	require.NoError(t, offRamps.Register(&fakeQuoteProvider{id: offramp.ProviderYellowCard, rate: 129.0}))
 	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, offRamps)
 
-	require.NoError(t, a.NotifyRepaymentReceivedAmount("loan-1", 5))
+	require.NoError(t, a.NotifyRepaymentReceivedAmount(context.Background(), "loan-1", 5))
 
 	require.Len(t, notifier.repaymentReceived, 1)
 	n := notifier.repaymentReceived[0]
@@ -242,7 +241,7 @@ func TestNotifyRepaymentReceivedAmount_ZeroFallsBackToThePayoff(t *testing.T) {
 	require.NoError(t, offRamps.Register(&fakeQuoteProvider{id: offramp.ProviderYellowCard, rate: 129.0}))
 	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, offRamps)
 
-	require.NoError(t, a.NotifyRepaymentReceivedAmount("loan-1", 0))
+	require.NoError(t, a.NotifyRepaymentReceivedAmount(context.Background(), "loan-1", 0))
 
 	require.Len(t, notifier.repaymentReceived, 1)
 	assert.InDelta(t, 129.0, notifier.repaymentReceived[0].DisplayAmount, 0.01)
@@ -258,7 +257,7 @@ func TestNotifyRepaymentReceived_UsesTheLoansOwnCurrency(t *testing.T) {
 	require.NoError(t, offRamps.Register(&fakeQuoteProvider{id: offramp.ProviderYellowCard, rate: 3700.0}))
 	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, offRamps)
 
-	require.NoError(t, a.NotifyRepaymentReceived("loan-1"))
+	require.NoError(t, a.NotifyRepaymentReceived(context.Background(), "loan-1"))
 
 	require.Len(t, notifier.repaymentReceived, 1)
 	assert.Equal(t, "UGX", notifier.repaymentReceived[0].DisplayCurrency)
@@ -271,7 +270,7 @@ func TestNotifyRepaymentReceived_FallsBackToUSDCWhenNoFXAvailable(t *testing.T) 
 	loanRow := loanWithPayoff(10_000_000, 0, "")
 	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, nil)
 
-	require.NoError(t, a.NotifyRepaymentReceived("loan-1"))
+	require.NoError(t, a.NotifyRepaymentReceived(context.Background(), "loan-1"))
 
 	require.Len(t, notifier.repaymentReceived, 1)
 	assert.Equal(t, "USDC", notifier.repaymentReceived[0].DisplayCurrency)
@@ -286,7 +285,7 @@ func TestNotifyRepaymentReceived_RemainingBalanceReflectsPartialPayment(t *testi
 	require.NoError(t, offRamps.Register(&fakeQuoteProvider{id: offramp.ProviderYellowCard, rate: 129.0}))
 	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, offRamps)
 
-	require.NoError(t, a.NotifyRepaymentReceived("loan-1"))
+	require.NoError(t, a.NotifyRepaymentReceived(context.Background(), "loan-1"))
 
 	require.Len(t, notifier.repaymentReceived, 1)
 	// Remaining: 0.6 USDC * 129 KES/USDC = 77.4 KES.
@@ -299,7 +298,7 @@ func TestNotifyLoanRepaid_RendersInLocalCurrency(t *testing.T) {
 	require.NoError(t, offRamps.Register(&fakeQuoteProvider{id: offramp.ProviderYellowCard, rate: 129.0}))
 	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, offRamps)
 
-	require.NoError(t, a.NotifyLoanRepaid("loan-1"))
+	require.NoError(t, a.NotifyLoanRepaid(context.Background(), "loan-1"))
 
 	require.Len(t, notifier.repaid, 1)
 	assert.Equal(t, "KES", notifier.repaid[0].DisplayCurrency)
@@ -312,7 +311,7 @@ func TestNotifyLoanRepaidAmount_UsesTheObservedAmountOverThePayoff(t *testing.T)
 	require.NoError(t, offRamps.Register(&fakeQuoteProvider{id: offramp.ProviderYellowCard, rate: 129.0}))
 	a, notifier := newTestRepaymentNotifierWithOffRamps(t, loanRow, offRamps)
 
-	require.NoError(t, a.NotifyLoanRepaidAmount("loan-1", 5))
+	require.NoError(t, a.NotifyLoanRepaidAmount(context.Background(), "loan-1", 5))
 
 	require.Len(t, notifier.repaid, 1)
 	assert.Equal(t, "KES", notifier.repaid[0].DisplayCurrency)

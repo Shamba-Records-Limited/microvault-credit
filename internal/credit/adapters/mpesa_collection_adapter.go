@@ -200,7 +200,7 @@ func (a *MpesaCollectionAdapter) Prompt(ctx context.Context, req cashin.PromptRe
 	// about whether the payer's MSISDN matches their national ID should slow
 	// down or fail the STK push itself.
 	if a.validationEnabled() {
-		go a.validateNumber(l.UserID, req.Payer)
+		go a.validateNumber(ctx, l.UserID, req.Payer)
 	}
 
 	return &cashin.PromptResult{
@@ -255,12 +255,11 @@ func (a *MpesaCollectionAdapter) validationEnabled() bool {
 // and swallowed, because this is a fraud signal for risk scoring, not a
 // condition the STK push itself depends on. Enforcing's blocking behaviour is
 // not implemented here — see config.MpesaConfig.NumberValidationPolicy.
-func (a *MpesaCollectionAdapter) validateNumber(userID, msisdn string) {
-	// Its own context, not the request's: this runs after the STK push has
-	// already responded, so a context tied to that request would be
-	// cancelled before this starts. Bounded so a slow Daraja or a slow user
-	// lookup cannot leak the goroutine forever.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func (a *MpesaCollectionAdapter) validateNumber(ctx context.Context, userID, msisdn string) {
+	// Detached from the request's cancellation: this runs after the STK push
+	// has already responded. Bounded so a slow Daraja or a slow user lookup
+	// cannot leak the goroutine forever.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 
 	u, err := a.userSvc.GetByID(ctx, userID)
@@ -277,7 +276,7 @@ func (a *MpesaCollectionAdapter) validateNumber(userID, msisdn string) {
 
 	result, err := a.client.ValidateMobileNumber(ctx, msisdn, mpesa.IDTypeNational, u.NationalID, a.cfg.CollectionShortcode)
 	if err != nil {
-		a.logger.Warn("mobile number validation call failed", "user_id", userID, "error", err)
+		a.logger.WarnContext(ctx, "mobile number validation call failed", "user_id", userID, "error", err)
 		return
 	}
 
@@ -287,7 +286,7 @@ func (a *MpesaCollectionAdapter) validateNumber(userID, msisdn string) {
 		ResponseCode: result.ResponseCode,
 		CheckedAt:    time.Now(),
 	}); err != nil {
-		a.logger.Warn("could not cache mobile number validation verdict", "user_id", userID, "error", err)
+		a.logger.WarnContext(ctx, "could not cache mobile number validation verdict", "user_id", userID, "error", err)
 	}
 }
 

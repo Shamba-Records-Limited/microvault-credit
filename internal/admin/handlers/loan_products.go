@@ -4,10 +4,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gofiber/fiber/v2"
+
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/views"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services"
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
-	"github.com/gofiber/fiber/v2"
 )
 
 const defaultPageSize = 25

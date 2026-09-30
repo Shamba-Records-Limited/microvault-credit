@@ -5,12 +5,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/a-h/templ"
+
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/metrics"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/views"
 	globallendinglimit "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/global_lending_limit"
 	loanlimitconfig "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_limit_config"
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
-	"github.com/a-h/templ"
 )
 
 func render(t *testing.T, c templ.Component) string {

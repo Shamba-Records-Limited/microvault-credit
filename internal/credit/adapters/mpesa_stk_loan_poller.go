@@ -33,7 +33,7 @@ type stkQuerier interface {
 // adapters.RepaymentNotifierAdapter already satisfies this structurally, so
 // the same instance wired for MoneyGram can be passed here too.
 type stkRepaymentNotifier interface {
-	NotifyRepaymentReceivedAmount(loanID string, amountKES int64) error
+	NotifyRepaymentReceivedAmount(ctx context.Context, loanID string, amountKES int64) error
 }
 
 // MpesaSTKLoanDriver resolves loans whose repayment was initiated with an STK
@@ -100,13 +100,13 @@ func NewMpesaSTKLoanDriver(deps MpesaSTKLoanDriverDeps) (*MpesaSTKLoanDriver, er
 // failure; the attempt counter only moves on an answer from Daraja.
 func (d *MpesaSTKLoanDriver) Drive(ctx context.Context, l *models.Loan) {
 	if l == nil || l.RepaymentMpesaCheckoutID == nil || *l.RepaymentMpesaCheckoutID == "" {
-		d.logger.Error("stk repayment has no checkout id", "loan_id", loanIDOrEmpty(l))
+		d.logger.ErrorContext(ctx, "stk repayment has no checkout id", "loan_id", loanIDOrEmpty(l))
 		return
 	}
 
 	resp, err := d.client.ExpressQuery(ctx, *l.RepaymentMpesaCheckoutID, d.shortcode)
 	if err != nil {
-		d.logger.Warn("stk query failed, retrying next interval",
+		d.logger.WarnContext(ctx, "stk query failed, retrying next interval",
 			"loan_id", l.ID, "error", err)
 		d.scheduleNext(ctx, l.ID, l.RepaymentSTKAttempts)
 		return
@@ -119,7 +119,7 @@ func (d *MpesaSTKLoanDriver) Drive(ctx context.Context, l *models.Loan) {
 	case outcome.Retryable:
 		d.retryOrExpire(ctx, l)
 	default:
-		d.logger.Info("stk repayment failed terminally",
+		d.logger.InfoContext(ctx, "stk repayment failed terminally",
 			"loan_id", l.ID, "result_code", code, "outcome", outcome.Message)
 		d.close(ctx, l.ID, models.LoanRepaymentStatusExpired)
 	}
@@ -138,23 +138,23 @@ func (d *MpesaSTKLoanDriver) settle(ctx context.Context, l *models.Loan) {
 	switch {
 	case err == nil:
 		if err := d.mpesaRepo.Confirm(ctx, obs.TransID, txmodels.MpesaConfirmViaSTKQuery, l.ID); err != nil {
-			d.logger.Warn("could not confirm the callback observation",
+			d.logger.WarnContext(ctx, "could not confirm the callback observation",
 				"loan_id", l.ID, "trans_id", obs.TransID, "error", err)
 		} else {
 			receipt = &obs.TransID
 			amountKES = obs.AmountKes
 		}
 	case errors.Is(err, corerepository.ErrMpesaNotFound):
-		d.logger.Warn("settling without a callback receipt; reconciliation must backfill",
+		d.logger.WarnContext(ctx, "settling without a callback receipt; reconciliation must backfill",
 			"loan_id", l.ID)
 	default:
-		d.logger.Warn("could not look up the callback observation",
+		d.logger.WarnContext(ctx, "could not look up the callback observation",
 			"loan_id", l.ID, "error", err)
 	}
 
 	row, err := d.repo.GetByID(ctx, l.ID)
 	if err != nil {
-		d.logger.Error("could not load the loan to settle", "loan_id", l.ID, "error", err)
+		d.logger.ErrorContext(ctx, "could not load the loan to settle", "loan_id", l.ID, "error", err)
 		return
 	}
 	if row.RepaymentStatus != models.LoanRepaymentStatusInitiated {
@@ -168,22 +168,22 @@ func (d *MpesaSTKLoanDriver) settle(ctx context.Context, l *models.Loan) {
 		row.RepaymentReceivedStroops = &received
 	}
 	if err := d.repo.Update(ctx, row); err != nil {
-		d.logger.Error("could not mark the repayment funds received", "loan_id", l.ID, "error", err)
+		d.logger.ErrorContext(ctx, "could not mark the repayment funds received", "loan_id", l.ID, "error", err)
 		return
 	}
-	d.notify(l.ID, amountKES)
+	d.notify(ctx, l.ID, amountKES)
 }
 
 // notify tells the borrower their payment landed. Best-effort: the state
 // write above is already durable, so a missing notifier or a failed send
 // only logs.
-func (d *MpesaSTKLoanDriver) notify(loanID string, amountKES int64) {
+func (d *MpesaSTKLoanDriver) notify(ctx context.Context, loanID string, amountKES int64) {
 	if d.notifier == nil {
-		d.logger.Warn("no repayment notifier configured, message not sent", "loan_id", loanID)
+		d.logger.WarnContext(ctx, "no repayment notifier configured, message not sent", "loan_id", loanID)
 		return
 	}
-	if err := d.notifier.NotifyRepaymentReceivedAmount(loanID, amountKES); err != nil {
-		d.logger.Warn("failed to send repayment received notification", "loan_id", loanID, "error", err)
+	if err := d.notifier.NotifyRepaymentReceivedAmount(ctx, loanID, amountKES); err != nil {
+		d.logger.WarnContext(ctx, "failed to send repayment received notification", "loan_id", loanID, "error", err)
 	}
 }
 
@@ -192,7 +192,7 @@ func (d *MpesaSTKLoanDriver) notify(loanID string, amountKES int64) {
 func (d *MpesaSTKLoanDriver) retryOrExpire(ctx context.Context, l *models.Loan) {
 	attempts := l.RepaymentSTKAttempts + 1
 	if attempts >= d.maxAttempts {
-		d.logger.Info("stk repayment exhausted its attempts", "loan_id", l.ID, "attempts", attempts)
+		d.logger.InfoContext(ctx, "stk repayment exhausted its attempts", "loan_id", l.ID, "attempts", attempts)
 		d.close(ctx, l.ID, models.LoanRepaymentStatusExpired)
 		return
 	}
@@ -207,7 +207,7 @@ func (d *MpesaSTKLoanDriver) scheduleNext(ctx context.Context, loanID string, at
 		RepaymentSTKAttempts: &attempts,
 		RepaymentNextPollAt:  &next,
 	}); err != nil {
-		d.logger.Error("could not reschedule the stk poll", "loan_id", loanID, "error", err)
+		d.logger.ErrorContext(ctx, "could not reschedule the stk poll", "loan_id", loanID, "error", err)
 	}
 }
 
@@ -217,13 +217,13 @@ func (d *MpesaSTKLoanDriver) scheduleNext(ctx context.Context, loanID string, at
 func (d *MpesaSTKLoanDriver) close(ctx context.Context, loanID, status string) {
 	row, err := d.repo.GetByID(ctx, loanID)
 	if err != nil {
-		d.logger.Error("could not load the loan to close", "loan_id", loanID, "error", err)
+		d.logger.ErrorContext(ctx, "could not load the loan to close", "loan_id", loanID, "error", err)
 		return
 	}
 	row.RepaymentStatus = status
 	row.RepaymentNextPollAt = nil
 	if err := d.repo.Update(ctx, row); err != nil {
-		d.logger.Error("could not write the terminal repayment status", "loan_id", loanID, "error", err)
+		d.logger.ErrorContext(ctx, "could not write the terminal repayment status", "loan_id", loanID, "error", err)
 	}
 }
 

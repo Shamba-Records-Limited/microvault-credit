@@ -3,7 +3,6 @@ package adapters
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"testing"
 
@@ -92,7 +91,7 @@ func (f *fakeTxnSvc) offRampRows() []transaction.CreateTransactionRequest {
 func newTestAdapter(t *testing.T, repo *fakeLoanRepo, txns *fakeTxnSvc) (*MoneyGramPollerAdapter, *fakeLoanSvc) {
 	t.Helper()
 	loans := &fakeLoanSvc{}
-	a, err := NewMoneyGramPollerAdapter(repo, loans, txns, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	a, err := NewMoneyGramPollerAdapter(repo, loans, txns, slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 	return a, loans
 }

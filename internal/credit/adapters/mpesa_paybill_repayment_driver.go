@@ -98,13 +98,13 @@ func (d *MpesaPaybillRepaymentDriver) Start(ctx context.Context) {
 	ticker := time.NewTicker(d.interval)
 	defer ticker.Stop()
 
-	d.logger.Info("starting", "interval", d.interval)
+	d.logger.InfoContext(ctx, "starting", "interval", d.interval)
 	d.tick(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
-			d.logger.Info("shutting down")
+			d.logger.InfoContext(ctx, "shutting down")
 			return
 		case <-ticker.C:
 			d.tick(ctx)
@@ -117,7 +117,7 @@ func (d *MpesaPaybillRepaymentDriver) Start(ctx context.Context) {
 func (d *MpesaPaybillRepaymentDriver) tick(ctx context.Context) {
 	txs, err := d.mpesaRepo.ListUnappliedConfirmed(ctx, paybillSweepBatchSize)
 	if err != nil {
-		d.logger.Error("could not list unapplied paybill payments", "error", err)
+		d.logger.ErrorContext(ctx, "could not list unapplied paybill payments", "error", err)
 		return
 	}
 
@@ -166,49 +166,49 @@ func (d *MpesaPaybillRepaymentDriver) applyOne(ctx context.Context, tx *coremode
 
 	loanRow, err := d.repo.GetByID(ctx, loanID)
 	if err != nil {
-		logger.Error("could not load loan for a paybill payment, will retry next tick", "error", err)
+		logger.ErrorContext(ctx, "could not load loan for a paybill payment, will retry next tick", "error", err)
 		return false
 	}
 	if !paybillEligible(loanRow) {
-		logger.Warn("paybill payment for a loan that cannot currently accrue mpesa repayment progress",
+		logger.WarnContext(ctx, "paybill payment for a loan that cannot currently accrue mpesa repayment progress",
 			"loan_status", loanRow.Status, "repayment_status", loanRow.RepaymentStatus, "repayment_provider", loanRow.RepaymentProvider)
 		return false
 	}
 
 	if loanRow.RepaymentPayoffStroops == nil {
 		if err := d.lockPayoff(ctx, loanRow); err != nil {
-			logger.Warn("could not lock a payoff for a paybill payment, will retry next tick", "error", err)
+			logger.WarnContext(ctx, "could not lock a payoff for a paybill payment, will retry next tick", "error", err)
 			return false
 		}
 	}
 
 	rate, rateSource, err := d.fxRateForLoan(ctx, loanRow)
 	if err != nil {
-		logger.Warn("no FX rate available for a paybill payment, will retry next tick", "error", err)
+		logger.WarnContext(ctx, "no FX rate available for a paybill payment, will retry next tick", "error", err)
 		return false
 	}
 
 	amountUSD := (float64(tx.AmountKes) / 100.0) / rate
 	stroops := int64(amountUSD * stroopsPerUSDC)
 	if stroops <= 0 {
-		logger.Error("paybill payment converted to a non-positive stroops figure, dropping it from the sweep",
+		logger.ErrorContext(ctx, "paybill payment converted to a non-positive stroops figure, dropping it from the sweep",
 			"amount_kes", tx.AmountKes, "fx_rate", rate, "fx_source", rateSource)
 		// Not retried: a non-positive conversion will never become positive,
 		// and leaving it in the unapplied queue forever would starve every
 		// other loan's payments behind it once the batch fills with it.
 		if err := d.mpesaRepo.SetAppliedStroops(ctx, tx.ID, 0); err != nil {
-			logger.Error("could not mark the non-positive payment as applied", "error", err)
+			logger.ErrorContext(ctx, "could not mark the non-positive payment as applied", "error", err)
 			return false
 		}
 		return true
 	}
 
 	if err := d.mpesaRepo.SetAppliedStroops(ctx, tx.ID, stroops); err != nil {
-		logger.Error("could not record the converted stroops figure, will retry next tick", "error", err)
+		logger.ErrorContext(ctx, "could not record the converted stroops figure, will retry next tick", "error", err)
 		return false
 	}
 
-	logger.Info("paybill payment converted",
+	logger.InfoContext(ctx, "paybill payment converted",
 		"amount_kes", tx.AmountKes, "stroops", stroops, "fx_rate", rate, "fx_source", rateSource)
 	return true
 }
@@ -247,13 +247,13 @@ func (d *MpesaPaybillRepaymentDriver) recompute(ctx context.Context, loanID stri
 
 	total, err := d.mpesaRepo.SumAppliedStroopsByLoan(ctx, loanID)
 	if err != nil {
-		logger.Error("could not total a loan's applied paybill payments", "error", err)
+		logger.ErrorContext(ctx, "could not total a loan's applied paybill payments", "error", err)
 		return
 	}
 
 	loanRow, err := d.repo.GetByID(ctx, loanID)
 	if err != nil {
-		logger.Error("could not load loan to record paybill progress", "error", err)
+		logger.ErrorContext(ctx, "could not load loan to record paybill progress", "error", err)
 		return
 	}
 	if loanRow.RepaymentPayoffStroops == nil {
@@ -261,7 +261,7 @@ func (d *MpesaPaybillRepaymentDriver) recompute(ctx context.Context, loanID stri
 		// applied (see applyOne), so a nil payoff here means the loan moved
 		// out of repayment entirely (e.g. reassigned) between applyOne and
 		// this call — leave it alone rather than guessing a status.
-		logger.Warn("loan has applied paybill payments but no locked payoff, leaving its status untouched")
+		logger.WarnContext(ctx, "loan has applied paybill payments but no locked payoff, leaving its status untouched")
 		return
 	}
 
@@ -275,27 +275,27 @@ func (d *MpesaPaybillRepaymentDriver) recompute(ctx context.Context, loanID stri
 	}
 
 	if err := d.repo.Update(ctx, loanRow); err != nil {
-		logger.Error("could not record paybill repayment progress", "error", err)
+		logger.ErrorContext(ctx, "could not record paybill repayment progress", "error", err)
 		return
 	}
 
-	logger.Info("paybill repayment progress recorded",
+	logger.InfoContext(ctx, "paybill repayment progress recorded",
 		"received_stroops", total, "payoff_stroops", *loanRow.RepaymentPayoffStroops, "status", loanRow.RepaymentStatus)
 
 	if !wasFundsReceived && loanRow.RepaymentStatus == models.LoanRepaymentStatusFundsReceived {
-		d.notify(loanID)
+		d.notify(ctx, loanID)
 	}
 }
 
 // notify tells the borrower their payment landed, mirroring
 // MpesaSTKLoanDriver.notify exactly — best-effort, never blocks the state
 // write above.
-func (d *MpesaPaybillRepaymentDriver) notify(loanID string) {
+func (d *MpesaPaybillRepaymentDriver) notify(ctx context.Context, loanID string) {
 	if d.notifier == nil {
-		d.logger.Warn("no repayment notifier configured, message not sent", "loan_id", loanID)
+		d.logger.WarnContext(ctx, "no repayment notifier configured, message not sent", "loan_id", loanID)
 		return
 	}
-	if err := d.notifier.NotifyRepaymentReceivedAmount(loanID, 0); err != nil {
-		d.logger.Warn("failed to send repayment received notification", "loan_id", loanID, "error", err)
+	if err := d.notifier.NotifyRepaymentReceivedAmount(ctx, loanID, 0); err != nil {
+		d.logger.WarnContext(ctx, "failed to send repayment received notification", "loan_id", loanID, "error", err)
 	}
 }

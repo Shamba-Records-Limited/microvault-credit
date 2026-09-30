@@ -109,7 +109,7 @@ const (
 // deposit and quote lock stand whether or not the SMS lands.
 func (a *LoanServiceAdapter) sendRepaymentLink(ctx context.Context, loanRow *loan.LoanResponse, phoneNumber, interactiveURL string, quote *ussd.RepaymentQuote, expiresAt time.Time) {
 	if a.loanNotifier == nil {
-		a.logger.Warn("no loan notifier wired; repayment link not delivered",
+		a.logger.WarnContext(ctx, "no loan notifier wired; repayment link not delivered",
 			"loan_id", loanRow.ID)
 		return
 	}
@@ -118,7 +118,7 @@ func (a *LoanServiceAdapter) sendRepaymentLink(ctx context.Context, loanRow *loa
 	// bearer redirect only when dub produced nothing.
 	link, err := shortenedLink(ctx, a.shortener, interactiveURL, "")
 	if err != nil {
-		a.logger.Warn("shorten failed for repayment link; falling back",
+		a.logger.WarnContext(ctx, "shorten failed for repayment link; falling back",
 			"loan_id", loanRow.ID, "error", err)
 	}
 	if link == "" {
@@ -155,7 +155,7 @@ func (a *LoanServiceAdapter) sendRepaymentLink(ctx context.Context, loanRow *loa
 	}
 
 	if err := a.loanNotifier.NotifyRepaymentInitiated(ctx, n); err != nil {
-		a.logger.Error("failed to send repayment link",
+		a.logger.ErrorContext(ctx, "failed to send repayment link",
 			"loan_id", loanRow.ID, "error", err)
 	}
 }
@@ -173,15 +173,15 @@ const notifyLeakGuard = 10 * time.Minute
 
 // notifyAsync sends a borrower notification off the disbursement path, on a
 // detached context so it outlives a cancelled pipeline.
-func (a *LoanServiceAdapter) notifyAsync(label, loanID string, send func(ctx context.Context) error) {
+func (a *LoanServiceAdapter) notifyAsync(ctx context.Context, label, loanID string, send func(ctx context.Context) error) {
 	if a.loanNotifier == nil {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), notifyLeakGuard)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), notifyLeakGuard)
 		defer cancel()
 		if err := send(ctx); err != nil {
-			a.logger.Warn("borrower notification failed", "notification", label, "loan_id", loanID, "error", err)
+			a.logger.WarnContext(ctx, "borrower notification failed", "notification", label, "loan_id", loanID, "error", err)
 		}
 	}()
 }
@@ -230,19 +230,19 @@ func (a *LoanServiceAdapter) routeMobileMoney(ctx context.Context, req offramp.R
 		CryptoAmount: amountUSD,
 	})
 	if err != nil {
-		a.logger.Warn("relay could not route this disbursement, using the default provider",
+		a.logger.WarnContext(ctx, "relay could not route this disbursement, using the default provider",
 			pkgErrors.AttrLoanID, req.LoanID, "error", err)
 		return ""
 	}
 
 	alias := payoutAliasFor(quote.Provider)
 	if alias == "" {
-		a.logger.Warn("relay picked a provider with no payout alias, using the default",
+		a.logger.WarnContext(ctx, "relay picked a provider with no payout alias, using the default",
 			pkgErrors.AttrLoanID, req.LoanID, pkgErrors.AttrProvider, quote.Provider)
 		return ""
 	}
 
-	a.logger.Info("relay routed disbursement",
+	a.logger.InfoContext(ctx, "relay routed disbursement",
 		pkgErrors.AttrLoanID, req.LoanID,
 		pkgErrors.AttrProvider, quote.Provider,
 		"effective_rate", quote.EffectiveRate,
@@ -302,14 +302,14 @@ func depositCorridorErr(errb oops.OopsErrorBuilder, payoffStroops int64) error {
 
 // runRepaymentInitiation does the slow half of opening a cash deposit. Every
 // exit path SMSes the outcome — the USSD session is already gone.
-func (a *LoanServiceAdapter) runRepaymentInitiation(loanID, phoneNumber string) {
-	ctx, cancel := context.WithTimeout(context.Background(), repaymentInitiationTimeout)
+func (a *LoanServiceAdapter) runRepaymentInitiation(ctx context.Context, loanID, phoneNumber string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), repaymentInitiationTimeout)
 	defer cancel()
 
 	errb := oops.In(pkgErrors.DomainRepaymentCashIn).Tags("moneygram", "sep24").With(pkgErrors.AttrLoanID, loanID)
 
 	fail := func(err error) {
-		a.logger.Error("repayment initiation failed",
+		a.logger.ErrorContext(ctx, "repayment initiation failed",
 			pkgErrors.AttrLoanID, loanID, "error", err)
 		a.sendRepaymentFailed(ctx, loanID, phoneNumber)
 	}
@@ -324,7 +324,7 @@ func (a *LoanServiceAdapter) runRepaymentInitiation(loanID, phoneNumber string) 
 	// 7-decimal on-chain repayment against a 2-decimal expectation is the same
 	// confirmation mismatch that stalls payouts.
 	if rounded := utils.RoundToCentStroops(quote.AmountUSDCStroops); rounded != quote.AmountUSDCStroops {
-		a.logger.Info("payoff rounded to whole cents",
+		a.logger.InfoContext(ctx, "payoff rounded to whole cents",
 			pkgErrors.AttrLoanID, loanID,
 			"original_stroops", quote.AmountUSDCStroops,
 			"rounded_stroops", rounded,
@@ -384,7 +384,7 @@ func (a *LoanServiceAdapter) runRepaymentInitiation(loanID, phoneNumber string) 
 		// The deposit exists at MoneyGram but we have no record of it, so the
 		// poller will never drive it and a borrower who pays is unreconciled.
 		// Louder than the other failures for that reason.
-		a.logger.Error("CRITICAL: deposit opened but the quote lock was not recorded",
+		a.logger.ErrorContext(ctx, "CRITICAL: deposit opened but the quote lock was not recorded",
 			pkgErrors.AttrLoanID, loanID,
 			pkgErrors.AttrMoneyGramTxID, resp.ID,
 			"error", err)
@@ -416,7 +416,7 @@ func (a *LoanServiceAdapter) sendRepaymentFailed(ctx context.Context, loanID, ph
 		n.LoanReference = *loanRow.LoanReference
 	}
 	if err := a.loanNotifier.NotifyRepaymentFailed(ctx, n); err != nil {
-		a.logger.Error("failed to send the repayment failure notice",
+		a.logger.ErrorContext(ctx, "failed to send the repayment failure notice",
 			pkgErrors.AttrLoanID, loanID, "error", err)
 	}
 }
@@ -537,7 +537,7 @@ func NewLoanServiceAdapter(ctx context.Context, deps LoanAdapterDeps) (*LoanServ
 		OriginationFeeBps: originationFeeBps,
 	}
 
-	logger.Info("loan product loaded",
+	logger.InfoContext(ctx, "loan product loaded",
 		"product_id", p.ID,
 		"name", p.Name,
 		"currency", p.Currency,
@@ -598,7 +598,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	// the anchor-rounding toggle is on.
 	if a.roundAnchorAmounts || payoutMethod == offramp.PayoutMethodCashPickup {
 		if rounded := utils.RoundToCentStroops(req.PrincipalAmount); rounded != req.PrincipalAmount {
-			a.logger.Info("principal rounded to whole cents",
+			a.logger.InfoContext(ctx, "principal rounded to whole cents",
 				"user_id", req.UserID,
 				"original_stroops", req.PrincipalAmount,
 				"rounded_stroops", rounded,
@@ -610,7 +610,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	// Cash-pickup needs a recipient name for SEP-9 prefill — fail before any
 	// vault mutation rather than after MoneyGram rejects the withdraw call.
 	if payoutMethod == offramp.PayoutMethodCashPickup && req.RecipientName == "" {
-		a.logger.Error("cash-pickup loan rejected: recipient name missing",
+		a.logger.ErrorContext(ctx, "cash-pickup loan rejected: recipient name missing",
 			"user_id", req.UserID,
 		)
 		return nil, lendingErr("request_loan").Code(pkgErrors.CodeMissingAccount).
@@ -620,7 +620,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	// Dedupe gate — same (user, method, amount) within 60s is treated as a
 	// USSD/carrier replay and rejected before any state mutates.
 	if !a.dedupe.check(dedupeKey(req.UserID, payoutMethod, req.PrincipalAmount)) {
-		a.logger.Warn("duplicate loan request suppressed",
+		a.logger.WarnContext(ctx, "duplicate loan request suppressed",
 			"user_id", req.UserID,
 			"payout_method", payoutMethod,
 			"amount_stroops", req.PrincipalAmount,
@@ -636,7 +636,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		notifyCurrency = req.LocalCurrency
 	}
 
-	a.logger.Info("loan request received",
+	a.logger.InfoContext(ctx, "loan request received",
 		"user_id", req.UserID,
 		"product_id", req.ProductID,
 		"amount_stroops", req.PrincipalAmount,
@@ -662,7 +662,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	interestRateBps := a.productConfig.InterestRateBps
 	aprWad, err := a.stellarSvc.GetBorrowAPR(ctx)
 	if err != nil {
-		a.logger.Warn("failed to fetch vault APR, using fallback", "error", err)
+		a.logger.WarnContext(ctx, "failed to fetch vault APR, using fallback", "error", err)
 	} else if aprWad > 0 {
 		interestRateBps = int32(aprWad / 1e14) // WAD (1e18) to bps (1e4)
 	}
@@ -681,12 +681,12 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		RepaymentSchedule: req.RepaymentSched,
 	})
 	if err != nil {
-		a.logger.Error("failed to create loan record", "user_id", req.UserID, "error", err)
+		a.logger.ErrorContext(ctx, "failed to create loan record", "user_id", req.UserID, "error", err)
 		return nil, lendingErr("request_loan").Code(pkgErrors.CodeStateWriteFailed).
 			Wrapf(err, "could not create the loan")
 	}
 	loanID := createResp.ID
-	a.logger.Info("loan record created",
+	a.logger.InfoContext(ctx, "loan record created",
 		"loan_id", loanID,
 		"user_id", req.UserID,
 		"amount", req.PrincipalAmount,
@@ -702,11 +702,11 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	// Use the nil UUID for system auto-approvals (approved_by is UUID in the DB).
 	_, err = a.loanSvc.Approve(ctx, loanID, loan.ApproveLoanRequest{ApprovedBy: "00000000-0000-0000-0000-000000000000"})
 	if err != nil {
-		a.logger.Error("failed to approve loan", "loan_id", loanID, "error", err)
+		a.logger.ErrorContext(ctx, "failed to approve loan", "loan_id", loanID, "error", err)
 		return nil, lendingErr("request_loan").Code(pkgErrors.CodeStateWriteFailed).
 			Wrapf(err, "could not approve the loan")
 	}
-	a.logger.Info("loan auto-approved", "loan_id", loanID)
+	a.logger.InfoContext(ctx, "loan auto-approved", "loan_id", loanID)
 
 	// Notify user of approval (best-effort) — use KES amount when available.
 	if a.loanNotifier != nil && req.PhoneNumber != "" {
@@ -725,7 +725,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		// implies a push disbursement, which is misleading here — a follow-up
 		// SMS with the MoneyGram interactive URL is sent once the off-ramp
 		// initiates (see recordSuccessfulInitiate).
-		a.notifyAsync("approval", loanID, func(ctx context.Context) error {
+		a.notifyAsync(ctx, "approval", loanID, func(ctx context.Context) error {
 			if payoutMethod == offramp.PayoutMethodCashPickup {
 				return a.loanNotifier.NotifyLoanCashPickupApproved(ctx, notification)
 			}
@@ -739,7 +739,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	// this is the safety net for that rare failure.
 	if a.accountEnsurer != nil {
 		if err := a.accountEnsurer.EnsureOnChainAccount(ctx, int(req.ChildAccountIndex), req.StellarAddress); err != nil {
-			a.logger.Error("on-chain account ensure failed; aborting disbursement",
+			a.logger.ErrorContext(ctx, "on-chain account ensure failed; aborting disbursement",
 				"loan_id", loanID, "address", req.StellarAddress, "error", err)
 			cancelStatus := "cancelled"
 			_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{VaultTxStatus: &cancelStatus})
@@ -754,7 +754,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		Amount:           req.PrincipalAmount,
 	})
 	if err != nil {
-		a.logger.Error("vault borrow failed", "loan_id", loanID, "error", err)
+		a.logger.ErrorContext(ctx, "vault borrow failed", "loan_id", loanID, "error", err)
 		// Cancel the loan on vault failure.
 		cancelStatus := "cancelled"
 		_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{
@@ -763,7 +763,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		return nil, lendingErr("request_loan").Code(pkgErrors.CodeVaultRepayFailed).
 			Wrapf(err, "vault borrow failed")
 	}
-	a.logger.Info("vault borrow succeeded",
+	a.logger.InfoContext(ctx, "vault borrow succeeded",
 		"loan_id", loanID,
 		"tx_hash", borrowResp.TxHash,
 		"amount_borrowed", borrowResp.AmountBorrowed,
@@ -794,7 +794,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 			Description:      &vaultDesc,
 		})
 		if txnErr != nil {
-			a.logger.Warn("failed to record vault borrow transaction", "loan_id", loanID, "error", txnErr)
+			a.logger.WarnContext(ctx, "failed to record vault borrow transaction", "loan_id", loanID, "error", txnErr)
 		} else if txnResp != nil {
 			// Transition: pending to submitted to success (vault TX is already confirmed).
 			submittedStatus := models.TxStatusSubmitted
@@ -818,9 +818,9 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	})
 	if err != nil {
 		// Non-fatal: vault borrow already succeeded.
-		a.logger.Error("failed to update loan after disbursement", "loan_id", loanID, "error", err)
+		a.logger.ErrorContext(ctx, "failed to update loan after disbursement", "loan_id", loanID, "error", err)
 	} else {
-		a.logger.Info("loan marked disbursed", "loan_id", loanID, "vault_tx_hash", borrowResp.TxHash)
+		a.logger.InfoContext(ctx, "loan marked disbursed", "loan_id", loanID, "vault_tx_hash", borrowResp.TxHash)
 	}
 
 	// Step 6: Initiate off-ramp against the resolved provider.
@@ -844,7 +844,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	}
 	provider, resolveErr := a.offRamps.Resolve(offrampReq)
 	if resolveErr != nil {
-		a.logger.Error("off-ramp registry resolve failed",
+		a.logger.ErrorContext(ctx, "off-ramp registry resolve failed",
 			"loan_id", loanID,
 			"payout_method", payoutMethod,
 			"error", resolveErr,
@@ -855,7 +855,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	offRampResult, err := provider.Initiate(ctx, offrampReq)
 	offRampFailed := err != nil
 	if offRampFailed {
-		a.logger.Error("off-ramp failed — vault borrow succeeded, USDC in treasury, fiat not disbursed",
+		a.logger.ErrorContext(ctx, "off-ramp failed — vault borrow succeeded, USDC in treasury, fiat not disbursed",
 			"loan_id", loanID,
 			"vault_tx_hash", borrowResp.TxHash,
 			"error", err,
@@ -864,7 +864,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		// disbursement. Distinct from LoanStatusDefaulted — the borrower owes
 		// nothing. The disbursement view derives from this.
 		if _, mErr := a.loanSvc.MarkAsOffRampFailed(ctx, loanID); mErr != nil {
-			a.logger.Warn("failed to flip loan status to offramp_failed",
+			a.logger.WarnContext(ctx, "failed to flip loan status to offramp_failed",
 				"loan_id", loanID, "error", mErr)
 		}
 
@@ -886,12 +886,12 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 				DisplayAmount:   notifyAmount,
 				DisplayCurrency: notifyCurrency,
 			}
-			a.notifyAsync("offramp_failed", loanID, func(ctx context.Context) error {
+			a.notifyAsync(ctx, "offramp_failed", loanID, func(ctx context.Context) error {
 				return a.loanNotifier.NotifyLoanOffRampFailed(ctx, failedNote)
 			})
 		}
 	} else {
-		a.logger.Info("off-ramp initiated",
+		a.logger.InfoContext(ctx, "off-ramp initiated",
 			"loan_id", loanID,
 			"request_id", offRampResult.RequestID,
 			"sequence_id", offRampResult.SequenceID,
@@ -911,14 +911,14 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 
 	duration := time.Since(start)
 	if offRampFailed {
-		a.logger.Warn("loan disbursement partial — vault borrow ok, off-ramp failed (retryable)",
+		a.logger.WarnContext(ctx, "loan disbursement partial — vault borrow ok, off-ramp failed (retryable)",
 			"loan_id", loanID,
 			"vault_tx_hash", borrowResp.TxHash,
 			"disbursement_status", "offramp_failed",
 			"total_duration_ms", duration.Milliseconds(),
 		)
 	} else {
-		a.logger.Info("loan off-ramp initiated successfully",
+		a.logger.InfoContext(ctx, "loan off-ramp initiated successfully",
 			"loan_id", loanID,
 			"vault_tx_hash", borrowResp.TxHash,
 			"payout_method", payoutMethod,
@@ -999,13 +999,13 @@ func (a *LoanServiceAdapter) requoteEntryRate(
 		if err == nil && res != nil && res.Rate > 0 {
 			return res.Rate, res.Source, res.BufferPct
 		}
-		a.logger.Warn("FX orchestrator quote failed, falling back to provider Quoter",
+		a.logger.WarnContext(ctx, "FX orchestrator quote failed, falling back to provider Quoter",
 			"currency", currency, "error", err)
 	}
 
 	p, err := a.offRamps.Resolve(offramp.Request{Options: opts})
 	if err != nil {
-		a.logger.Warn("entry-rate re-quote: registry resolve failed", "error", err)
+		a.logger.WarnContext(ctx, "entry-rate re-quote: registry resolve failed", "error", err)
 		return 0, "", 0
 	}
 	quoter, ok := p.(offramp.Quoter)
@@ -1014,7 +1014,7 @@ func (a *LoanServiceAdapter) requoteEntryRate(
 	}
 	q, err := quoter.Quote(ctx, offramp.QuoteRequest{Currency: currency})
 	if err != nil {
-		a.logger.Warn("entry-rate re-quote failed",
+		a.logger.WarnContext(ctx, "entry-rate re-quote failed",
 			"provider", p.ID(), "currency", currency, "error", err)
 		return 0, "", 0
 	}
@@ -1023,7 +1023,7 @@ func (a *LoanServiceAdapter) requoteEntryRate(
 	// which side was used — entry_rate_source names the provider, not the leg.
 	// No usable sell rate means no entry rate; the caller proceeds without one.
 	if q.SellRate <= 0 {
-		a.logger.Warn("entry-rate re-quote: provider returned no sell rate",
+		a.logger.WarnContext(ctx, "entry-rate re-quote: provider returned no sell rate",
 			"provider", p.ID(), "currency", currency)
 		return 0, "", 0
 	}
@@ -1070,7 +1070,7 @@ func (a *LoanServiceAdapter) persistEntryRate(
 		return
 	}
 	if _, err := a.loanSvc.Update(ctx, loanID, req); err != nil {
-		a.logger.Warn("failed to persist entry-rate audit fields",
+		a.logger.WarnContext(ctx, "failed to persist entry-rate audit fields",
 			"loan_id", loanID, "error", err)
 	}
 }
@@ -1093,7 +1093,7 @@ func (a *LoanServiceAdapter) repayVaultAfterInitiate(
 ) {
 	repayResp, repayErr := a.stellarSvc.RepayToVault(ctx, stellar.RepayRequest{Amount: amountStroops})
 	if repayErr != nil {
-		a.logger.Error("CRITICAL: vault repay failed",
+		a.logger.ErrorContext(ctx, "CRITICAL: vault repay failed",
 			"loan_id", loanID,
 			"trigger", trigger,
 			"amount_stroops", amountStroops,
@@ -1138,7 +1138,7 @@ func (a *LoanServiceAdapter) repayVaultAfterInitiate(
 		}
 	}
 
-	a.logger.Info("vault repaid",
+	a.logger.InfoContext(ctx, "vault repaid",
 		"loan_id", loanID,
 		"trigger", trigger,
 		"repay_tx_hash", repayResp.TxHash,
@@ -1156,7 +1156,7 @@ const shortCodeTTL = 24 * time.Hour
 func (a *LoanServiceAdapter) mintRedirectLink(ctx context.Context, loanID, rawURL string) string {
 	code, err := newShortCode()
 	if err != nil {
-		a.logger.Warn("short-code generation failed; sending raw URL",
+		a.logger.WarnContext(ctx, "short-code generation failed; sending raw URL",
 			"loan_id", loanID, "error", err)
 		return rawURL
 	}
@@ -1166,7 +1166,7 @@ func (a *LoanServiceAdapter) mintRedirectLink(ctx context.Context, loanID, rawUR
 		RampShortCode:          &code,
 		RampShortCodeExpiresAt: &expiresAt,
 	}); err != nil {
-		a.logger.Warn("failed to persist short code; sending raw URL",
+		a.logger.WarnContext(ctx, "failed to persist short code; sending raw URL",
 			"loan_id", loanID, "error", err)
 		return rawURL
 	}
@@ -1209,7 +1209,7 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 
 		initiated := true
 		if _, err := a.loanSvc.Update(ctx, loanID, updateReq); err != nil {
-			a.logger.Warn("failed to record cash-pickup initiation",
+			a.logger.WarnContext(ctx, "failed to record cash-pickup initiation",
 				"loan_id", loanID, "error", err)
 			initiated = false
 		}
@@ -1218,7 +1218,7 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 		// MoneyGram URL rather than at /r/{code}.
 		smsLink, shortenErr := shortenedLink(ctx, a.shortener, rawURL, "")
 		if shortenErr != nil {
-			a.logger.Warn("dub shorten failed; falling back to the internal redirect",
+			a.logger.WarnContext(ctx, "dub shorten failed; falling back to the internal redirect",
 				"loan_id", loanID, "error", shortenErr)
 		}
 
@@ -1244,7 +1244,7 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 			if createResp.LoanReference != nil {
 				notification.LoanReference = *createResp.LoanReference
 			}
-			a.notifyAsync("cash_pickup_initiated", loanID, func(ctx context.Context) error {
+			a.notifyAsync(ctx, "cash_pickup_initiated", loanID, func(ctx context.Context) error {
 				return a.loanNotifier.NotifyLoanCashPickupInitiated(ctx, notification)
 			})
 		}
@@ -1259,7 +1259,7 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 		if req.LocalAmount > 0 {
 			deviation := (result.AmountLocal - float64(req.LocalAmount)/100.0) / (float64(req.LocalAmount) / 100.0)
 			if deviation < -0.02 || deviation > 0.02 {
-				a.logger.Warn("SLIPPAGE ALERT: >2% deviation",
+				a.logger.WarnContext(ctx, "SLIPPAGE ALERT: >2% deviation",
 					"loan_id", loanID,
 					"expected_local", float64(req.LocalAmount)/100.0,
 					"actual_local", result.AmountLocal,
@@ -1274,9 +1274,9 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 		}
 
 		if _, err := a.loanSvc.Update(ctx, loanID, updateReq); err != nil {
-			a.logger.Warn("failed to record off-ramp details", "loan_id", loanID, "error", err)
+			a.logger.WarnContext(ctx, "failed to record off-ramp details", "loan_id", loanID, "error", err)
 		} else {
-			a.logger.Info("loan updated with off-ramp details", "loan_id", loanID)
+			a.logger.InfoContext(ctx, "loan updated with off-ramp details", "loan_id", loanID)
 		}
 
 		// Record off-ramp transaction.
@@ -1298,7 +1298,7 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 					"sequence_id":       result.SequenceID,
 				}),
 			}); txnErr != nil {
-				a.logger.Warn("failed to record off-ramp transaction", "loan_id", loanID, "error", txnErr)
+				a.logger.WarnContext(ctx, "failed to record off-ramp transaction", "loan_id", loanID, "error", txnErr)
 			}
 		}
 
@@ -1311,7 +1311,7 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 func (a *LoanServiceAdapter) GetUserLoans(ctx context.Context, userID string) ([]interface{}, error) {
 	resp, err := a.loanSvc.GetByUserID(ctx, userID, services.Pagination{Page: 1, PageSize: 20})
 	if err != nil {
-		a.logger.Error("failed to fetch user loans", "user_id", userID, "error", err)
+		a.logger.ErrorContext(ctx, "failed to fetch user loans", "user_id", userID, "error", err)
 		return nil, err
 	}
 
@@ -1330,7 +1330,7 @@ func (a *LoanServiceAdapter) GetUserLoans(ctx context.Context, userID string) ([
 			"service_fee_local":      l.ServiceFeeLocal,
 		}
 	}
-	a.logger.Info("fetched user loans", "user_id", userID, "count", len(results))
+	a.logger.InfoContext(ctx, "fetched user loans", "user_id", userID, "count", len(results))
 	return results, nil
 }
 
@@ -1342,12 +1342,12 @@ func (a *LoanServiceAdapter) CheckLoanEligibility(ctx context.Context, userID st
 	interestRate := fallbackRate
 	aprWad, err := a.stellarSvc.GetBorrowAPR(ctx)
 	if err != nil {
-		a.logger.Warn("failed to fetch vault APR for eligibility, using fallback", "error", err)
+		a.logger.WarnContext(ctx, "failed to fetch vault APR for eligibility, using fallback", "error", err)
 	} else if aprWad > 0 {
 		interestRate = float64(aprWad) / 1e18 // WAD to decimal (e.g. 0.08 for 8%)
 	}
 
-	a.logger.Info("eligibility check",
+	a.logger.InfoContext(ctx, "eligibility check",
 		"user_id", userID,
 		"amount", amount,
 		"approved", true,
@@ -1562,8 +1562,8 @@ func (a *LoanServiceAdapter) Collect(ctx context.Context, req cashin.Request) (*
 
 	// Everything past here talks to MoneyGram and took over fifteen seconds
 	// against the sandbox — past the point Africa's Talking abandons the
-	// session. It runs on its own context so it outlives the USSD turn.
-	go a.runRepaymentInitiation(req.LoanID, req.Payer)
+	// session. It runs detached from the turn's cancellation so it outlives it.
+	go a.runRepaymentInitiation(ctx, req.LoanID, req.Payer)
 
 	reference := req.LoanID
 	if loanRow.LoanReference != nil && *loanRow.LoanReference != "" {

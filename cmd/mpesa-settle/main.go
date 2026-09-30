@@ -24,6 +24,7 @@ import (
 	_ "github.com/joho/godotenv/autoload"
 
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
+	"github.com/Shamba-Records-Limited/microvault/pkg/logging"
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/sms"
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/sms/providers/africastalking"
 	ussdadapters "github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd/adapters"
@@ -41,6 +42,8 @@ import (
 )
 
 func main() {
+	logging.Setup()
+
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
@@ -149,7 +152,7 @@ func settle(cfg *config.Config, args []string) error {
 	}
 	defer func() {
 		if _, err := sqlDB.Exec("SELECT pg_advisory_unlock(hashtext($1))", loanID); err != nil {
-			log.Printf("warning: could not release the settlement lock for loan %s: %v", loanID, err)
+			slog.Error("warning: could not release the settlement lock for loan", slog.String("loan_id", loanID), slog.Any("error", err))
 		}
 	}()
 
@@ -257,8 +260,8 @@ func settle(cfg *config.Config, args []string) error {
 			amountKES = obs.AmountKes
 		}
 	}
-	if err := repaymentNotifier.NotifyLoanRepaidAmount(loanID, amountKES); err != nil {
-		log.Printf("warning: settled but could not notify the borrower: %v", err)
+	if err := repaymentNotifier.NotifyLoanRepaidAmount(ctx, loanID, amountKES); err != nil {
+		slog.ErrorContext(ctx, "warning: settled but could not notify the borrower", slog.Any("error", err))
 	}
 
 	fmt.Printf("\nSettled. txHash=%s\n", txHash)

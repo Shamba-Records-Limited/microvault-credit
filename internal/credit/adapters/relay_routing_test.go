@@ -3,7 +3,6 @@ package adapters
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"testing"
 
@@ -42,7 +41,7 @@ func routerFor(t *testing.T, enabled bool, sources ...relay.RateSource) *relay.R
 	r, err := relay.NewWithSources(relay.Config{
 		Enabled: enabled,
 		Default: string(offramp.ProviderYellowCard),
-		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger:  slog.New(slog.DiscardHandler),
 	}, sources...)
 	require.NoError(t, err)
 	return r
@@ -51,7 +50,7 @@ func routerFor(t *testing.T, enabled bool, sources ...relay.RateSource) *relay.R
 func routingAdapter(router *relay.Router) *LoanServiceAdapter {
 	return &LoanServiceAdapter{
 		relayRouter: router,
-		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:      slog.New(slog.DiscardHandler),
 	}
 }
 

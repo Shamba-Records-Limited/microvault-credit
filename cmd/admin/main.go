@@ -10,12 +10,15 @@ import (
 	"errors"
 	"io/fs"
 	"log"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/filesystem"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/handlers"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/metrics"
@@ -27,20 +30,17 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/auth"
 	"github.com/Shamba-Records-Limited/microvault/pkg/compliance/elliptic"
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
+	"github.com/Shamba-Records-Limited/microvault/pkg/logging"
 	"github.com/Shamba-Records-Limited/microvault/pkg/middleware"
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
 	compliancesvc "github.com/Shamba-Records-Limited/microvault/pkg/services/compliance"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/platform/cache"
 	"github.com/Shamba-Records-Limited/microvault/platform/database"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/filesystem"
-	fiberlog "github.com/gofiber/fiber/v2/middleware/logger"
-	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger := logging.Setup()
 
 	cfg, err := config.New()
 	if err != nil {
@@ -134,10 +134,7 @@ func main() {
 		AppName:               "microvault-admin",
 		DisableStartupMessage: true,
 	})
-	app.Use(recover.New())
-	app.Use(fiberlog.New(fiberlog.Config{
-		Format: "${time} ${status} ${latency} ${method} ${path}\n",
-	}))
+	app.Use(middleware.RequestID(), middleware.AccessLog(logger, "/static/"), recover.New())
 
 	assets, err := fs.Sub(static.FS, ".")
 	if err != nil {
@@ -211,9 +208,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := app.ShutdownWithContext(ctx); err != nil {
-		logger.Error("shutdown failed", "error", err)
+		logger.ErrorContext(ctx, "shutdown failed", "error", err)
 	}
-	logger.Info("admin dashboard stopped")
+	logger.InfoContext(ctx, "admin dashboard stopped")
 }
 
 // redirectUnauthenticated sends browsers to the sign-in page instead of letting

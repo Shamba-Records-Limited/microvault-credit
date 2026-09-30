@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"strconv"
 
@@ -10,9 +11,12 @@ import (
 
 	"github.com/Shamba-Records-Limited/microvault-credit/platform/database"
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
+	"github.com/Shamba-Records-Limited/microvault/pkg/logging"
 )
 
 func main() {
+	logging.Setup()
+
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
@@ -29,19 +33,19 @@ func main() {
 	switch command {
 	case "up":
 		// Run all pending migrations
-		log.Println("Running database migrations...")
+		slog.Info("Running database migrations")
 		if err := database.RunMigrations(&cfg.Postgres); err != nil {
 			log.Fatalf("Migration failed: %v", err)
 		}
-		log.Println("Migrations completed successfully")
+		slog.Info("Migrations completed successfully")
 
 	case "down":
 		// Rollback last migration
-		log.Println("Rolling back last migration...")
+		slog.Info("Rolling back last migration")
 		if err := database.RollbackMigration(&cfg.Postgres); err != nil {
 			log.Fatalf("Rollback failed: %v", err)
 		}
-		log.Println("Rollback completed successfully")
+		slog.Info("Rollback completed successfully")
 
 	case "version":
 		// Show current migration version
@@ -64,11 +68,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("Invalid version number: %v", err)
 		}
-		log.Printf("Forcing migration to version %d...", version)
+		slog.Info("forcing migration version", slog.Int("version", version))
 		if err := database.ForceMigrationVersion(&cfg.Postgres, version); err != nil {
 			log.Fatalf("Force migration failed: %v", err)
 		}
-		log.Println("Force migration completed successfully")
+		slog.Info("Force migration completed successfully")
 
 	default:
 		fmt.Printf("Unknown command: %s\n", command)

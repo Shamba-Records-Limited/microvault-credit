@@ -100,13 +100,13 @@ func NewAirtelPromptLoanDriver(deps AirtelPromptLoanDriverDeps) (*AirtelPromptLo
 // failure; the attempt counter only moves on an answer from Airtel.
 func (d *AirtelPromptLoanDriver) Drive(ctx context.Context, l *models.Loan) {
 	if l == nil || l.RepaymentAirtelTxnID == nil || *l.RepaymentAirtelTxnID == "" {
-		d.logger.Error("airtel repayment has no transaction id", "loan_id", loanIDOrEmpty(l))
+		d.logger.ErrorContext(ctx, "airtel repayment has no transaction id", "loan_id", loanIDOrEmpty(l))
 		return
 	}
 
 	resp, err := d.client.Enquiry(ctx, *l.RepaymentAirtelTxnID)
 	if err != nil {
-		d.logger.Warn("airtel enquiry failed, retrying next interval",
+		d.logger.WarnContext(ctx, "airtel enquiry failed, retrying next interval",
 			"loan_id", l.ID, "error", err)
 		d.scheduleNext(ctx, l.ID, l.RepaymentAirtelAttempts)
 		return
@@ -120,7 +120,7 @@ func (d *AirtelPromptLoanDriver) Drive(ctx context.Context, l *models.Loan) {
 		// Ambiguous or in progress: the payer may still be entering a PIN.
 		d.retryOrExpire(ctx, l)
 	default:
-		d.logger.Info("airtel repayment failed terminally",
+		d.logger.InfoContext(ctx, "airtel repayment failed terminally",
 			"loan_id", l.ID, "status", string(status), "message", resp.Data.Transaction.Message)
 		d.close(ctx, l.ID, models.LoanRepaymentStatusExpired)
 	}
@@ -138,7 +138,7 @@ func (d *AirtelPromptLoanDriver) settle(ctx context.Context, l *models.Loan, res
 		// Airtel reported success but disclosed no receipt. That contradicts
 		// its own documented invariant, so it is worth a loud line — but the
 		// payment still completed, and the loan still settles.
-		d.logger.Warn("airtel reported success with no receipt",
+		d.logger.WarnContext(ctx, "airtel reported success with no receipt",
 			"loan_id", l.ID, "transaction_id", transactionID)
 	}
 
@@ -149,20 +149,20 @@ func (d *AirtelPromptLoanDriver) settle(ctx context.Context, l *models.Loan, res
 		amountKES = obs.AmountMinor / 100
 		if err := d.airtelRepo.Confirm(ctx, transactionID, coremodels.AirtelConfirmViaEnquiry,
 			string(resp.TransactionStatus()), receipt, l.ID); err != nil {
-			d.logger.Warn("could not confirm the callback observation",
+			d.logger.WarnContext(ctx, "could not confirm the callback observation",
 				"loan_id", l.ID, "transaction_id", transactionID, "error", err)
 		}
 	case errors.Is(err, corerepository.ErrAirtelNotFound):
-		d.logger.Warn("settling without a staged callback; reconciliation must backfill",
+		d.logger.WarnContext(ctx, "settling without a staged callback; reconciliation must backfill",
 			"loan_id", l.ID, "transaction_id", transactionID)
 	default:
-		d.logger.Warn("could not look up the staged callback",
+		d.logger.WarnContext(ctx, "could not look up the staged callback",
 			"loan_id", l.ID, "error", err)
 	}
 
 	row, err := d.repo.GetByID(ctx, l.ID)
 	if err != nil {
-		d.logger.Error("could not load the loan to settle", "loan_id", l.ID, "error", err)
+		d.logger.ErrorContext(ctx, "could not load the loan to settle", "loan_id", l.ID, "error", err)
 		return
 	}
 	if row.RepaymentStatus != models.LoanRepaymentStatusInitiated {
@@ -177,21 +177,21 @@ func (d *AirtelPromptLoanDriver) settle(ctx context.Context, l *models.Loan, res
 		row.RepaymentReceivedStroops = lo.ToPtr(*row.RepaymentPayoffStroops)
 	}
 	if err := d.repo.Update(ctx, row); err != nil {
-		d.logger.Error("could not mark the repayment funds received", "loan_id", l.ID, "error", err)
+		d.logger.ErrorContext(ctx, "could not mark the repayment funds received", "loan_id", l.ID, "error", err)
 		return
 	}
-	d.notify(l.ID, amountKES)
+	d.notify(ctx, l.ID, amountKES)
 }
 
 // notify tells the borrower their payment landed. Best-effort: the state
 // write above is already durable.
-func (d *AirtelPromptLoanDriver) notify(loanID string, amountKES int64) {
+func (d *AirtelPromptLoanDriver) notify(ctx context.Context, loanID string, amountKES int64) {
 	if d.notifier == nil {
-		d.logger.Warn("no repayment notifier configured, message not sent", "loan_id", loanID)
+		d.logger.WarnContext(ctx, "no repayment notifier configured, message not sent", "loan_id", loanID)
 		return
 	}
-	if err := d.notifier.NotifyRepaymentReceivedAmount(loanID, amountKES); err != nil {
-		d.logger.Warn("failed to send repayment received notification", "loan_id", loanID, "error", err)
+	if err := d.notifier.NotifyRepaymentReceivedAmount(ctx, loanID, amountKES); err != nil {
+		d.logger.WarnContext(ctx, "failed to send repayment received notification", "loan_id", loanID, "error", err)
 	}
 }
 
@@ -200,7 +200,7 @@ func (d *AirtelPromptLoanDriver) notify(loanID string, amountKES int64) {
 func (d *AirtelPromptLoanDriver) retryOrExpire(ctx context.Context, l *models.Loan) {
 	attempts := l.RepaymentAirtelAttempts + 1
 	if attempts >= d.maxAttempts {
-		d.logger.Info("airtel repayment exhausted its attempts", "loan_id", l.ID, "attempts", attempts)
+		d.logger.InfoContext(ctx, "airtel repayment exhausted its attempts", "loan_id", l.ID, "attempts", attempts)
 		d.close(ctx, l.ID, models.LoanRepaymentStatusExpired)
 		return
 	}
@@ -214,7 +214,7 @@ func (d *AirtelPromptLoanDriver) scheduleNext(ctx context.Context, loanID string
 		RepaymentAirtelAttempts: &attempts,
 		RepaymentNextPollAt:     &next,
 	}); err != nil {
-		d.logger.Error("could not reschedule the airtel enquiry", "loan_id", loanID, "error", err)
+		d.logger.ErrorContext(ctx, "could not reschedule the airtel enquiry", "loan_id", loanID, "error", err)
 	}
 }
 
@@ -224,13 +224,13 @@ func (d *AirtelPromptLoanDriver) scheduleNext(ctx context.Context, loanID string
 func (d *AirtelPromptLoanDriver) close(ctx context.Context, loanID, status string) {
 	row, err := d.repo.GetByID(ctx, loanID)
 	if err != nil {
-		d.logger.Error("could not load the loan to close", "loan_id", loanID, "error", err)
+		d.logger.ErrorContext(ctx, "could not load the loan to close", "loan_id", loanID, "error", err)
 		return
 	}
 	row.RepaymentStatus = status
 	row.RepaymentNextPollAt = nil
 	if err := d.repo.Update(ctx, row); err != nil {
-		d.logger.Error("could not write the terminal repayment status", "loan_id", loanID, "error", err)
+		d.logger.ErrorContext(ctx, "could not write the terminal repayment status", "loan_id", loanID, "error", err)
 	}
 }
 

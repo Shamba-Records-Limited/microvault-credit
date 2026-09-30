@@ -4,10 +4,11 @@ import (
 	"errors"
 	"time"
 
+	"github.com/gofiber/fiber/v2"
+
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/views"
 	"github.com/Shamba-Records-Limited/microvault/pkg/auth"
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
-	"github.com/gofiber/fiber/v2"
 )
 
 // SessionCookie is the cookie name middleware.AuthMiddleware reads.

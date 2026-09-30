@@ -3,7 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"time"
 
 	"gorm.io/gorm"
@@ -65,7 +65,7 @@ func NewLoanLimitConfigRepository(db *gorm.DB) (LoanLimitConfigRepository, error
 func (r *loanLimitConfigRepository) Create(ctx context.Context, config *models.LoanLimitConfig) error {
 	result := r.db.WithContext(ctx).Create(config)
 	if result.Error != nil {
-		log.Printf("Create: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Create: database error", slog.Any("error", result.Error))
 		return ErrFailedToCreateLoanLimitConfig
 	}
 	return nil
@@ -79,7 +79,7 @@ func (r *loanLimitConfigRepository) BatchCreate(ctx context.Context, configs []*
 
 	result := r.db.WithContext(ctx).Create(configs)
 	if result.Error != nil {
-		log.Printf("CreateBatch: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "CreateBatch: database error", slog.Any("error", result.Error))
 		return ErrFailedToCreateBatchLoanLimitConfigs
 	}
 	return nil
@@ -97,7 +97,7 @@ func (r *loanLimitConfigRepository) GetByID(ctx context.Context, id string) (*mo
 		return nil, ErrLoanLimitConfigNotFound
 	}
 	if result.Error != nil {
-		log.Printf("GetByID: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetByID: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetLoanLimitConfig
 	}
 	return &config, nil
@@ -113,7 +113,7 @@ func (r *loanLimitConfigRepository) GetByRiskTier(ctx context.Context, riskTier 
 		return nil, ErrLoanLimitConfigNotFound
 	}
 	if result.Error != nil {
-		log.Printf("GetByRiskTier: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetByRiskTier: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetLoanLimitConfigByTier
 	}
 	return &config, nil
@@ -128,7 +128,7 @@ func (r *loanLimitConfigRepository) GetAll(ctx context.Context, limit, offset in
 		Offset(offset).
 		Find(&configs)
 	if result.Error != nil {
-		log.Printf("GetAll: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetAll: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetAllLoanLimitConfigs
 	}
 	return configs, nil
@@ -144,7 +144,7 @@ func (r *loanLimitConfigRepository) GetActive(ctx context.Context, limit, offset
 		Offset(offset).
 		Find(&configs)
 	if result.Error != nil {
-		log.Printf("GetActive: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetActive: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetActiveLoanLimitConfigs
 	}
 	return configs, nil
@@ -175,7 +175,7 @@ func (r *loanLimitConfigRepository) Update(ctx context.Context, config *models.L
 		return ErrLoanLimitConfigNotFound
 	}
 	if result.Error != nil {
-		log.Printf("Update: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Update: database error", slog.Any("error", result.Error))
 		return ErrFailedToUpdateLoanLimitConfig
 	}
 	return nil
@@ -192,7 +192,7 @@ func (r *loanLimitConfigRepository) Restore(ctx context.Context, id string) erro
 		return ErrLoanLimitConfigNotFound
 	}
 	if result.Error != nil {
-		log.Printf("Restore: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Restore: database error", slog.Any("error", result.Error))
 		return ErrFailedToRestoreLoanLimitConfig
 	}
 	return nil
@@ -209,7 +209,7 @@ func (r *loanLimitConfigRepository) Delete(ctx context.Context, id string) error
 		return ErrLoanLimitConfigNotFound
 	}
 	if result.Error != nil {
-		log.Printf("Delete: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Delete: database error", slog.Any("error", result.Error))
 		return ErrFailedToDeleteLoanLimitConfig
 	}
 	return nil

@@ -5,8 +5,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/handlers"
 	"github.com/gofiber/fiber/v2"
+
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/handlers"
 )
 
 // guardedApp mirrors the route ordering in cmd/admin: public sign-in routes,

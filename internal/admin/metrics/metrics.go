@@ -9,8 +9,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"gorm.io/gorm"
+
+	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 )
 
 // AssetTotal is a summed amount in one asset's minor units.

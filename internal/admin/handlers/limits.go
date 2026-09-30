@@ -3,10 +3,11 @@ package handlers
 import (
 	"strings"
 
+	"github.com/gofiber/fiber/v2"
+
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/views"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services"
 	loanlimitconfig "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_limit_config"
-	"github.com/gofiber/fiber/v2"
 )
 
 // Limits lists and creates per-risk-tier loan limits.

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -140,7 +140,7 @@ func (r *loanRepository) Create(ctx context.Context, loan *models.Loan) error {
 		if errors.As(result.Error, &pgErr) && pgErr.Code == "23505" {
 			return fmt.Errorf("%w: %v", ErrLoanReferenceConflict, result.Error)
 		}
-		log.Printf("Create: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Create: database error", slog.Any("error", result.Error))
 		return ErrFailedToCreateLoan
 	}
 	return nil
@@ -161,7 +161,7 @@ func (r *loanRepository) GetByID(ctx context.Context, id string) (*models.Loan, 
 		return nil, ErrLoanNotFound
 	}
 	if result.Error != nil {
-		log.Printf("GetByID: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetByID: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetLoan
 	}
 	return &loan, nil
@@ -177,7 +177,7 @@ func (r *loanRepository) GetByUserID(ctx context.Context, userID string, limit, 
 		Offset(offset).
 		Find(&loans)
 	if result.Error != nil {
-		log.Printf("GetByUserID: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetByUserID: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetLoansByUserID
 	}
 	return loans, nil
@@ -194,7 +194,7 @@ func (r *loanRepository) GetActiveLoans(ctx context.Context, limit, offset int) 
 		Offset(offset).
 		Find(&loans)
 	if result.Error != nil {
-		log.Printf("GetActiveLoans: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetActiveLoans: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetActiveLoans
 	}
 	return loans, nil
@@ -213,7 +213,7 @@ func (r *loanRepository) List(ctx context.Context, status string, limit, offset 
 		Offset(offset).
 		Find(&loans)
 	if result.Error != nil {
-		log.Printf("List: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "List: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToListLoans
 	}
 	return loans, nil
@@ -227,7 +227,7 @@ func (r *loanRepository) Count(ctx context.Context, status string) (int64, error
 		query = query.Where("status = ?", status)
 	}
 	if err := query.Count(&count).Error; err != nil {
-		log.Printf("Count: database error: %v", err)
+		slog.ErrorContext(ctx, "Count: database error", slog.Any("error", err))
 		return 0, ErrFailedToCountLoans
 	}
 	return count, nil
@@ -243,7 +243,7 @@ func (r *loanRepository) GetActiveLoansByStatus(ctx context.Context, status stri
 		Offset(offset).
 		Find(&loans)
 	if result.Error != nil {
-		log.Printf("GetActiveLoansByStatus: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetActiveLoansByStatus: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetActiveLoansByStatus
 	}
 	return loans, nil
@@ -265,7 +265,7 @@ func (r *loanRepository) GetActiveByProvider(ctx context.Context, provider strin
 		Offset(offset).
 		Find(&loans)
 	if result.Error != nil {
-		log.Printf("GetActiveByProvider: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetActiveByProvider: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetActiveByProvider
 	}
 	return loans, nil
@@ -279,7 +279,7 @@ func (r *loanRepository) GetActiveByUserAndProvider(ctx context.Context, userID,
 		Order("created_at DESC").
 		Find(&loans)
 	if result.Error != nil {
-		log.Printf("GetActiveByUserAndProvider: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetActiveByUserAndProvider: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetActiveByProvider
 	}
 	return loans, nil
@@ -317,11 +317,11 @@ func (r *loanRepository) GetBySequenceID(ctx context.Context, sequenceID string)
 		if errors.Is(resultAlt.Error, gorm.ErrRecordNotFound) {
 			return nil, ErrLoanNotFound
 		}
-		log.Printf("GetBySequenceID (alt): database error: %v", resultAlt.Error)
+		slog.ErrorContext(ctx, "GetBySequenceID (alt): database error", slog.Any("error", resultAlt.Error))
 		return nil, ErrFailedToGetLoanBySequenceID
 	}
 
-	log.Printf("GetBySequenceID: database error: %v", result.Error)
+	slog.ErrorContext(ctx, "GetBySequenceID: database error", slog.Any("error", result.Error))
 	return nil, ErrFailedToGetLoanBySequenceID
 }
 
@@ -344,7 +344,7 @@ func (r *loanRepository) GetRefundDeclared(ctx context.Context, provider string,
 		Limit(limit).
 		Find(&loans)
 	if result.Error != nil {
-		log.Printf("GetRefundDeclared: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetRefundDeclared: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetLoansByDisbStatus
 	}
 	return loans, nil
@@ -363,7 +363,7 @@ func (r *loanRepository) GetByRampWithdrawMemo(ctx context.Context, memo string)
 		return nil, ErrLoanNotFound
 	}
 	if result.Error != nil {
-		log.Printf("GetByRampWithdrawMemo: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetByRampWithdrawMemo: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetLoanByWithdrawMemo
 	}
 	return &loan, nil
@@ -382,7 +382,7 @@ func (r *loanRepository) GetByRampExternalRef(ctx context.Context, ref string) (
 		return nil, ErrLoanNotFound
 	}
 	if result.Error != nil {
-		log.Printf("GetByRampExternalRef: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetByRampExternalRef: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetLoanByExternalRef
 	}
 	return &loan, nil
@@ -406,7 +406,7 @@ func (r *loanRepository) GetByAnyReference(ctx context.Context, reference string
 		return nil, ErrLoanNotFound
 	}
 	if result.Error != nil {
-		log.Printf("GetByAnyReference: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetByAnyReference: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetLoanByReference
 	}
 	return &loan, nil
@@ -421,7 +421,7 @@ func (r *loanRepository) GetByRampShortCode(ctx context.Context, code string) (*
 		return nil, ErrLoanNotFound
 	}
 	if result.Error != nil {
-		log.Printf("GetByRampShortCode: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetByRampShortCode: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetLoanByShortCode
 	}
 	return &loan, nil
@@ -448,7 +448,7 @@ func (r *loanRepository) GetActiveMoneyGramLoans(ctx context.Context, limit int)
 		Limit(limit).
 		Find(&loans)
 	if result.Error != nil {
-		log.Printf("GetActiveMoneyGramLoans: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetActiveMoneyGramLoans: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetActiveMGLoans
 	}
 	return loans, nil
@@ -479,7 +479,7 @@ func (r *loanRepository) GetDueRepayments(ctx context.Context, limit int) ([]*mo
 		Limit(limit).
 		Find(&loans)
 	if result.Error != nil {
-		log.Printf("GetDueRepayments: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetDueRepayments: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetDueRepayments
 	}
 	return loans, nil
@@ -501,7 +501,7 @@ func (r *loanRepository) GetDueSTKRepayments(ctx context.Context, limit int) ([]
 		Limit(limit).
 		Find(&loans)
 	if result.Error != nil {
-		log.Printf("GetDueSTKRepayments: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetDueSTKRepayments: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetDueRepayments
 	}
 	return loans, nil
@@ -523,7 +523,7 @@ func (r *loanRepository) GetDueAirtelRepayments(ctx context.Context, limit int) 
 		Limit(limit).
 		Find(&loans)
 	if result.Error != nil {
-		log.Printf("GetDueAirtelRepayments: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetDueAirtelRepayments: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetDueRepayments
 	}
 	return loans, nil
@@ -642,7 +642,7 @@ func (r *loanRepository) UpdateFields(ctx context.Context, id string, fields map
 	out := make(map[string]interface{}, len(fields)+1)
 	for k, v := range fields {
 		if !loanUpdatableColumns[k] {
-			log.Printf("UpdateFields: rejected non-updatable column %q", k)
+			slog.ErrorContext(ctx, "UpdateFields: rejected non-updatable column", slog.String("k", k))
 			return ErrFailedToUpdateLoan
 		}
 		out[k] = v
@@ -659,7 +659,7 @@ func (r *loanRepository) updateColumns(ctx context.Context, id string, fields ma
 		Where("id = ? AND deleted_at IS NULL", id).
 		Updates(fields)
 	if result.Error != nil {
-		log.Printf("Update: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Update: database error", slog.Any("error", result.Error))
 		return ErrFailedToUpdateLoan
 	}
 	if result.RowsAffected == 0 {
@@ -679,7 +679,7 @@ func (r *loanRepository) Restore(ctx context.Context, id string) error {
 		return ErrLoanNotFound
 	}
 	if result.Error != nil {
-		log.Printf("Restore: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Restore: database error", slog.Any("error", result.Error))
 		return ErrFailedToRestoreLoan
 	}
 	return nil
@@ -696,7 +696,7 @@ func (r *loanRepository) Delete(ctx context.Context, id string) error {
 		return ErrLoanNotFound
 	}
 	if result.Error != nil {
-		log.Printf("Delete: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Delete: database error", slog.Any("error", result.Error))
 		return ErrFailedToDeleteLoan
 	}
 	return nil
@@ -708,7 +708,7 @@ func (r *loanRepository) DeleteByUserID(ctx context.Context, userID string) erro
 		Where("user_id = ?", userID).
 		Delete(&models.Loan{})
 	if result.Error != nil {
-		log.Printf("DeleteByUserID: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "DeleteByUserID: database error", slog.Any("error", result.Error))
 		return ErrFailedToDeleteLoansByUserID
 	}
 	return nil

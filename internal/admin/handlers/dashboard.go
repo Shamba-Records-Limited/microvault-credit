@@ -3,9 +3,10 @@ package handlers
 import (
 	"time"
 
+	"github.com/gofiber/fiber/v2"
+
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/metrics"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/views"
-	"github.com/gofiber/fiber/v2"
 )
 
 const dashboardWindow = 30 * 24 * time.Hour

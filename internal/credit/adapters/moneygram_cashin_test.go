@@ -2,7 +2,6 @@ package adapters
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"testing"
 
@@ -21,7 +20,7 @@ func newCashAdapter(t *testing.T, resp *loan.LoanResponse, withCashIn bool) *Loa
 	t.Helper()
 	a := &LoanServiceAdapter{
 		loanSvc: &byIDLoanSvc{resp: resp},
-		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:  slog.New(slog.DiscardHandler),
 	}
 	if withCashIn {
 		reg := cashin.NewRegistry()

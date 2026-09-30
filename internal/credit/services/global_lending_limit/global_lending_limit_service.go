@@ -3,7 +3,7 @@ package globallendinglimit
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
@@ -62,7 +62,7 @@ func (s *service) Create(ctx context.Context, req CreateGlobalLendingLimitReques
 		return nil, ErrConfigKeyAlreadyExists
 	}
 	if err != nil && !errors.Is(err, repository.ErrGlobalLendingLimitNotFound) {
-		log.Printf("Create: failed to check duplicate key: %v", err)
+		slog.ErrorContext(ctx, "Create: failed to check duplicate key", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -79,7 +79,7 @@ func (s *service) Create(ctx context.Context, req CreateGlobalLendingLimitReques
 
 	// Create limit in database
 	if err := s.repo.Create(ctx, limit); err != nil {
-		log.Printf("Create: failed to create global lending limit: %v", err)
+		slog.ErrorContext(ctx, "Create: failed to create global lending limit", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -110,7 +110,7 @@ func (s *service) BatchCreate(ctx context.Context, reqs []CreateGlobalLendingLim
 	}
 
 	if err := s.repo.BatchCreate(ctx, limits); err != nil {
-		log.Printf("BatchCreate: failed to create limits: %v", err)
+		slog.ErrorContext(ctx, "BatchCreate: failed to create limits", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -129,7 +129,7 @@ func (s *service) GetByID(ctx context.Context, id string) (*GlobalLendingLimitRe
 		if errors.Is(err, repository.ErrGlobalLendingLimitNotFound) {
 			return nil, ErrGlobalLendingLimitNotFound
 		}
-		log.Printf("GetByID: failed to get global lending limit: %v", err)
+		slog.ErrorContext(ctx, "GetByID: failed to get global lending limit", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -143,7 +143,7 @@ func (s *service) GetByKey(ctx context.Context, key string) (*GlobalLendingLimit
 		if errors.Is(err, repository.ErrGlobalLendingLimitNotFound) {
 			return nil, ErrGlobalLendingLimitNotFound
 		}
-		log.Printf("GetByKey: failed to get global lending limit: %v", err)
+		slog.ErrorContext(ctx, "GetByKey: failed to get global lending limit", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -166,7 +166,7 @@ func (s *service) GetByCategory(ctx context.Context, category string, pagination
 
 	limits, err := s.repo.GetByCategory(ctx, category, pagination.PageSize, offset)
 	if err != nil {
-		log.Printf("GetByCategory: failed to get global lending limits: %v", err)
+		slog.ErrorContext(ctx, "GetByCategory: failed to get global lending limits", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -198,7 +198,7 @@ func (s *service) GetAll(ctx context.Context, pagination services.Pagination) (*
 
 	limits, err := s.repo.GetAll(ctx, pagination.PageSize, offset)
 	if err != nil {
-		log.Printf("GetAll: failed to get global lending limits: %v", err)
+		slog.ErrorContext(ctx, "GetAll: failed to get global lending limits", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -230,7 +230,7 @@ func (s *service) GetActive(ctx context.Context, pagination services.Pagination)
 
 	limits, err := s.repo.GetActive(ctx, pagination.PageSize, offset)
 	if err != nil {
-		log.Printf("GetActive: failed to get active global lending limits: %v", err)
+		slog.ErrorContext(ctx, "GetActive: failed to get active global lending limits", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -253,7 +253,7 @@ func (s *service) Update(ctx context.Context, id string, req UpdateGlobalLending
 		if errors.Is(err, repository.ErrGlobalLendingLimitNotFound) {
 			return nil, ErrGlobalLendingLimitNotFound
 		}
-		log.Printf("Update: failed to get global lending limit: %v", err)
+		slog.ErrorContext(ctx, "Update: failed to get global lending limit", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -290,7 +290,7 @@ func (s *service) Update(ctx context.Context, id string, req UpdateGlobalLending
 
 	// Update in database
 	if err := s.repo.Update(ctx, limit); err != nil {
-		log.Printf("Update: failed to update global lending limit: %v", err)
+		slog.ErrorContext(ctx, "Update: failed to update global lending limit", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -303,7 +303,7 @@ func (s *service) Delete(ctx context.Context, id string) error {
 		if errors.Is(err, repository.ErrGlobalLendingLimitNotFound) {
 			return ErrGlobalLendingLimitNotFound
 		}
-		log.Printf("Delete: failed to delete global lending limit: %v", err)
+		slog.ErrorContext(ctx, "Delete: failed to delete global lending limit", slog.Any("error", err))
 		return err
 	}
 
@@ -316,7 +316,7 @@ func (s *service) Restore(ctx context.Context, id string) error {
 		if errors.Is(err, repository.ErrGlobalLendingLimitNotFound) {
 			return ErrGlobalLendingLimitNotFound
 		}
-		log.Printf("Restore: failed to restore global lending limit: %v", err)
+		slog.ErrorContext(ctx, "Restore: failed to restore global lending limit", slog.Any("error", err))
 		return err
 	}
 
@@ -331,7 +331,7 @@ func (s *service) Activate(ctx context.Context, id string, activatedBy string) (
 		if errors.Is(err, repository.ErrGlobalLendingLimitNotFound) {
 			return nil, ErrGlobalLendingLimitNotFound
 		}
-		log.Printf("Activate: failed to get global lending limit: %v", err)
+		slog.ErrorContext(ctx, "Activate: failed to get global lending limit", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -348,11 +348,11 @@ func (s *service) Activate(ctx context.Context, id string, activatedBy string) (
 
 	// Update in database
 	if err := s.repo.Update(ctx, config); err != nil {
-		log.Printf("Activate: failed to update global lending limit: %v", err)
+		slog.ErrorContext(ctx, "Activate: failed to update global lending limit", slog.Any("error", err))
 		return nil, err
 	}
 
-	log.Printf("Activate: successfully activated global lending limit %s by %s", id, activatedBy)
+	slog.InfoContext(ctx, "Activate: successfully activated global lending limit", slog.String("id", id), slog.String("activated_by", activatedBy))
 	return toGlobalLendingLimitResponse(config), nil
 }
 
@@ -364,7 +364,7 @@ func (s *service) Deactivate(ctx context.Context, id string, deactivatedBy strin
 		if errors.Is(err, repository.ErrGlobalLendingLimitNotFound) {
 			return nil, ErrGlobalLendingLimitNotFound
 		}
-		log.Printf("Deactivate: failed to get global lending limit: %v", err)
+		slog.ErrorContext(ctx, "Deactivate: failed to get global lending limit", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -381,11 +381,11 @@ func (s *service) Deactivate(ctx context.Context, id string, deactivatedBy strin
 
 	// Update in database
 	if err := s.repo.Update(ctx, config); err != nil {
-		log.Printf("Deactivate: failed to update global lending limit: %v", err)
+		slog.ErrorContext(ctx, "Deactivate: failed to update global lending limit", slog.Any("error", err))
 		return nil, err
 	}
 
-	log.Printf("Deactivate: successfully deactivated global lending limit %s by %s", id, deactivatedBy)
+	slog.InfoContext(ctx, "Deactivate: successfully deactivated global lending limit", slog.String("id", id), slog.String("deactivated_by", deactivatedBy))
 	return toGlobalLendingLimitResponse(config), nil
 }
 

@@ -2,7 +2,6 @@ package adapters
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -27,7 +26,7 @@ func newTestDepositAdapter(t *testing.T, repo *fakeLoanRepo) (*MoneyGramDepositA
 		Repo:       repo,
 		LoanSvc:    loans,
 		StellarSvc: stubStellarService{},
-		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger:     slog.New(slog.DiscardHandler),
 	})
 	require.NoError(t, err)
 	return a, loans

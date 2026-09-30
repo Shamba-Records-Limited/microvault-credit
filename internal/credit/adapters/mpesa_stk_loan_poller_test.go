@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -69,7 +68,7 @@ type fakeSTKNotifier struct {
 	amounts  []int64
 }
 
-func (f *fakeSTKNotifier) NotifyRepaymentReceivedAmount(loanID string, amountKES int64) error {
+func (f *fakeSTKNotifier) NotifyRepaymentReceivedAmount(_ context.Context, loanID string, amountKES int64) error {
 	f.notified = append(f.notified, loanID)
 	f.amounts = append(f.amounts, amountKES)
 	return f.err
@@ -91,7 +90,7 @@ func newTestSTKDriver(t *testing.T, q *fakeQuerier, m *fakeSTKMpesaRepo, r *fake
 		mpesaRepo:   m,
 		repo:        r,
 		loanSvc:     loans,
-		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:      slog.New(slog.DiscardHandler),
 		shortcode:   174379,
 		interval:    5 * time.Second,
 		maxAttempts: 3,

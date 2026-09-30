@@ -23,12 +23,12 @@ import (
 
 // Compile-time checks.
 var (
-	_ webhook.DisbursementUpdater  = (*DisbursementStatusAdapter)(nil)
-	_ webhook.RefundPendingFetcher = (*DisbursementStatusAdapter)(nil)
-	_ webhook.TransactionRecorder  = (*DisbursementStatusAdapter)(nil)
+	_ contracts.DisbursementUpdater = (*DisbursementStatusAdapter)(nil)
+	_ webhook.RefundPendingFetcher  = (*DisbursementStatusAdapter)(nil)
+	_ webhook.TransactionRecorder   = (*DisbursementStatusAdapter)(nil)
 )
 
-// DisbursementStatusAdapter implements webhook.DisbursementUpdater,
+// DisbursementStatusAdapter implements contracts.DisbursementUpdater,
 // webhook.RefundPendingFetcher, and webhook.TransactionRecorder using
 // the credit loan repository and transaction service.
 type DisbursementStatusAdapter struct {
@@ -42,19 +42,19 @@ type DisbursementStatusAdapter struct {
 }
 
 // notifyAsync sends a borrower notification off the caller's thread.
-func (a *DisbursementStatusAdapter) notifyAsync(label, loanID string, send func(ctx context.Context) error) {
+func (a *DisbursementStatusAdapter) notifyAsync(ctx context.Context, label, loanID string, send func(ctx context.Context) error) {
 	if a.loanNotifier == nil {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), notifyLeakGuard)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), notifyLeakGuard)
 		defer cancel()
 		if err := send(ctx); err != nil {
-			a.logger.Warn("borrower notification failed",
+			a.logger.WarnContext(ctx, "borrower notification failed",
 				"notification", label, "loan_id", loanID, "error", err)
 			return
 		}
-		a.logger.Info("borrower notification sent", "notification", label, "loan_id", loanID)
+		a.logger.InfoContext(ctx, "borrower notification sent", "notification", label, "loan_id", loanID)
 	}()
 }
 
@@ -132,7 +132,7 @@ func (a *DisbursementStatusAdapter) getBySequenceIDWithRetry(ctx context.Context
 		func(err error) bool { return errors.Is(err, repository.ErrLoanNotFound) },
 		func(d time.Duration) {
 			attempt++
-			a.logger.Debug("loan not yet findable by sequence id, retrying",
+			a.logger.DebugContext(ctx, "loan not yet findable by sequence id, retrying",
 				"sequence_id", sequenceID, "attempt", attempt)
 			time.Sleep(d)
 		},
@@ -160,12 +160,10 @@ func retryOnNotFound[T any](fetch func() (T, error), isRace func(error) bool, wa
 }
 
 // UpdateDisbursementStatus updates the disbursement status for a loan identified by sequenceID.
-func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, status string) error {
-	ctx := context.Background()
-
+func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(ctx context.Context, sequenceID, status string) error {
 	loan, err := a.getBySequenceIDWithRetry(ctx, sequenceID)
 	if err != nil {
-		a.logger.Error("failed to find loan by sequence ID",
+		a.logger.ErrorContext(ctx, "failed to find loan by sequence ID",
 			"sequence_id", sequenceID,
 			"error", err,
 		)
@@ -194,7 +192,7 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 	}
 
 	if err := a.repo.Update(ctx, loan); err != nil {
-		a.logger.Error("failed to update disbursement status",
+		a.logger.ErrorContext(ctx, "failed to update disbursement status",
 			"loan_id", loan.ID,
 			"sequence_id", sequenceID,
 			"status", status,
@@ -204,7 +202,7 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 			Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not write the disbursement status")
 	}
 
-	a.logger.Info("disbursement status updated",
+	a.logger.InfoContext(ctx, "disbursement status updated",
 		"loan_id", loan.ID,
 		"sequence_id", sequenceID,
 		"status", status,
@@ -215,7 +213,7 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 		txStatus := mapDisbursementToTxStatus(status)
 		if txStatus != "" {
 			if err := a.UpdateOffRampTransaction(ctx, loan.ID, txStatus, status); err != nil {
-				a.logger.Warn("failed to sync transaction status", "loan_id", loan.ID, "error", err)
+				a.logger.WarnContext(ctx, "failed to sync transaction status", "loan_id", loan.ID, "error", err)
 			}
 		}
 	}
@@ -251,7 +249,7 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(sequenceID string, 
 func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan *models.Loan, trigger string, amountOverride *int64) error {
 	// Idempotency: already repaid.
 	if loan.VaultRepayTxHash != nil && *loan.VaultRepayTxHash != "" {
-		a.logger.Info("vault repay already completed, skipping",
+		a.logger.InfoContext(ctx, "vault repay already completed, skipping",
 			"loan_id", loan.ID,
 			"repay_tx_hash", *loan.VaultRepayTxHash,
 		)
@@ -264,7 +262,7 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 	}
 
 	if a.stellarSvc == nil {
-		a.logger.Error("stellar service not configured, cannot repay vault", "loan_id", loan.ID)
+		a.logger.ErrorContext(ctx, "stellar service not configured, cannot repay vault", "loan_id", loan.ID)
 		return disbursementErr("repay_vault").Code(pkgErrors.CodeMissingDependency).
 			With(pkgErrors.AttrDependency, "stellar_service").Errorf("required dependency is missing")
 	}
@@ -277,7 +275,7 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 		return disbursementErr("repay_vault").With(pkgErrors.AttrAmountStroops, amount).
 			Code(pkgErrors.CodeInvalidAmount).Errorf("refusing to repay a non-positive amount")
 	}
-	a.logger.Info("initiating vault repay",
+	a.logger.InfoContext(ctx, "initiating vault repay",
 		"loan_id", loan.ID,
 		"amount_stroops", amount,
 		"trigger", trigger,
@@ -286,7 +284,7 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 
 	repayResp, err := a.stellarSvc.RepayToVault(ctx, stellar.RepayRequest{Amount: amount})
 	if err != nil {
-		a.logger.Error("CRITICAL: vault repay failed — USDC stuck in treasury",
+		a.logger.ErrorContext(ctx, "CRITICAL: vault repay failed — USDC stuck in treasury",
 			"loan_id", loan.ID,
 			"amount_stroops", amount,
 			"trigger", trigger,
@@ -298,7 +296,7 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 		failedStatus := models.VaultRepayStatusFailed
 		loan.VaultRepayStatus = &failedStatus
 		if upErr := a.repo.Update(ctx, loan); upErr != nil {
-			a.logger.Error("failed to save vault_repay_status=failed",
+			a.logger.ErrorContext(ctx, "failed to save vault_repay_status=failed",
 				"loan_id", loan.ID,
 				"error", upErr,
 			)
@@ -312,7 +310,7 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 	successStatus := models.VaultRepayStatusSuccess
 	loan.VaultRepayStatus = &successStatus
 	if err := a.repo.Update(ctx, loan); err != nil {
-		a.logger.Error("failed to save vault repay tx hash",
+		a.logger.ErrorContext(ctx, "failed to save vault repay tx hash",
 			"loan_id", loan.ID,
 			"repay_tx_hash", repayResp.TxHash,
 			"error", err,
@@ -336,7 +334,7 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 			Metadata:         txMetadata(map[string]any{"trigger": trigger}),
 		})
 		if txnErr != nil {
-			a.logger.Warn("failed to record vault repay transaction",
+			a.logger.WarnContext(ctx, "failed to record vault repay transaction",
 				"loan_id", loan.ID,
 				"error", txnErr,
 			)
@@ -353,7 +351,7 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 		}
 	}
 
-	a.logger.Info("vault repay completed",
+	a.logger.InfoContext(ctx, "vault repay completed",
 		"loan_id", loan.ID,
 		"repay_tx_hash", repayResp.TxHash,
 		"amount_repaid", repayResp.AmountRepaid,
@@ -367,8 +365,7 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 // received) and the service/partner fees, all in cents. Idempotent: skips when
 // DeliveredAmountLocal is already set, so a replayed DisbursementComplete webhook
 // won't overwrite.
-func (a *DisbursementStatusAdapter) RecordDisbursementCompletion(sequenceID string, fin webhook.CompletionFinancials) error {
-	ctx := context.Background()
+func (a *DisbursementStatusAdapter) RecordDisbursementCompletion(ctx context.Context, sequenceID string, fin contracts.CompletionFinancials) error {
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
 		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
@@ -394,7 +391,7 @@ func (a *DisbursementStatusAdapter) RecordDisbursementCompletion(sequenceID stri
 		return disbursementErr("persist_completion").With(pkgErrors.AttrLoanID, loan.ID).
 			Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not persist the completion financials")
 	}
-	a.logger.Info("disbursement completion financials recorded",
+	a.logger.InfoContext(ctx, "disbursement completion financials recorded",
 		"loan_id", loan.ID,
 		"delivered_local_cents", delivered,
 		"service_fee_local_cents", serviceFeeLocal,
@@ -414,8 +411,7 @@ func majorToCents(v float64) int64 {
 // awaits crypto refund) or terminal_failed (fiat). A NULL settlement_method
 // is treated as not-direct — safer to mark terminal_failed than wait for a
 // refund that will never come.
-func (a *DisbursementStatusAdapter) IsDirectSettlement(sequenceID string) (bool, error) {
-	ctx := context.Background()
+func (a *DisbursementStatusAdapter) IsDirectSettlement(ctx context.Context, sequenceID string) (bool, error) {
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
 		return false, disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
@@ -431,8 +427,7 @@ func (a *DisbursementStatusAdapter) IsDirectSettlement(sequenceID string) (bool,
 // the RefundPoller when a direct-mode disbursement is failed over to fiat:
 // without this flip, the eventual DisbursementComplete event would see
 // settlement_method="direct" and skip the vault repay branch.
-func (a *DisbursementStatusAdapter) SetSettlementMethod(sequenceID string, method string) error {
-	ctx := context.Background()
+func (a *DisbursementStatusAdapter) SetSettlementMethod(ctx context.Context, sequenceID, method string) error {
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
 		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
@@ -443,7 +438,7 @@ func (a *DisbursementStatusAdapter) SetSettlementMethod(sequenceID string, metho
 		return disbursementErr("set_settlement_method").With(pkgErrors.AttrLoanID, loan.ID).
 			Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not write the settlement method")
 	}
-	a.logger.Info("settlement_method updated",
+	a.logger.InfoContext(ctx, "settlement_method updated",
 		"loan_id", loan.ID,
 		"sequence_id", sequenceID,
 		"method", method,
@@ -453,8 +448,7 @@ func (a *DisbursementStatusAdapter) SetSettlementMethod(sequenceID string, metho
 
 // RepayVault returns borrowed USDC from treasury to the vault pool for the
 // loan identified by sequenceID. No-op if already repaid.
-func (a *DisbursementStatusAdapter) RepayVault(sequenceID string) error {
-	ctx := context.Background()
+func (a *DisbursementStatusAdapter) RepayVault(ctx context.Context, sequenceID string) error {
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
 		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
@@ -466,8 +460,7 @@ func (a *DisbursementStatusAdapter) RepayVault(sequenceID string) error {
 
 // RepayVaultAmount returns an explicit stroop amount to the vault rather than
 // the loan principal, and unlike RepayVault it surfaces the failure.
-func (a *DisbursementStatusAdapter) RepayVaultAmount(sequenceID string, amountStroops int64) error {
-	ctx := context.Background()
+func (a *DisbursementStatusAdapter) RepayVaultAmount(ctx context.Context, sequenceID string, amountStroops int64) error {
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
 		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
@@ -477,12 +470,10 @@ func (a *DisbursementStatusAdapter) RepayVaultAmount(sequenceID string, amountSt
 }
 
 // NotifyDisbursementComplete sends an SMS notification that the disbursement completed.
-func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(sequenceID string) error {
-	ctx := context.Background()
-
+func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(ctx context.Context, sequenceID string) error {
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
-		a.logger.Error("failed to find loan for completion notification",
+		a.logger.ErrorContext(ctx, "failed to find loan for completion notification",
 			"sequence_id", sequenceID,
 			"error", err,
 		)
@@ -491,7 +482,7 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(sequenceID string
 	}
 
 	if a.loanNotifier == nil {
-		a.logger.Warn("loan notifier not configured, skipping completion SMS",
+		a.logger.WarnContext(ctx, "loan notifier not configured, skipping completion SMS",
 			"loan_id", loan.ID,
 		)
 		return nil
@@ -530,7 +521,7 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(sequenceID string
 		DisplayAmount:   displayAmount,
 		DisplayCurrency: displayCurrency,
 	}
-	a.notifyAsync("disbursement_complete", loan.ID, func(ctx context.Context) error {
+	a.notifyAsync(ctx, "disbursement_complete", loan.ID, func(ctx context.Context) error {
 		return a.loanNotifier.NotifyLoanDisbursed(ctx, note)
 	})
 	return nil
@@ -539,12 +530,10 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(sequenceID string
 // NotifyCashPickupReady sends the borrower their MoneyGram pickup reference
 // once the anchor confirms the cash is collectable. Called by the MG poller on
 // pending_user_transfer_complete.
-func (a *DisbursementStatusAdapter) NotifyCashPickupReady(sequenceID string) error {
-	ctx := context.Background()
-
+func (a *DisbursementStatusAdapter) NotifyCashPickupReady(ctx context.Context, sequenceID string) error {
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
-		a.logger.Error("failed to find loan for cash-pickup ready notification",
+		a.logger.ErrorContext(ctx, "failed to find loan for cash-pickup ready notification",
 			"sequence_id", sequenceID,
 			"error", err,
 		)
@@ -553,7 +542,7 @@ func (a *DisbursementStatusAdapter) NotifyCashPickupReady(sequenceID string) err
 	}
 
 	if a.loanNotifier == nil {
-		a.logger.Warn("loan notifier not configured, skipping cash-pickup ready SMS",
+		a.logger.WarnContext(ctx, "loan notifier not configured, skipping cash-pickup ready SMS",
 			"loan_id", loan.ID,
 		)
 		return nil
@@ -568,7 +557,7 @@ func (a *DisbursementStatusAdapter) NotifyCashPickupReady(sequenceID string) err
 	// not actionable, so skip rather than send a half-useful message — the
 	// poller keeps ticking and will retry once MG supplies it.
 	if loan.RampExternalRef == nil || *loan.RampExternalRef == "" {
-		a.logger.Warn("no MoneyGram reference yet, deferring cash-pickup ready SMS",
+		a.logger.WarnContext(ctx, "no MoneyGram reference yet, deferring cash-pickup ready SMS",
 			"loan_id", loan.ID,
 		)
 		return disbursementErr("cash_pickup_ready").With(pkgErrors.AttrLoanID, loan.ID).
@@ -601,7 +590,7 @@ func (a *DisbursementStatusAdapter) NotifyCashPickupReady(sequenceID string) err
 		CashPickupRef:     *loan.RampExternalRef,
 		CashPickupInfoURL: a.moreInfoLink(loan),
 	}
-	a.notifyAsync("cash_pickup_ready", loan.ID, func(ctx context.Context) error {
+	a.notifyAsync(ctx, "cash_pickup_ready", loan.ID, func(ctx context.Context) error {
 		// Optionally shorten the support link via dub (branded domain + rich
 		// preview), pointing it at MoneyGram's deep-link rather than at
 		// /r/{code}. Done here, inside the async send, rather than before it:
@@ -615,7 +604,7 @@ func (a *DisbursementStatusAdapter) NotifyCashPickupReady(sequenceID string) err
 		if note.CashPickupInfoURL, shortenErr = shortenedLink(
 			ctx, a.shortener, rawMoreInfoURL, note.CashPickupInfoURL,
 		); shortenErr != nil {
-			a.logger.Warn("dub shorten failed; sending unshortened support link",
+			a.logger.WarnContext(ctx, "dub shorten failed; sending unshortened support link",
 				"loan_id", loan.ID, "error", shortenErr)
 		}
 		return a.loanNotifier.NotifyLoanCashPickupReady(ctx, note)
@@ -625,9 +614,7 @@ func (a *DisbursementStatusAdapter) NotifyCashPickupReady(sequenceID string) err
 
 // NotifyRefundReceived tells the borrower their cash pickup was cancelled and
 // the funds returned.
-func (a *DisbursementStatusAdapter) NotifyRefundReceived(sequenceID string) error {
-	ctx := context.Background()
-
+func (a *DisbursementStatusAdapter) NotifyRefundReceived(ctx context.Context, sequenceID string) error {
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
 		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
@@ -635,7 +622,7 @@ func (a *DisbursementStatusAdapter) NotifyRefundReceived(sequenceID string) erro
 	}
 
 	if a.loanNotifier == nil {
-		a.logger.Warn("loan notifier not configured, skipping refund SMS", "loan_id", loan.ID)
+		a.logger.WarnContext(ctx, "loan notifier not configured, skipping refund SMS", "loan_id", loan.ID)
 		return nil
 	}
 
@@ -653,19 +640,17 @@ func (a *DisbursementStatusAdapter) NotifyRefundReceived(sequenceID string) erro
 		LoanReference: loanRef,
 		PhoneNumber:   phone,
 	}
-	a.notifyAsync("refund_received", loan.ID, func(ctx context.Context) error {
+	a.notifyAsync(ctx, "refund_received", loan.ID, func(ctx context.Context) error {
 		return a.loanNotifier.NotifyLoanCashPickupCancelled(ctx, note)
 	})
 	return nil
 }
 
 // NotifyDisbursementFailed sends an SMS notification that the disbursement failed.
-func (a *DisbursementStatusAdapter) NotifyDisbursementFailed(sequenceID string) error {
-	ctx := context.Background()
-
+func (a *DisbursementStatusAdapter) NotifyDisbursementFailed(ctx context.Context, sequenceID string) error {
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
-		a.logger.Error("failed to find loan for failure notification",
+		a.logger.ErrorContext(ctx, "failed to find loan for failure notification",
 			"sequence_id", sequenceID,
 			"error", err,
 		)
@@ -674,7 +659,7 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementFailed(sequenceID string) 
 	}
 
 	if a.loanNotifier == nil {
-		a.logger.Warn("loan notifier not configured, skipping failure SMS",
+		a.logger.WarnContext(ctx, "loan notifier not configured, skipping failure SMS",
 			"loan_id", loan.ID,
 		)
 		return nil
@@ -695,7 +680,7 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementFailed(sequenceID string) 
 		LoanReference: loanRef,
 		PhoneNumber:   phone,
 	}
-	a.notifyAsync("disbursement_failed", loan.ID, func(ctx context.Context) error {
+	a.notifyAsync(ctx, "disbursement_failed", loan.ID, func(ctx context.Context) error {
 		return a.loanNotifier.NotifyLoanFailed(ctx, note)
 	})
 	return nil
@@ -710,7 +695,7 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementFailed(sequenceID string) 
 func (a *DisbursementStatusAdapter) UpdateOffRampTransaction(ctx context.Context, loanID string, status string, externalStatus string) error {
 	txnResp, err := a.txnSvc.GetByLoanIDAndType(ctx, loanID, txmodels.TxTypeOffRamp)
 	if err != nil || txnResp == nil {
-		a.logger.Debug("no off-ramp transaction found for loan", "loan_id", loanID)
+		a.logger.DebugContext(ctx, "no off-ramp transaction found for loan", "loan_id", loanID)
 		return nil
 	}
 
@@ -765,12 +750,10 @@ func mapDisbursementToTxStatus(disbursementStatus string) string {
 
 // GetRefundPendingDisbursements returns YellowCard disbursements awaiting
 // crypto refund.
-func (a *DisbursementStatusAdapter) GetRefundPendingDisbursements() ([]webhook.RefundPendingRecord, error) {
-	ctx := context.Background()
-
+func (a *DisbursementStatusAdapter) GetRefundPendingDisbursements(ctx context.Context) ([]webhook.RefundPendingRecord, error) {
 	loans, err := a.repo.GetRefundDeclared(ctx, "yellowcard", 100)
 	if err != nil {
-		a.logger.Error("failed to fetch refund pending disbursements", "error", err)
+		a.logger.ErrorContext(ctx, "failed to fetch refund pending disbursements", "error", err)
 		return nil, disbursementErr("fetch_refund_pending").Code(pkgErrors.CodeLoanLoadFailed).
 			Wrapf(err, "could not fetch loans awaiting refund")
 	}

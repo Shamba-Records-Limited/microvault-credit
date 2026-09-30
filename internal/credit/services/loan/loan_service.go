@@ -3,7 +3,7 @@ package loan
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
@@ -115,7 +115,7 @@ func (s *service) Create(ctx context.Context, req CreateLoanRequest) (*LoanRespo
 				loan.LoanReference = nil
 				continue
 			}
-			log.Printf("Create: failed to create loan: %v", err)
+			slog.ErrorContext(ctx, "Create: failed to create loan", slog.Any("error", err))
 			return nil, err
 		}
 		return toLoanResponse(loan), nil
@@ -131,7 +131,7 @@ func (s *service) GetByID(ctx context.Context, id string) (*LoanResponse, error)
 		if errors.Is(err, repository.ErrLoanNotFound) {
 			return nil, ErrLoanNotFound
 		}
-		log.Printf("GetByID: failed to get loan: %v", err)
+		slog.ErrorContext(ctx, "GetByID: failed to get loan", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -145,7 +145,7 @@ func (s *service) GetByRampShortCode(ctx context.Context, code string) (*LoanRes
 		if errors.Is(err, repository.ErrLoanNotFound) {
 			return nil, ErrLoanNotFound
 		}
-		log.Printf("GetByRampShortCode: failed to get loan: %v", err)
+		slog.ErrorContext(ctx, "GetByRampShortCode: failed to get loan", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -168,7 +168,7 @@ func (s *service) GetByUserID(ctx context.Context, userID string, pagination ser
 
 	loans, err := s.repo.GetByUserID(ctx, userID, pagination.PageSize, offset)
 	if err != nil {
-		log.Printf("GetByUserID: failed to get loans: %v", err)
+		slog.ErrorContext(ctx, "GetByUserID: failed to get loans", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -200,7 +200,7 @@ func (s *service) GetActiveLoans(ctx context.Context, pagination services.Pagina
 
 	loans, err := s.repo.GetActiveLoans(ctx, pagination.PageSize, offset)
 	if err != nil {
-		log.Printf("GetActiveLoans: failed to get loans: %v", err)
+		slog.ErrorContext(ctx, "GetActiveLoans: failed to get loans", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -226,7 +226,7 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanRequest) 
 			if errors.Is(err, repository.ErrLoanNotFound) {
 				return nil, ErrLoanNotFound
 			}
-			log.Printf("Update: failed to update loan: %v", err)
+			slog.ErrorContext(ctx, "Update: failed to update loan", slog.Any("error", err))
 			return nil, err
 		}
 	}
@@ -238,7 +238,7 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanRequest) 
 		if errors.Is(err, repository.ErrLoanNotFound) {
 			return nil, ErrLoanNotFound
 		}
-		log.Printf("Update: failed to get loan: %v", err)
+		slog.ErrorContext(ctx, "Update: failed to get loan", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -251,7 +251,7 @@ func (s *service) Delete(ctx context.Context, id string) error {
 		if errors.Is(err, repository.ErrLoanNotFound) {
 			return ErrLoanNotFound
 		}
-		log.Printf("Delete: failed to delete loan: %v", err)
+		slog.ErrorContext(ctx, "Delete: failed to delete loan", slog.Any("error", err))
 		return err
 	}
 
@@ -264,7 +264,7 @@ func (s *service) Restore(ctx context.Context, id string) error {
 		if errors.Is(err, repository.ErrLoanNotFound) {
 			return ErrLoanNotFound
 		}
-		log.Printf("Restore: failed to restore loan: %v", err)
+		slog.ErrorContext(ctx, "Restore: failed to restore loan", slog.Any("error", err))
 		return err
 	}
 
@@ -278,7 +278,7 @@ func (s *service) Approve(ctx context.Context, id string, req ApproveLoanRequest
 		if errors.Is(err, repository.ErrLoanNotFound) {
 			return nil, ErrLoanNotFound
 		}
-		log.Printf("Approve: failed to get loan: %v", err)
+		slog.ErrorContext(ctx, "Approve: failed to get loan", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -292,7 +292,7 @@ func (s *service) Approve(ctx context.Context, id string, req ApproveLoanRequest
 	loan.ApprovedBy = &req.ApprovedBy
 
 	if err := s.repo.Update(ctx, loan); err != nil {
-		log.Printf("Approve: failed to update loan: %v", err)
+		slog.ErrorContext(ctx, "Approve: failed to update loan", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -306,7 +306,7 @@ func (s *service) Disburse(ctx context.Context, id string, req DisburseLoanReque
 		if errors.Is(err, repository.ErrLoanNotFound) {
 			return nil, ErrLoanNotFound
 		}
-		log.Printf("Disburse: failed to get loan: %v", err)
+		slog.ErrorContext(ctx, "Disburse: failed to get loan", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -345,7 +345,7 @@ func (s *service) Disburse(ctx context.Context, id string, req DisburseLoanReque
 	}
 
 	if err := s.repo.Update(ctx, loan); err != nil {
-		log.Printf("Disburse: failed to update loan: %v", err)
+		slog.ErrorContext(ctx, "Disburse: failed to update loan", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -359,7 +359,7 @@ func (s *service) MarkAsRepaid(ctx context.Context, id string) (*LoanResponse, e
 		if errors.Is(err, repository.ErrLoanNotFound) {
 			return nil, ErrLoanNotFound
 		}
-		log.Printf("MarkAsRepaid: failed to get loan: %v", err)
+		slog.ErrorContext(ctx, "MarkAsRepaid: failed to get loan", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -372,7 +372,7 @@ func (s *service) MarkAsRepaid(ctx context.Context, id string) (*LoanResponse, e
 	loan.RepaidAt = &now
 
 	if err := s.repo.Update(ctx, loan); err != nil {
-		log.Printf("MarkAsRepaid: failed to update loan: %v", err)
+		slog.ErrorContext(ctx, "MarkAsRepaid: failed to update loan", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -386,7 +386,7 @@ func (s *service) MarkAsDefaulted(ctx context.Context, id string) (*LoanResponse
 		if errors.Is(err, repository.ErrLoanNotFound) {
 			return nil, ErrLoanNotFound
 		}
-		log.Printf("MarkAsDefaulted: failed to get loan: %v", err)
+		slog.ErrorContext(ctx, "MarkAsDefaulted: failed to get loan", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -399,7 +399,7 @@ func (s *service) MarkAsDefaulted(ctx context.Context, id string) (*LoanResponse
 	loan.DefaultedAt = &now
 
 	if err := s.repo.Update(ctx, loan); err != nil {
-		log.Printf("MarkAsDefaulted: failed to update loan: %v", err)
+		slog.ErrorContext(ctx, "MarkAsDefaulted: failed to update loan", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -416,14 +416,14 @@ func (s *service) MarkAsOffRampFailed(ctx context.Context, id string) (*LoanResp
 		if errors.Is(err, repository.ErrLoanNotFound) {
 			return nil, ErrLoanNotFound
 		}
-		log.Printf("MarkAsOffRampFailed: failed to get loan: %v", err)
+		slog.ErrorContext(ctx, "MarkAsOffRampFailed: failed to get loan", slog.Any("error", err))
 		return nil, err
 	}
 
 	loan.Status = models.LoanStatusOffRampFailed
 
 	if err := s.repo.Update(ctx, loan); err != nil {
-		log.Printf("MarkAsOffRampFailed: failed to update loan: %v", err)
+		slog.ErrorContext(ctx, "MarkAsOffRampFailed: failed to update loan", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -435,7 +435,7 @@ func (s *service) MarkAsOffRampFailed(ctx context.Context, id string) (*LoanResp
 func (s *service) GetActiveByProvider(ctx context.Context, provider string, limit int) ([]*LoanResponse, error) {
 	loans, err := s.repo.GetActiveByProvider(ctx, provider, limit, 0)
 	if err != nil {
-		log.Printf("GetActiveByProvider: %v", err)
+		slog.ErrorContext(ctx, "GetActiveByProvider", slog.Any("error", err))
 		return nil, err
 	}
 	out := make([]*LoanResponse, 0, len(loans))
@@ -450,7 +450,7 @@ func (s *service) GetActiveByProvider(ctx context.Context, provider string, limi
 func (s *service) GetActiveByUserAndProvider(ctx context.Context, userID, provider string) ([]*LoanResponse, error) {
 	loans, err := s.repo.GetActiveByUserAndProvider(ctx, userID, provider)
 	if err != nil {
-		log.Printf("GetActiveByUserAndProvider: %v", err)
+		slog.ErrorContext(ctx, "GetActiveByUserAndProvider", slog.Any("error", err))
 		return nil, err
 	}
 	out := make([]*LoanResponse, 0, len(loans))

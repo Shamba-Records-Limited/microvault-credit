@@ -3,7 +3,6 @@ package adapters
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -112,7 +111,7 @@ func newTestPaybillDriver(t *testing.T, m *fakePaybillMpesaRepo, r *fakePaybillL
 		repo:      r,
 		quoter:    q,
 		offRamps:  offRamps,
-		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:    slog.New(slog.DiscardHandler),
 		interval:  time.Minute,
 	}
 }

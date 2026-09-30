@@ -126,7 +126,7 @@ func (a *MoneyGramPollerAdapter) RecordTransactionUpdate(ctx context.Context, lo
 			req.PartnerFeeUSD = &cents
 			any = true
 		} else {
-			a.logger.Warn("moneygram fee not recorded: unrecognised fee_details",
+			a.logger.WarnContext(ctx, "moneygram fee not recorded: unrecognised fee_details",
 				"loan_id", loanID, "fee_total", tx.FeeDetails.Total, "fee_asset", tx.FeeDetails.Asset)
 		}
 	}
@@ -147,7 +147,7 @@ func (a *MoneyGramPollerAdapter) RecordTransactionUpdate(ctx context.Context, lo
 		// leave the first dangling in an already-delivered SMS.
 		if a.needsMoreInfoShortCode(ctx, loanID) {
 			if code, err := newShortCode(); err != nil {
-				a.logger.Warn("more-info short-code generation failed",
+				a.logger.WarnContext(ctx, "more-info short-code generation failed",
 					"loan_id", loanID, "error", err)
 			} else {
 				req.RampMoreInfoShortCode = &code
@@ -203,7 +203,7 @@ func payoutLocked(status stellaranchor.Status) bool {
 func (a *MoneyGramPollerAdapter) loanAwaitingOffRampRow(ctx context.Context, loanID string) *models.Loan {
 	loanRow, err := a.repo.GetByID(ctx, loanID)
 	if err != nil {
-		a.logger.Warn("could not load loan to check off-ramp transaction; skipping",
+		a.logger.WarnContext(ctx, "could not load loan to check off-ramp transaction; skipping",
 			"loan_id", loanID, "error", err)
 		return nil
 	}
@@ -251,7 +251,7 @@ func (a *MoneyGramPollerAdapter) recordOffRampTransaction(ctx context.Context, l
 		}),
 	})
 	if err != nil {
-		a.logger.Warn("failed to record off-ramp transaction",
+		a.logger.WarnContext(ctx, "failed to record off-ramp transaction",
 			"loan_id", loanID, "error", err)
 		return
 	}
@@ -266,7 +266,7 @@ func (a *MoneyGramPollerAdapter) recordOffRampTransaction(ctx context.Context, l
 		a.settleTransaction(ctx, txnResp.ID, "off_ramp", loanID, final)
 	}
 
-	a.logger.Info("cash-pickup off-ramp transaction recorded",
+	a.logger.InfoContext(ctx, "cash-pickup off-ramp transaction recorded",
 		"loan_id", loanID, "amount_cents", amountCents, "currency", asset, "status", final)
 }
 
@@ -318,7 +318,7 @@ func (a *MoneyGramPollerAdapter) RecordSendUSDC(ctx context.Context, loanID stri
 
 	a.recordAnchorTransferTransaction(ctx, loanID, txHash)
 
-	a.logger.Info("treasury to MoneyGram USDC send recorded",
+	a.logger.InfoContext(ctx, "treasury to MoneyGram USDC send recorded",
 		"loan_id", loanID, "tx_hash", txHash)
 	return nil
 }
@@ -332,7 +332,7 @@ func (a *MoneyGramPollerAdapter) recordAnchorTransferTransaction(ctx context.Con
 
 	loanRow, err := a.repo.GetByID(ctx, loanID)
 	if err != nil {
-		a.logger.Warn("could not load loan to record anchor transfer transaction",
+		a.logger.WarnContext(ctx, "could not load loan to record anchor transfer transaction",
 			"loan_id", loanID, "error", err)
 		return
 	}
@@ -359,7 +359,7 @@ func (a *MoneyGramPollerAdapter) recordAnchorTransferTransaction(ctx context.Con
 		}),
 	})
 	if err != nil {
-		a.logger.Warn("failed to record anchor transfer transaction",
+		a.logger.WarnContext(ctx, "failed to record anchor transfer transaction",
 			"loan_id", loanID, "error", err)
 		return
 	}
@@ -396,7 +396,7 @@ func (a *MoneyGramPollerAdapter) RecordRefund(ctx context.Context, loanID string
 			Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not record the refund")
 	}
 
-	a.logger.Info("MoneyGram refund recorded",
+	a.logger.InfoContext(ctx, "MoneyGram refund recorded",
 		"loan_id", loanID,
 		"refund_tx_hash", refund.TxHash,
 		"net_stroops", refund.NetStroops,
@@ -416,7 +416,7 @@ func (a *MoneyGramPollerAdapter) recordRefundTransaction(ctx context.Context, lo
 
 	loanRow, err := a.repo.GetByID(ctx, loanID)
 	if err != nil {
-		a.logger.Warn("could not load loan to record refund transaction",
+		a.logger.WarnContext(ctx, "could not load loan to record refund transaction",
 			"loan_id", loanID, "error", err)
 		return
 	}
@@ -446,7 +446,7 @@ func (a *MoneyGramPollerAdapter) recordRefundTransaction(ctx context.Context, lo
 		}),
 	})
 	if err != nil {
-		a.logger.Warn("failed to record refund transaction",
+		a.logger.WarnContext(ctx, "failed to record refund transaction",
 			"loan_id", loanID, "error", err)
 		return
 	}
@@ -469,7 +469,7 @@ func (a *MoneyGramPollerAdapter) settleTransaction(ctx context.Context, txnID, k
 		if _, err := a.txnSvc.Update(ctx, txnID, transaction.UpdateTransactionRequest{
 			Status: &status,
 		}); err != nil {
-			a.logger.Warn("failed to advance transaction status",
+			a.logger.WarnContext(ctx, "failed to advance transaction status",
 				"kind", kind, "loan_id", loanID, "transaction_id", txnID,
 				"to", status, "error", err)
 			return
@@ -568,7 +568,7 @@ func moneyGramFeeUSDCents(fd *stellaranchor.FeeDetails) (int64, bool) {
 func (a *MoneyGramPollerAdapter) needsMoreInfoShortCode(ctx context.Context, loanID string) bool {
 	loanRow, err := a.repo.GetByID(ctx, loanID)
 	if err != nil {
-		a.logger.Warn("could not load loan to check more-info short code",
+		a.logger.WarnContext(ctx, "could not load loan to check more-info short code",
 			"loan_id", loanID, "error", err)
 		return false
 	}

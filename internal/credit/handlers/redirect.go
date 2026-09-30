@@ -49,7 +49,7 @@ func (h *InteractiveRedirectHandler) Handle(c *fiber.Ctx) error {
 		if !errors.Is(err, loan.ErrLoanNotFound) {
 			// Unexpected — e.g. a missing ramp_short_code column (migration not
 			// applied). Surface it rather than masking as a plain 404.
-			h.logger.Error("short-code lookup failed", "code", code, "error", err)
+			h.logger.ErrorContext(c.UserContext(), "short-code lookup failed", "code", code, "error", err)
 		}
 		return c.SendStatus(fiber.StatusNotFound)
 	}
@@ -59,14 +59,14 @@ func (h *InteractiveRedirectHandler) Handle(c *fiber.Ctx) error {
 
 	if matches(resp.RampMoreInfoShortCode, code) {
 		if resp.RampMoreInfoURL == nil || *resp.RampMoreInfoURL == "" {
-			h.logger.Warn("more-info code resolved but no URL", "code", code)
+			h.logger.WarnContext(c.UserContext(), "more-info code resolved but no URL", "code", code)
 			return c.SendStatus(fiber.StatusNotFound)
 		}
 		return c.Redirect(*resp.RampMoreInfoURL, fiber.StatusFound)
 	}
 
 	if resp.RampInteractiveURL == nil || *resp.RampInteractiveURL == "" {
-		h.logger.Warn("short-code resolved but no interactive URL", "code", code)
+		h.logger.WarnContext(c.UserContext(), "short-code resolved but no interactive URL", "code", code)
 		return c.SendStatus(fiber.StatusNotFound)
 	}
 	if isTerminalDisbursement(resp.DisbursementStatus) {

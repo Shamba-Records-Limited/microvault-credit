@@ -3,7 +3,7 @@ package loanproduct
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
@@ -73,7 +73,7 @@ func (s *service) Create(ctx context.Context, req CreateLoanProductRequest) (*Lo
 
 	// Create loan product in database
 	if err := s.repo.Create(ctx, product); err != nil {
-		log.Printf("Create: failed to create loan product: %v", err)
+		slog.ErrorContext(ctx, "Create: failed to create loan product", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -87,7 +87,7 @@ func (s *service) GetByID(ctx context.Context, id string) (*LoanProductResponse,
 		if errors.Is(err, repository.ErrLoanProductNotFound) {
 			return nil, ErrLoanProductNotFound
 		}
-		log.Printf("GetByID: failed to get loan product: %v", err)
+		slog.ErrorContext(ctx, "GetByID: failed to get loan product", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -101,7 +101,7 @@ func (s *service) GetByName(ctx context.Context, name string) (*LoanProductRespo
 	// This is inefficient and should be fixed by adding GetByName to the repository
 	products, err := s.repo.GetAll(ctx, 1000, 0)
 	if err != nil {
-		log.Printf("GetByName: failed to get loan products: %v", err)
+		slog.ErrorContext(ctx, "GetByName: failed to get loan products", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -130,7 +130,7 @@ func (s *service) GetActive(ctx context.Context, pagination services.Pagination)
 
 	products, err := s.repo.GetAllActive(ctx, pagination.PageSize, offset)
 	if err != nil {
-		log.Printf("GetActive: failed to get loan products: %v", err)
+		slog.ErrorContext(ctx, "GetActive: failed to get loan products", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -162,7 +162,7 @@ func (s *service) GetAll(ctx context.Context, pagination services.Pagination) (*
 
 	products, err := s.repo.GetAll(ctx, pagination.PageSize, offset)
 	if err != nil {
-		log.Printf("GetAll: failed to get loan products: %v", err)
+		slog.ErrorContext(ctx, "GetAll: failed to get loan products", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -185,7 +185,7 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanProductRe
 		if errors.Is(err, repository.ErrLoanProductNotFound) {
 			return nil, ErrLoanProductNotFound
 		}
-		log.Printf("Update: failed to get loan product: %v", err)
+		slog.ErrorContext(ctx, "Update: failed to get loan product", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -257,7 +257,7 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanProductRe
 
 	// Update in database
 	if err := s.repo.Update(ctx, product); err != nil {
-		log.Printf("Update: failed to update loan product: %v", err)
+		slog.ErrorContext(ctx, "Update: failed to update loan product", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -270,7 +270,7 @@ func (s *service) Delete(ctx context.Context, id string) error {
 		if errors.Is(err, repository.ErrLoanProductNotFound) {
 			return ErrLoanProductNotFound
 		}
-		log.Printf("Delete: failed to delete loan product: %v", err)
+		slog.ErrorContext(ctx, "Delete: failed to delete loan product", slog.Any("error", err))
 		return err
 	}
 
@@ -283,7 +283,7 @@ func (s *service) Restore(ctx context.Context, id string) error {
 		if errors.Is(err, repository.ErrLoanProductNotFound) {
 			return ErrLoanProductNotFound
 		}
-		log.Printf("Restore: failed to restore loan product: %v", err)
+		slog.ErrorContext(ctx, "Restore: failed to restore loan product", slog.Any("error", err))
 		return err
 	}
 

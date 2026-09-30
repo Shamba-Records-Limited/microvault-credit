@@ -1,10 +1,11 @@
 package handlers
 
 import (
+	"github.com/gofiber/fiber/v2"
+
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/views"
 	creditrepo "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	corerepo "github.com/Shamba-Records-Limited/microvault/pkg/repository"
-	"github.com/gofiber/fiber/v2"
 )
 
 // Loans lists loans with a status filter and pagination.

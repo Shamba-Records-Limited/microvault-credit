@@ -3,7 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"time"
 
 	"gorm.io/gorm"
@@ -67,7 +67,7 @@ func NewGlobalLendingLimitRepository(db *gorm.DB) (GlobalLendingLimitRepository,
 func (r *globalLendingLimitRepository) Create(ctx context.Context, limit *models.GlobalLendingLimit) error {
 	result := r.db.WithContext(ctx).Create(limit)
 	if result.Error != nil {
-		log.Printf("Create: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Create: database error", slog.Any("error", result.Error))
 		return ErrFailedToCreateGlobalLendingLimit
 	}
 	return nil
@@ -81,7 +81,7 @@ func (r *globalLendingLimitRepository) BatchCreate(ctx context.Context, limits [
 
 	result := r.db.WithContext(ctx).Create(limits)
 	if result.Error != nil {
-		log.Printf("CreateBatch: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "CreateBatch: database error", slog.Any("error", result.Error))
 		return ErrFailedToCreateBatchGlobalLendingLimits
 	}
 	return nil
@@ -99,7 +99,7 @@ func (r *globalLendingLimitRepository) GetByID(ctx context.Context, id string) (
 		return nil, ErrGlobalLendingLimitNotFound
 	}
 	if result.Error != nil {
-		log.Printf("GetByID: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetByID: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetGlobalLendingLimit
 	}
 	return &limit, nil
@@ -115,7 +115,7 @@ func (r *globalLendingLimitRepository) GetByKey(ctx context.Context, key string)
 		return nil, ErrGlobalLendingLimitNotFound
 	}
 	if result.Error != nil {
-		log.Printf("GetByKey: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetByKey: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetGlobalLendingLimitByKey
 	}
 	return &limit, nil
@@ -131,7 +131,7 @@ func (r *globalLendingLimitRepository) GetByCategory(ctx context.Context, catego
 		Offset(offset).
 		Find(&limits)
 	if result.Error != nil {
-		log.Printf("GetByCategory: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetByCategory: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetGlobalLendingLimitsByCategory
 	}
 	return limits, nil
@@ -146,7 +146,7 @@ func (r *globalLendingLimitRepository) GetAll(ctx context.Context, limit, offset
 		Offset(offset).
 		Find(&limits)
 	if result.Error != nil {
-		log.Printf("GetAll: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetAll: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetAllGlobalLendingLimits
 	}
 	return limits, nil
@@ -162,7 +162,7 @@ func (r *globalLendingLimitRepository) GetActive(ctx context.Context, limit, off
 		Offset(offset).
 		Find(&limits)
 	if result.Error != nil {
-		log.Printf("GetActive: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "GetActive: database error", slog.Any("error", result.Error))
 		return nil, ErrFailedToGetActiveGlobalLendingLimits
 	}
 	return limits, nil
@@ -189,7 +189,7 @@ func (r *globalLendingLimitRepository) Update(ctx context.Context, limit *models
 		return ErrGlobalLendingLimitNotFound
 	}
 	if result.Error != nil {
-		log.Printf("Update: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Update: database error", slog.Any("error", result.Error))
 		return ErrFailedToUpdateGlobalLendingLimit
 	}
 	return nil
@@ -206,7 +206,7 @@ func (r *globalLendingLimitRepository) Restore(ctx context.Context, id string) e
 		return ErrGlobalLendingLimitNotFound
 	}
 	if result.Error != nil {
-		log.Printf("Restore: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Restore: database error", slog.Any("error", result.Error))
 		return ErrFailedToRestoreGlobalLendingLimit
 	}
 	return nil
@@ -223,7 +223,7 @@ func (r *globalLendingLimitRepository) Delete(ctx context.Context, id string) er
 		return ErrGlobalLendingLimitNotFound
 	}
 	if result.Error != nil {
-		log.Printf("Delete: database error: %v", result.Error)
+		slog.ErrorContext(ctx, "Delete: database error", slog.Any("error", result.Error))
 		return ErrFailedToDeleteGlobalLendingLimit
 	}
 	return nil

@@ -2,7 +2,6 @@ package adapters
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"testing"
 
@@ -41,7 +40,7 @@ func newRateAdapter(t *testing.T, rate offramp.ExchangeRate) (*LoanServiceAdapte
 	return &LoanServiceAdapter{
 		offRamps: reg,
 		fxBuffer: offramp.NewRateBuffer(offramp.Fraction(0.015), DefaultFXBufferPct),
-		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:   slog.New(slog.DiscardHandler),
 	}, providerOptions{id: "yc"}
 }
 

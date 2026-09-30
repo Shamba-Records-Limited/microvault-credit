@@ -3,7 +3,6 @@ package adapters
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -66,7 +65,7 @@ func newTestAirtelDriver(q *fakeAirtelEnquirer, core *fakeAirtelCoreRepo, r *fak
 		repo:        r,
 		loanSvc:     loans,
 		notifier:    n,
-		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:      slog.New(slog.DiscardHandler),
 		interval:    time.Minute,
 		maxAttempts: 3,
 		now:         func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) },
