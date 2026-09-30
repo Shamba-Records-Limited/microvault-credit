@@ -31,6 +31,7 @@ jobs:
     outputs:
       credit_image: ${{ steps.vars.outputs.credit_image }}
       migrate_image: ${{ steps.vars.outputs.migrate_image }}
+      web_image: ${{ steps.vars.outputs.web_image }}
       core_sha: ${{ steps.vars.outputs.core_sha }}
 
     steps:
@@ -76,6 +77,7 @@ jobs:
           echo "core_sha=$core_sha" >> "$GITHUB_OUTPUT"
           echo "credit_image=${REGISTRY}/${IMAGE_NAME}/credit:testnet-${sha7}" >> "$GITHUB_OUTPUT"
           echo "migrate_image=${REGISTRY}/${IMAGE_NAME}/migrate:testnet-${sha7}" >> "$GITHUB_OUTPUT"
+          echo "web_image=${REGISTRY}/${IMAGE_NAME}/web:testnet-${sha7}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v4
 
@@ -120,12 +122,37 @@ jobs:
           cache-from: type=gha,scope=migrate
           cache-to: type=gha,mode=max,scope=migrate
 
+      - name: Build and push web
+        uses: docker/build-push-action@v7
+        with:
+          context: microvault/web
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          build-args: |
+            VITE_VAULT_CONTRACT_ID=${{ vars.VITE_VAULT_CONTRACT_ID }}
+            VITE_SOROBAN_RPC_URL=${{ vars.VITE_SOROBAN_RPC_URL }}
+            VITE_NETWORK_PASSPHRASE=${{ vars.VITE_NETWORK_PASSPHRASE }}
+            VITE_STELLAR_EXPLORER_URL=${{ vars.VITE_STELLAR_EXPLORER_URL }}
+            VITE_TREASURY_ADDRESS=${{ vars.VITE_TREASURY_ADDRESS }}
+            VITE_TIMELOCK_CONTRACT_ID=${{ vars.VITE_TIMELOCK_CONTRACT_ID }}
+            VITE_HORIZON_URL=${{ vars.VITE_HORIZON_URL }}
+          tags: |
+            ${{ steps.vars.outputs.web_image }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/web:testnet-latest
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            com.shambarecords.microvault.core-revision=${{ steps.vars.outputs.core_sha }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
       - name: Summary
         run: |
           {
             echo "### Images"
             echo '`${{ steps.vars.outputs.credit_image }}`'
             echo '`${{ steps.vars.outputs.migrate_image }}`'
+            echo '`${{ steps.vars.outputs.web_image }}`'
             echo ""
             echo "core: \`${{ steps.vars.outputs.core_sha }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -145,12 +172,13 @@ jobs:
         env:
           CREDIT_IMAGE: ${{ needs.build.outputs.credit_image }}
           MIGRATE_IMAGE: ${{ needs.build.outputs.migrate_image }}
+          WEB_IMAGE: ${{ needs.build.outputs.web_image }}
           COOLIFY_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
           COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
           COOLIFY_SERVICE_UUID: ${{ vars.COOLIFY_SERVICE_UUID }}
         run: |
           url="$COOLIFY_BASE_URL/api/v1/services/$COOLIFY_SERVICE_UUID/envs"
-          for pair in "CREDIT_IMAGE:$CREDIT_IMAGE" "MIGRATE_IMAGE:$MIGRATE_IMAGE"; do
+          for pair in "CREDIT_IMAGE:$CREDIT_IMAGE" "MIGRATE_IMAGE:$MIGRATE_IMAGE" "WEB_IMAGE:$WEB_IMAGE"; do
             key="${pair%%:*}"
             value="${pair#*:}"
             payload="$(jq -nc --arg k "$key" --arg v "$value" '{key:$k,value:$v}')"
@@ -181,4 +209,5 @@ jobs:
             echo "### Deployed"
             echo '`${{ needs.build.outputs.credit_image }}`'
             echo '`${{ needs.build.outputs.migrate_image }}`'
+            echo '`${{ needs.build.outputs.web_image }}`'
           } >> "$GITHUB_STEP_SUMMARY"

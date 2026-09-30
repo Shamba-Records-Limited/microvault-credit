@@ -1,7 +1,15 @@
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+    labels: com.docker.compose.service,com.docker.compose.project
+
 services:
   postgres:
+    logging: *logging
     image: postgres:18-alpine
-    container_name: microvault-postgres
+    container_name: microvault-credit-postgres
     env_file: .env
     environment:
       POSTGRES_USER: ${DB_USER:?You must provide the 'DB_USER' variable in the .env file}
@@ -18,13 +26,11 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
-    networks:
-      microvault-credit:
-        ipv4_address: 172.20.0.4
 
   redis:
+    logging: *logging
     image: redis:7-alpine
-    container_name: microvault-redis
+    container_name: microvault-credit-redis
     env_file: .env
     command: redis-server --requirepass ${REDIS_PASSWORD:?You must provide the 'REDIS_PASSWORD' variable in the .env file} --maxmemory 256mb --maxmemory-policy allkeys-lru
     ports:
@@ -37,14 +43,13 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
-    networks:
-      - microvault-credit
 
   migrate:
+    logging: *logging
     build:
       context: ..
       dockerfile: microvault-credit/Dockerfile.dev
-    container_name: microvault-migrate
+    container_name: microvault-credit-migrate
     working_dir: /app/microvault-credit
     command: go run cmd/migrate/main.go up
     env_file: .env
@@ -55,14 +60,13 @@ services:
       - ../:/app
       - go-mod-cache:/go/pkg/mod
     restart: "no"
-    networks:
-      - microvault-credit
 
   docs:
+    logging: *logging
     build:
       context: ..
       dockerfile: microvault-credit/Dockerfile.dev
-    container_name: microvault-docs
+    container_name: microvault-credit-docs
     working_dir: /app/microvault-credit
     command: sh -c "sh scripts/generate-core-docs.sh && sh scripts/generate-credit-docs.sh"
     volumes:
@@ -71,6 +75,7 @@ services:
     restart: "no"
 
   credit-with-air:
+    logging: *logging
     build:
       context: ..
       dockerfile: microvault-credit/Dockerfile.dev
@@ -102,21 +107,14 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-    networks:
-      - microvault-credit
 
   admin-with-air:
+    logging: *logging
     build:
       context: ..
       dockerfile: microvault-credit/Dockerfile.dev
-    container_name: microvault-admin
+    container_name: microvault-credit-admin
     working_dir: /app/microvault-credit
-    # Builds CSS and generates templ once, then runs the server directly — no
-    # air, no `tailwindcss --watch`. That combination self-triggered a rebuild
-    # loop (air watches internal/, which includes both templ's own generated
-    # _templ.go output and tailwind's own admin.css output, each rewrite
-    # re-queuing another air rebuild) and the server never stayed up long
-    # enough to accept a connection. Restart the container to pick up changes.
     command: >
       sh -c "cd internal/admin/assets && npm install --silent &&
              npx tailwindcss -i input.css -o ../static/admin.css &&
@@ -135,21 +133,135 @@ services:
       - ../:/app
       - ../microvault:/microvault
       - go-mod-cache:/go/pkg/mod
-      # Shadows the host's node_modules: Tailwind ships native binaries and the
-      # host is glibc while this image is musl, so they cannot be shared.
       - admin-node-modules:/app/microvault-credit/internal/admin/assets/node_modules
-    networks:
-      - microvault-credit
 
-networks:
-  microvault-credit:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
+  web:
+    build:
+      context: ../microvault/web
+      dockerfile: Dockerfile.dev
+    container_name: microvault-credit-web
+    logging: *logging
+    environment:
+      VITE_VAULT_CONTRACT_ID: ${VITE_VAULT_CONTRACT_ID:-CCRTA3447R4SCRA5YBTXZ3PXTIFRRYAPZQUCGV7NQ4WWMJCDFTPDVAUR}
+      VITE_SOROBAN_RPC_URL: ${VITE_SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}
+      VITE_NETWORK_PASSPHRASE: ${VITE_NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}
+      VITE_STELLAR_EXPLORER_URL: ${VITE_STELLAR_EXPLORER_URL:-https://stellar.expert/explorer/testnet}
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    develop:
+      watch:
+        - action: sync
+          path: ../microvault/web/src
+          target: /app/src
+        - action: sync
+          path: ../microvault/web/public
+          target: /app/public
+        - action: sync
+          path: ../microvault/web/index.html
+          target: /app/index.html
+        - action: rebuild
+          path: ../microvault/web/package.json
+        - action: rebuild
+          path: ../microvault/web/package-lock.json
+
+  rustfs:
+    image: rustfs/rustfs:1.0.0
+    container_name: microvault-credit-rustfs
+    logging: *logging
+    environment:
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - rustfs_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  rustfs-init:
+    image: amazon/aws-cli:2.37.6
+    container_name: microvault-credit-rustfs-init
+    logging: *logging
+    entrypoint: ["sh", "-c"]
+    command:
+      - aws configure set default.s3.addressing_style path &&
+        (aws s3api head-bucket --bucket "$$BUCKET" 2>/dev/null ||
+        aws s3api create-bucket --bucket "$$BUCKET")
+    environment:
+      AWS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      AWS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://rustfs:9000
+      BUCKET: ${ZO_S3_BUCKET_NAME:-openobserve}
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    restart: "no"
+
+  openobserve:
+    image: openobserve/openobserve:v1.0.4
+    container_name: microvault-credit-openobserve
+    logging: *logging
+    environment:
+      ZO_ROOT_USER_EMAIL: ${ZO_ROOT_USER_EMAIL:-root@example.com}
+      ZO_ROOT_USER_PASSWORD: ${ZO_ROOT_USER_PASSWORD:-Complexpass#123}
+      ZO_DATA_DIR: /data
+      ZO_TELEMETRY: "false"
+      ZO_LOCAL_MODE: "true"
+      ZO_LOCAL_MODE_STORAGE: s3
+      ZO_S3_PROVIDER: rustfs
+      ZO_S3_SERVER_URL: http://rustfs:9000
+      ZO_S3_REGION_NAME: us-east-1
+      ZO_S3_BUCKET_NAME: ${ZO_S3_BUCKET_NAME:-openobserve}
+      ZO_S3_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      ZO_S3_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      ZO_COMPACT_DATA_RETENTION_DAYS: "3"
+      ZO_MEMORY_CACHE_MAX_SIZE: "256"
+      ZO_DISK_CACHE_MAX_SIZE: "1024"
+    ports:
+      - "127.0.0.1:5080:5080"
+    volumes:
+      - openobserve_data:/data
+    depends_on:
+      rustfs-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  otel-collector:
+    build:
+      context: deploy/otel-collector
+    container_name: microvault-credit-otel-collector
+    logging: *logging
+    user: "0:0"
+    environment:
+      ZO_ROOT_USER_EMAIL: ${ZO_ROOT_USER_EMAIL:-root@example.com}
+      ZO_ROOT_USER_PASSWORD: ${ZO_ROOT_USER_PASSWORD:-Complexpass#123}
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+    volumes:
+      - ${DOCKER_ROOT_DIR:-/var/lib/docker}/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/hostfs:ro
+      - otel_collector_data:/var/lib/otelcol
+    depends_on:
+      - openobserve
+    restart: unless-stopped
 
 volumes:
   postgres_data:
   redis_data:
   go-mod-cache:
   admin-node-modules:
+  rustfs_data:
+  openobserve_data:
+  otel_collector_data:

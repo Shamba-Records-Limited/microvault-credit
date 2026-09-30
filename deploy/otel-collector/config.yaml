@@ -1,0 +1,118 @@
+extensions:
+  basicauth/openobserve:
+    client_auth:
+      username: ${env:ZO_ROOT_USER_EMAIL}
+      password: ${env:ZO_ROOT_USER_PASSWORD}
+  file_storage:
+    directory: /var/lib/otelcol/file_storage
+    create_directory: true
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  file_log/docker:
+    include:
+      - /var/lib/docker/containers/*/*-json.log
+    start_at: end
+    storage: file_storage
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.time
+          layout_type: gotime
+          layout: "2006-01-02T15:04:05.999999999Z07:00"
+      - type: move
+        from: attributes.log
+        to: body
+      - type: remove
+        field: attributes.time
+
+  docker_stats:
+    endpoint: unix:///var/run/docker.sock
+    api_version: "1.44"
+    collection_interval: 30s
+
+  host_metrics:
+    root_path: /hostfs
+    collection_interval: 60s
+    scrapers:
+      cpu: {}
+      load: {}
+      memory: {}
+      network: {}
+      disk: {}
+      filesystem:
+        exclude_fs_types:
+          fs_types: [autofs, binfmt_misc, bpf, cgroup, cgroup2, configfs, debugfs, devpts, devtmpfs, fusectl, hugetlbfs, mqueue, nsfs, overlay, proc, procfs, pstore, securityfs, squashfs, sysfs, tmpfs, tracefs]
+          match_type: strict
+        exclude_mount_points:
+          mount_points: ["/dev/*", "/proc/*", "/sys/*", "/run/*", "/snap/*", "/var/lib/docker/*"]
+          match_type: regexp
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+
+  transform/docker:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(attributes["service.name"], attributes["attrs"]["com.docker.compose.service"])
+          - set(attributes["service.namespace"], attributes["attrs"]["com.docker.compose.project"])
+          - delete_key(attributes, "attrs")
+          - replace_pattern(body, "\\n$", "")
+          - merge_maps(attributes, ParseJSON(body), "upsert") where IsMatch(body, "^\\{")
+          - set(severity_text, attributes["level"]) where attributes["level"] != nil
+          - set(body, attributes["msg"]) where attributes["msg"] != nil
+          - delete_key(attributes, "msg")
+          - delete_key(attributes, "level")
+          - delete_key(attributes, "time")
+
+  filter/openobserve-access-log:
+    error_mode: ignore
+    logs:
+      log_record:
+        - attributes["service.name"] == "openobserve" and IsMatch(body, "access_log:")
+
+  groupbyattrs/docker:
+    keys: [service.name, service.namespace]
+
+  batch: {}
+
+exporters:
+  otlp_http/openobserve:
+    endpoint: http://openobserve:5080/api/default
+    auth:
+      authenticator: basicauth/openobserve
+    headers:
+      stream-name: default
+    sending_queue:
+      storage: file_storage
+
+service:
+  extensions: [basicauth/openobserve, file_storage]
+  pipelines:
+    logs/docker:
+      receivers: [file_log/docker]
+      processors: [memory_limiter, transform/docker, filter/openobserve-access-log, groupbyattrs/docker, batch]
+      exporters: [otlp_http/openobserve]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/openobserve]
+    metrics:
+      receivers: [otlp, docker_stats, host_metrics]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/openobserve]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/openobserve]
