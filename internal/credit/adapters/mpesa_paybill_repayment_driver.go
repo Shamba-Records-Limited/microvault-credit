@@ -5,6 +5,12 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
+	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
+	"github.com/Shamba-Records-Limited/microvault/pkg/logging"
+	"github.com/Shamba-Records-Limited/microvault/pkg/telemetry"
+
 	"github.com/samber/lo"
 
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd"
@@ -126,7 +132,7 @@ func (d *MpesaPaybillRepaymentDriver) tick(ctx context.Context) {
 		if tx.LoanID == nil {
 			continue
 		}
-		if d.applyOne(ctx, tx) {
+		if d.traceApply(ctx, tx) {
 			touched[*tx.LoanID] = struct{}{}
 		}
 	}
@@ -154,6 +160,14 @@ func paybillEligible(l *models.Loan) bool {
 	default:
 		return false
 	}
+}
+
+func (d *MpesaPaybillRepaymentDriver) traceApply(ctx context.Context, tx *coremodels.MpesaTransaction) bool {
+	ctx = logging.With(ctx, slog.String(pkgErrors.AttrLoanID, *tx.LoanID))
+	ctx, span := telemetry.StartRoot(ctx, "mpesa.paybill_apply",
+		attribute.String(pkgErrors.AttrLoanID, *tx.LoanID), attribute.String("mpesa_transaction_id", tx.ID))
+	defer span.End()
+	return d.applyOne(ctx, tx)
 }
 
 // applyOne converts one observation to stroops and records it on the row.

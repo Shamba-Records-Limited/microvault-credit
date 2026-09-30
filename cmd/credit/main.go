@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Shamba-Records-Limited/microvault/pkg/telemetry"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/swagger"
@@ -78,6 +80,11 @@ import (
 // @BasePath /
 func main() {
 	logger := logging.Setup()
+
+	shutdownTracing, err := telemetry.Setup(context.Background())
+	if err != nil {
+		log.Fatalf("Failed to set up tracing: %v", err)
+	}
 
 	// ---- 1. Configuration ----
 	cfg, err := config.New()
@@ -1027,7 +1034,7 @@ func main() {
 	sig := <-sigChan
 	slog.InfoContext(ctx, "received signal, shutting down", slog.String("signal", sig.String()))
 
-	lifecycle := newLifecycle(pollerCancel, app)
+	lifecycle := newLifecycle(pollerCancel, app, shutdownTracing)
 	if errs := lifecycle.Shutdown(); errs != nil {
 		slog.ErrorContext(ctx, "Shutdown completed with errors", slog.Any("error", errs))
 	}

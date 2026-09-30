@@ -253,5 +253,6 @@ func NewAirtelPromptLoanRunner(deps AirtelPromptLoanDriverDeps) (*mgpoller.Runne
 		}),
 		Driver: driver,
 		Logger: deps.Logger,
+		LoanID: func(l *models.Loan) string { return l.ID },
 	}), nil
 }

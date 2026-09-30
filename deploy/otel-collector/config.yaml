@@ -82,6 +82,15 @@ processors:
       log_record:
         - attributes["service.name"] == "openobserve" and IsMatch(body, "access_log:")
 
+  transform/redact-urls:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - replace_pattern(attributes["url.full"], "\\?.*$", "")
+          - replace_pattern(attributes["http.url"], "\\?.*$", "")
+          - delete_key(attributes, "url.query")
+
   groupbyattrs/docker:
     keys: [service.name, service.namespace]
 
@@ -114,5 +123,5 @@ service:
       exporters: [otlp_http/openobserve]
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, batch]
+      processors: [memory_limiter, transform/redact-urls, batch]
       exporters: [otlp_http/openobserve]

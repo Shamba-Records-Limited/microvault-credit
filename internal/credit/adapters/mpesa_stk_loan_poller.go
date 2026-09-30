@@ -249,5 +249,6 @@ func NewMpesaSTKLoanRunner(deps MpesaSTKLoanDriverDeps) (*mgpoller.Runner[*model
 		}),
 		Driver: driver,
 		Logger: deps.Logger,
+		LoanID: func(l *models.Loan) string { return l.ID },
 	}), nil
 }

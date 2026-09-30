@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Shamba-Records-Limited/microvault/pkg/telemetry"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
 	"github.com/gofiber/fiber/v2/middleware/recover"
@@ -41,6 +43,11 @@ import (
 
 func main() {
 	logger := logging.Setup()
+
+	shutdownTracing, err := telemetry.Setup(context.Background())
+	if err != nil {
+		log.Fatalf("Failed to set up tracing: %v", err)
+	}
 
 	cfg, err := config.New()
 	if err != nil {
@@ -209,6 +216,9 @@ func main() {
 	defer cancel()
 	if err := app.ShutdownWithContext(ctx); err != nil {
 		logger.ErrorContext(ctx, "shutdown failed", "error", err)
+	}
+	if err := shutdownTracing(ctx); err != nil {
+		logger.ErrorContext(ctx, "tracing shutdown failed", "error", err)
 	}
 	logger.InfoContext(ctx, "admin dashboard stopped")
 }

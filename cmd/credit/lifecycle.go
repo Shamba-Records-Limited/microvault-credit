@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/samber/do/v2"
@@ -50,8 +51,16 @@ func (p *pollerGroup) Shutdown() error {
 // Registration order is teardown order reversed: do shuts services down in the
 // reverse of the order they were provided, which is what puts the pollers ahead
 // of the connections they use.
-func newLifecycle(pollerCancel context.CancelFunc, app *fiber.App) do.Injector {
+func newLifecycle(pollerCancel context.CancelFunc, app *fiber.App, shutdownTracing func(context.Context) error) do.Injector {
 	injector := do.New()
+
+	// Provided before everything, so torn down after everything: spans from
+	// the rest of the shutdown are still flushed.
+	do.ProvideNamedValue(injector, "tracing", &shutdownFunc{name: "Tracing", stop: func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return shutdownTracing(ctx)
+	}})
 
 	// Provided first, so torn down last: everything above depends on these.
 	do.ProvideNamedValue(injector, "cache", &shutdownFunc{name: "Cache connections", stop: cache.CloseAll})
