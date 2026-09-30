@@ -8,6 +8,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/views"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services"
 	loanlimitconfig "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_limit_config"
+	"github.com/Shamba-Records-Limited/microvault/pkg/middleware"
 )
 
 // Limits lists and creates per-risk-tier loan limits.
@@ -29,6 +30,7 @@ func (h *Limits) List(c *fiber.Ctx) error {
 	}
 
 	if configs, err := h.load(c, page.Page); err != nil {
+		middleware.NoteError(c, err)
 		page.Error = "Could not load risk-tier limits: " + err.Error()
 	} else {
 		page.Configs = configs
@@ -53,10 +55,12 @@ func (h *Limits) Create(c *fiber.Ctx) error {
 
 	req, err := buildLimitRequest(form)
 	if err != nil {
+		middleware.NoteError(c, err)
 		return h.redisplay(c, form, err.Error())
 	}
 
 	if _, err := h.configs.Create(c.UserContext(), req); err != nil {
+		middleware.NoteError(c, err)
 		return h.redisplay(c, form, err.Error())
 	}
 

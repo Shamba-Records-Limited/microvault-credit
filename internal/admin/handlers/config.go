@@ -8,6 +8,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/views"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services"
 	globallendinglimit "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/global_lending_limit"
+	"github.com/Shamba-Records-Limited/microvault/pkg/middleware"
 )
 
 // Config lists and creates global lending limits.
@@ -29,6 +30,7 @@ func (h *Config) List(c *fiber.Ctx) error {
 	}
 
 	if limits, err := h.load(c, page.Page); err != nil {
+		middleware.NoteError(c, err)
 		page.Error = "Could not load global lending limits: " + err.Error()
 	} else {
 		page.Limits = limits
@@ -49,10 +51,12 @@ func (h *Config) Create(c *fiber.Ctx) error {
 
 	req, err := buildConfigRequest(form)
 	if err != nil {
+		middleware.NoteError(c, err)
 		return h.redisplay(c, form, err.Error())
 	}
 
 	if _, err := h.limits.Create(c.UserContext(), req); err != nil {
+		middleware.NoteError(c, err)
 		return h.redisplay(c, form, err.Error())
 	}
 

@@ -9,6 +9,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/views"
 	"github.com/Shamba-Records-Limited/microvault/pkg/auth"
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
+	"github.com/Shamba-Records-Limited/microvault/pkg/middleware"
 )
 
 // SessionCookie is the cookie name middleware.AuthMiddleware reads.
@@ -34,8 +35,9 @@ func (h *Auth) ShowLogin(c *fiber.Ctx) error {
 }
 
 func (h *Auth) Challenge(c *fiber.Ctx) error {
-	challenge, err := h.challenges.GenerateChallenge()
+	challenge, err := h.challenges.GenerateChallenge(c.UserContext())
 	if err != nil {
+		middleware.NoteError(c, err)
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to generate challenge")
 	}
 	return c.JSON(fiber.Map{"id": challenge.ID, "transaction": challenge.Transaction})
@@ -49,19 +51,22 @@ type verifyRequest struct {
 func (h *Auth) Verify(c *fiber.Ctx) error {
 	var body verifyRequest
 	if err := c.BodyParser(&body); err != nil {
+		middleware.NoteError(c, err)
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 	}
 	if body.ChallengeID == "" || body.SignedTransaction == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "missing challenge or signature"})
 	}
 
-	if err := h.challenges.VerifySignedChallenge(body.ChallengeID, body.SignedTransaction); err != nil {
+	if err := h.challenges.VerifySignedChallenge(c.UserContext(), body.ChallengeID, body.SignedTransaction); err != nil {
+		middleware.NoteError(c, err)
 		status, message := verifyError(err)
 		return c.Status(status).JSON(fiber.Map{"error": message})
 	}
 
 	token, expiresAt, err := h.jwt.GenerateToken(h.stellar.AdminPublicKey)
 	if err != nil {
+		middleware.NoteError(c, err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to issue session"})
 	}
 	h.setSession(c, token, expiresAt)

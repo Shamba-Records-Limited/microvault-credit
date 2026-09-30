@@ -681,8 +681,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		RepaymentSchedule: req.RepaymentSched,
 	})
 	if err != nil {
-		a.logger.ErrorContext(ctx, "failed to create loan record", "user_id", req.UserID, "error", err)
-		return nil, lendingErr("request_loan").Code(pkgErrors.CodeStateWriteFailed).
+		return nil, lendingErr("request_loan").With(pkgErrors.AttrUserID, req.UserID).Code(pkgErrors.CodeStateWriteFailed).
 			Wrapf(err, "could not create the loan")
 	}
 	loanID := createResp.ID
@@ -702,8 +701,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	// Use the nil UUID for system auto-approvals (approved_by is UUID in the DB).
 	_, err = a.loanSvc.Approve(ctx, loanID, loan.ApproveLoanRequest{ApprovedBy: "00000000-0000-0000-0000-000000000000"})
 	if err != nil {
-		a.logger.ErrorContext(ctx, "failed to approve loan", "loan_id", loanID, "error", err)
-		return nil, lendingErr("request_loan").Code(pkgErrors.CodeStateWriteFailed).
+		return nil, lendingErr("request_loan").With(pkgErrors.AttrLoanID, loanID).Code(pkgErrors.CodeStateWriteFailed).
 			Wrapf(err, "could not approve the loan")
 	}
 	a.logger.InfoContext(ctx, "loan auto-approved", "loan_id", loanID)
@@ -844,12 +842,7 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 	}
 	provider, resolveErr := a.offRamps.Resolve(offrampReq)
 	if resolveErr != nil {
-		a.logger.ErrorContext(ctx, "off-ramp registry resolve failed",
-			"loan_id", loanID,
-			"payout_method", payoutMethod,
-			"error", resolveErr,
-		)
-		return nil, lendingErr("request_loan").Code(pkgErrors.CodeNotFound).
+		return nil, lendingErr("request_loan").With(pkgErrors.AttrLoanID, loanID).With("payout_method", payoutMethod).Code(pkgErrors.CodeNotFound).
 			Wrapf(resolveErr, "could not resolve an off-ramp provider")
 	}
 	offRampResult, err := provider.Initiate(ctx, offrampReq)
@@ -1311,7 +1304,6 @@ func (a *LoanServiceAdapter) recordSuccessfulInitiate(
 func (a *LoanServiceAdapter) GetUserLoans(ctx context.Context, userID string) ([]interface{}, error) {
 	resp, err := a.loanSvc.GetByUserID(ctx, userID, services.Pagination{Page: 1, PageSize: 20})
 	if err != nil {
-		a.logger.ErrorContext(ctx, "failed to fetch user loans", "user_id", userID, "error", err)
 		return nil, err
 	}
 

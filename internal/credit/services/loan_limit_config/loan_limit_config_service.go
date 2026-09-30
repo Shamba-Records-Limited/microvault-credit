@@ -53,7 +53,6 @@ func (s *service) Create(ctx context.Context, req CreateLoanLimitConfigRequest) 
 		return nil, ErrRiskTierAlreadyExists
 	}
 	if err != nil && !errors.Is(err, repository.ErrLoanLimitConfigNotFound) {
-		slog.ErrorContext(ctx, "Create: failed to check duplicate risk tier", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -74,7 +73,6 @@ func (s *service) Create(ctx context.Context, req CreateLoanLimitConfigRequest) 
 
 	// Create config in database
 	if err := s.repo.Create(ctx, config); err != nil {
-		slog.ErrorContext(ctx, "Create: failed to create loan limit config", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -109,7 +107,6 @@ func (s *service) BatchCreate(ctx context.Context, reqs []CreateLoanLimitConfigR
 	}
 
 	if err := s.repo.BatchCreate(ctx, configs); err != nil {
-		slog.ErrorContext(ctx, "BatchCreate: failed to create configs", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -128,7 +125,6 @@ func (s *service) GetByID(ctx context.Context, id string) (*LoanLimitConfigRespo
 		if errors.Is(err, repository.ErrLoanLimitConfigNotFound) {
 			return nil, ErrLoanLimitConfigNotFound
 		}
-		slog.ErrorContext(ctx, "GetByID: failed to get loan limit config", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -142,7 +138,6 @@ func (s *service) GetByRiskTier(ctx context.Context, riskTier string) (*LoanLimi
 		if errors.Is(err, repository.ErrLoanLimitConfigNotFound) {
 			return nil, ErrLoanLimitConfigNotFound
 		}
-		slog.ErrorContext(ctx, "GetByRiskTier: failed to get loan limit config", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -165,7 +160,6 @@ func (s *service) GetAll(ctx context.Context, pagination services.Pagination) (*
 
 	configs, err := s.repo.GetAll(ctx, pagination.PageSize, offset)
 	if err != nil {
-		slog.ErrorContext(ctx, "GetAll: failed to get loan limit configs", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -197,7 +191,6 @@ func (s *service) GetActive(ctx context.Context, pagination services.Pagination)
 
 	configs, err := s.repo.GetActive(ctx, pagination.PageSize, offset)
 	if err != nil {
-		slog.ErrorContext(ctx, "GetActive: failed to get active loan limit configs", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -220,7 +213,6 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanLimitConf
 		if errors.Is(err, repository.ErrLoanLimitConfigNotFound) {
 			return nil, ErrLoanLimitConfigNotFound
 		}
-		slog.ErrorContext(ctx, "Update: failed to get loan limit config", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -271,7 +263,6 @@ func (s *service) Update(ctx context.Context, id string, req UpdateLoanLimitConf
 
 	// Update in database
 	if err := s.repo.Update(ctx, config); err != nil {
-		slog.ErrorContext(ctx, "Update: failed to update loan limit config", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -284,7 +275,6 @@ func (s *service) Delete(ctx context.Context, id string) error {
 		if errors.Is(err, repository.ErrLoanLimitConfigNotFound) {
 			return ErrLoanLimitConfigNotFound
 		}
-		slog.ErrorContext(ctx, "Delete: failed to delete loan limit config", slog.Any("error", err))
 		return err
 	}
 
@@ -297,7 +287,6 @@ func (s *service) Restore(ctx context.Context, id string) error {
 		if errors.Is(err, repository.ErrLoanLimitConfigNotFound) {
 			return ErrLoanLimitConfigNotFound
 		}
-		slog.ErrorContext(ctx, "Restore: failed to restore loan limit config", slog.Any("error", err))
 		return err
 	}
 
@@ -312,7 +301,6 @@ func (s *service) Activate(ctx context.Context, id string, activatedBy string) (
 		if errors.Is(err, repository.ErrLoanLimitConfigNotFound) {
 			return nil, ErrLoanLimitConfigNotFound
 		}
-		slog.ErrorContext(ctx, "Activate: failed to get loan limit config", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -329,7 +317,6 @@ func (s *service) Activate(ctx context.Context, id string, activatedBy string) (
 
 	// Update in database
 	if err := s.repo.Update(ctx, config); err != nil {
-		slog.ErrorContext(ctx, "Activate: failed to update loan limit config", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -345,7 +332,6 @@ func (s *service) Deactivate(ctx context.Context, id string, deactivatedBy strin
 		if errors.Is(err, repository.ErrLoanLimitConfigNotFound) {
 			return nil, ErrLoanLimitConfigNotFound
 		}
-		slog.ErrorContext(ctx, "Deactivate: failed to get loan limit config", slog.Any("error", err))
 		return nil, err
 	}
 
@@ -362,7 +348,6 @@ func (s *service) Deactivate(ctx context.Context, id string, deactivatedBy strin
 
 	// Update in database
 	if err := s.repo.Update(ctx, config); err != nil {
-		slog.ErrorContext(ctx, "Deactivate: failed to update loan limit config", slog.Any("error", err))
 		return nil, err
 	}
 

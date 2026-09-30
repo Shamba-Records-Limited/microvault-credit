@@ -61,11 +61,13 @@ func (h *Screening) List(c *fiber.Ctx) error {
 
 	addrs, err := h.repo.ListAddressesByStatus(c.UserContext(), screeningQueueStatuses, page.PageSize, offset)
 	if err != nil {
+		middleware.NoteError(c, err)
 		page.Error = "Could not load the screening queue: " + err.Error()
 		return render(c, views.ScreeningQueue(page))
 	}
 	count, err := h.repo.CountAddressesByStatus(c.UserContext(), screeningQueueStatuses)
 	if err != nil {
+		middleware.NoteError(c, err)
 		page.Error = "Could not load the screening queue: " + err.Error()
 		return render(c, views.ScreeningQueue(page))
 	}
@@ -86,6 +88,7 @@ func (h *Screening) Approve(c *fiber.Ctx) error {
 	id := c.Params("id")
 	actor := middleware.GetAdminClaims(c).AdminPublicKey
 	if err := h.repo.ApproveAddress(c.UserContext(), id, actor, c.FormValue("reason")); err != nil {
+		middleware.NoteError(c, err)
 		return c.Redirect("/screening?flash=Approval+failed", fiber.StatusSeeOther)
 	}
 	return c.Redirect("/screening?flash=Address+approved", fiber.StatusSeeOther)
@@ -95,6 +98,7 @@ func (h *Screening) Reject(c *fiber.Ctx) error {
 	id := c.Params("id")
 	actor := middleware.GetAdminClaims(c).AdminPublicKey
 	if err := h.repo.RejectAddress(c.UserContext(), id, actor, c.FormValue("reason")); err != nil {
+		middleware.NoteError(c, err)
 		return c.Redirect("/screening?flash=Rejection+failed", fiber.StatusSeeOther)
 	}
 	return c.Redirect("/screening?flash=Address+rejected", fiber.StatusSeeOther)
@@ -114,6 +118,7 @@ func (h *Screening) Rescreen(c *fiber.Ctx) error {
 
 	addr, err := h.repo.GetAddressByID(c.UserContext(), id)
 	if err != nil {
+		middleware.NoteError(c, err)
 		return c.Status(fiber.StatusNotFound).SendString("address not found")
 	}
 	return render(c, views.ScreeningRow(addr))
@@ -123,11 +128,13 @@ func (h *Screening) Show(c *fiber.Ctx) error {
 	id := c.Params("id")
 	addr, err := h.repo.GetAddressByID(c.UserContext(), id)
 	if err != nil {
+		middleware.NoteError(c, err)
 		return render(c, views.ScreeningDetail(views.ScreeningDetailPage{Error: "Could not load address: " + err.Error()}))
 	}
 
 	screenings, err := h.repo.ListScreeningsByAddress(c.UserContext(), id)
 	if err != nil {
+		middleware.NoteError(c, err)
 		return render(c, views.ScreeningDetail(views.ScreeningDetailPage{
 			Address: addr,
 			Error:   "Could not load screening history: " + err.Error(),

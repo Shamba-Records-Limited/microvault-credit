@@ -35,11 +35,13 @@ func (h *Counterparties) List(c *fiber.Ctx) error {
 
 	cps, err := h.repo.List(c.UserContext(), page.KYBStatus, page.PageSize, offset)
 	if err != nil {
+		middleware.NoteError(c, err)
 		page.Error = "Could not load counterparties: " + err.Error()
 		return render(c, views.Counterparties(page))
 	}
 	count, err := h.repo.Count(c.UserContext(), page.KYBStatus)
 	if err != nil {
+		middleware.NoteError(c, err)
 		page.Error = "Could not load counterparties: " + err.Error()
 		return render(c, views.Counterparties(page))
 	}
@@ -66,6 +68,7 @@ func (h *Counterparties) Create(c *fiber.Ctx) error {
 	// first one's backfill ran. See Counterparty.BeforeCreate's doc comment.
 	id, err := uuid.NewV7()
 	if err != nil {
+		middleware.NoteError(c, err)
 		return h.redisplayCreate(c, form, "Could not generate an ID: "+err.Error())
 	}
 	cp := &coremodels.Counterparty{
@@ -77,6 +80,7 @@ func (h *Counterparties) Create(c *fiber.Ctx) error {
 		EllipticCustomerReference: "kyb-" + id.String(),
 	}
 	if err := h.repo.Create(c.UserContext(), cp); err != nil {
+		middleware.NoteError(c, err)
 		return h.redisplayCreate(c, form, err.Error())
 	}
 
@@ -101,6 +105,7 @@ func (h *Counterparties) redisplayCreate(c *fiber.Ctx, form views.CounterpartyFo
 func (h *Counterparties) Show(c *fiber.Ctx) error {
 	cp, err := h.repo.GetByID(c.UserContext(), c.Params("id"))
 	if err != nil {
+		middleware.NoteError(c, err)
 		return render(c, views.CounterpartyDetail(views.CounterpartyDetailPage{Error: "Could not load counterparty: " + err.Error()}))
 	}
 	return render(c, views.CounterpartyDetail(views.CounterpartyDetailPage{
@@ -119,6 +124,7 @@ func (h *Counterparties) ApproveKYB(c *fiber.Ctx) error {
 	id := c.Params("id")
 	actor := middleware.GetAdminClaims(c).AdminPublicKey
 	if err := h.compliance.ApproveKYB(c.UserContext(), id, actor); err != nil {
+		middleware.NoteError(c, err)
 		return h.redisplayDetail(c, id, "Approval failed: "+err.Error())
 	}
 	return c.Redirect("/counterparties/"+id+"?flash=KYB+approved", fiber.StatusSeeOther)
@@ -128,6 +134,7 @@ func (h *Counterparties) RejectKYB(c *fiber.Ctx) error {
 	id := c.Params("id")
 	actor := middleware.GetAdminClaims(c).AdminPublicKey
 	if err := h.repo.RejectKYB(c.UserContext(), id, actor); err != nil {
+		middleware.NoteError(c, err)
 		return h.redisplayDetail(c, id, "Rejection failed: "+err.Error())
 	}
 	return c.Redirect("/counterparties/"+id+"?flash=KYB+rejected", fiber.StatusSeeOther)
@@ -139,6 +146,7 @@ func (h *Counterparties) SubmitAddress(c *fiber.Ctx) error {
 	id := c.Params("id")
 	address := strings.TrimSpace(c.FormValue("address"))
 	if _, err := h.compliance.SubmitAddress(c.UserContext(), id, address); err != nil {
+		middleware.NoteError(c, err)
 		return h.redisplayDetail(c, id, "Could not submit address: "+err.Error())
 	}
 	return c.Redirect("/counterparties/"+id+"?flash=Address+submitted", fiber.StatusSeeOther)

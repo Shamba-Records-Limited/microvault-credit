@@ -26,12 +26,22 @@ func NewRedisStore(client *redis.Client, prefix string) *RedisStore {
 
 func (s *RedisStore) key(k string) string { return s.prefix + ":" + k }
 
+// fiber.Storage (v2) passes no context, so each call is a root bounded by its
+// own timeout: a stalled Redis must not hold the request that consulted the
+// limiter.
+const (
+	opTimeout    = 2 * time.Second
+	resetTimeout = 30 * time.Second
+)
+
 // Get returns nil, nil for a missing key, as fiber.Storage requires.
 func (s *RedisStore) Get(key string) ([]byte, error) {
 	if key == "" {
 		return nil, nil
 	}
-	val, err := s.client.Get(context.Background(), s.key(key)).Bytes()
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	val, err := s.client.Get(ctx, s.key(key)).Bytes()
 	if errors.Is(err, redis.Nil) {
 		return nil, nil
 	}
@@ -46,21 +56,26 @@ func (s *RedisStore) Set(key string, val []byte, exp time.Duration) error {
 	if key == "" || len(val) == 0 {
 		return nil
 	}
-	return s.client.Set(context.Background(), s.key(key), val, exp).Err()
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	return s.client.Set(ctx, s.key(key), val, exp).Err()
 }
 
 func (s *RedisStore) Delete(key string) error {
 	if key == "" {
 		return nil
 	}
-	return s.client.Del(context.Background(), s.key(key)).Err()
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
+	return s.client.Del(ctx, s.key(key)).Err()
 }
 
 // Reset deletes this store's keys only. fiber.Storage documents Reset as
 // "delete all keys", but the client is shared — flushing the database would
 // take USSD sessions and idempotency records with it.
 func (s *RedisStore) Reset() error {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), resetTimeout)
+	defer cancel()
 	iter := s.client.Scan(ctx, 0, s.prefix+":*", 100).Iterator()
 	for iter.Next(ctx) {
 		if err := s.client.Del(ctx, iter.Val()).Err(); err != nil {

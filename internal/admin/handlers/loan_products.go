@@ -9,6 +9,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/views"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services"
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
+	"github.com/Shamba-Records-Limited/microvault/pkg/middleware"
 )
 
 const defaultPageSize = 25
@@ -36,6 +37,7 @@ func (h *LoanProducts) List(c *fiber.Ctx) error {
 		PageSize: page.PageSize,
 	})
 	if err != nil {
+		middleware.NoteError(c, err)
 		page.Error = "Could not load loan products: " + err.Error()
 	} else {
 		page.Products = result.Data
@@ -49,10 +51,12 @@ func (h *LoanProducts) Create(c *fiber.Ctx) error {
 
 	req, err := buildCreateRequest(form)
 	if err != nil {
+		middleware.NoteError(c, err)
 		return h.redisplay(c, form, err.Error())
 	}
 
 	if _, err := h.products.Create(c.UserContext(), req); err != nil {
+		middleware.NoteError(c, err)
 		return h.redisplay(c, form, err.Error())
 	}
 

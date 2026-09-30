@@ -163,10 +163,6 @@ func retryOnNotFound[T any](fetch func() (T, error), isRace func(error) bool, wa
 func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(ctx context.Context, sequenceID, status string) error {
 	loan, err := a.getBySequenceIDWithRetry(ctx, sequenceID)
 	if err != nil {
-		a.logger.ErrorContext(ctx, "failed to find loan by sequence ID",
-			"sequence_id", sequenceID,
-			"error", err,
-		)
 		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
 			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not find the loan by sequence id")
 	}
@@ -192,14 +188,8 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(ctx context.Context
 	}
 
 	if err := a.repo.Update(ctx, loan); err != nil {
-		a.logger.ErrorContext(ctx, "failed to update disbursement status",
-			"loan_id", loan.ID,
-			"sequence_id", sequenceID,
-			"status", status,
-			"error", err,
-		)
 		return disbursementErr("update_status").With(pkgErrors.AttrLoanID, loan.ID).
-			Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not write the disbursement status")
+			Code(pkgErrors.CodeStateWriteFailed).With(pkgErrors.AttrSequenceID, sequenceID).With("status", status).Wrapf(err, "could not write the disbursement status")
 	}
 
 	a.logger.InfoContext(ctx, "disbursement status updated",
@@ -473,10 +463,6 @@ func (a *DisbursementStatusAdapter) RepayVaultAmount(ctx context.Context, sequen
 func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(ctx context.Context, sequenceID string) error {
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
-		a.logger.ErrorContext(ctx, "failed to find loan for completion notification",
-			"sequence_id", sequenceID,
-			"error", err,
-		)
 		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
 			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not find the loan by sequence id")
 	}
@@ -533,10 +519,6 @@ func (a *DisbursementStatusAdapter) NotifyDisbursementComplete(ctx context.Conte
 func (a *DisbursementStatusAdapter) NotifyCashPickupReady(ctx context.Context, sequenceID string) error {
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
-		a.logger.ErrorContext(ctx, "failed to find loan for cash-pickup ready notification",
-			"sequence_id", sequenceID,
-			"error", err,
-		)
 		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
 			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not find the loan by sequence id")
 	}
@@ -650,10 +632,6 @@ func (a *DisbursementStatusAdapter) NotifyRefundReceived(ctx context.Context, se
 func (a *DisbursementStatusAdapter) NotifyDisbursementFailed(ctx context.Context, sequenceID string) error {
 	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
 	if err != nil {
-		a.logger.ErrorContext(ctx, "failed to find loan for failure notification",
-			"sequence_id", sequenceID,
-			"error", err,
-		)
 		return disbursementErr("find_loan").With(pkgErrors.AttrSequenceID, sequenceID).
 			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not find the loan by sequence id")
 	}
@@ -753,7 +731,6 @@ func mapDisbursementToTxStatus(disbursementStatus string) string {
 func (a *DisbursementStatusAdapter) GetRefundPendingDisbursements(ctx context.Context) ([]webhook.RefundPendingRecord, error) {
 	loans, err := a.repo.GetRefundDeclared(ctx, "yellowcard", 100)
 	if err != nil {
-		a.logger.ErrorContext(ctx, "failed to fetch refund pending disbursements", "error", err)
 		return nil, disbursementErr("fetch_refund_pending").Code(pkgErrors.CodeLoanLoadFailed).
 			Wrapf(err, "could not fetch loans awaiting refund")
 	}

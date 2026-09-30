@@ -5,6 +5,7 @@ import (
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/admin/views"
 	creditrepo "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
+	"github.com/Shamba-Records-Limited/microvault/pkg/middleware"
 	corerepo "github.com/Shamba-Records-Limited/microvault/pkg/repository"
 )
 
@@ -28,11 +29,13 @@ func (h *Loans) List(c *fiber.Ctx) error {
 
 	loans, err := h.loans.List(c.UserContext(), page.Status, page.PageSize, offset)
 	if err != nil {
+		middleware.NoteError(c, err)
 		page.Error = "Could not load loans: " + err.Error()
 		return render(c, views.Loans(page))
 	}
 	count, err := h.loans.Count(c.UserContext(), page.Status)
 	if err != nil {
+		middleware.NoteError(c, err)
 		page.Error = "Could not load loans: " + err.Error()
 		return render(c, views.Loans(page))
 	}
@@ -63,11 +66,13 @@ func (h *Users) List(c *fiber.Ctx) error {
 
 	users, err := h.users.ListFiltered(c.UserContext(), page.Status, page.KYC, page.PageSize, offset)
 	if err != nil {
+		middleware.NoteError(c, err)
 		page.Error = "Could not load users: " + err.Error()
 		return render(c, views.Users(page))
 	}
 	count, err := h.users.CountFiltered(c.UserContext(), page.Status, page.KYC)
 	if err != nil {
+		middleware.NoteError(c, err)
 		page.Error = "Could not load users: " + err.Error()
 		return render(c, views.Users(page))
 	}
@@ -98,11 +103,13 @@ func (h *Transactions) List(c *fiber.Ctx) error {
 
 	transactions, err := h.transactions.List(c.UserContext(), page.Status, page.Type, page.PageSize, offset)
 	if err != nil {
+		middleware.NoteError(c, err)
 		page.Error = "Could not load transactions: " + err.Error()
 		return render(c, views.Transactions(page))
 	}
 	count, err := h.transactions.Count(c.UserContext(), page.Status, page.Type)
 	if err != nil {
+		middleware.NoteError(c, err)
 		page.Error = "Could not load transactions: " + err.Error()
 		return render(c, views.Transactions(page))
 	}

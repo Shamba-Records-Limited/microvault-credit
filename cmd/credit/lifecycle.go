@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/gofiber/fiber/v2"
@@ -25,10 +26,7 @@ type shutdownFunc struct {
 // Shutdown implements do.ShutdownerWithError.
 func (s *shutdownFunc) Shutdown() error {
 	if err := s.stop(); err != nil {
-		// Logged rather than returned upward: one resource failing to close
-		// must not stop the rest from being closed.
-		slog.Error("shutdown error", slog.String("name", s.name), slog.Any("error", err))
-		return err
+		return fmt.Errorf("shut down %s: %w", s.name, err)
 	}
 	slog.Info("shut down", slog.String("name", s.name))
 	return nil
