@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/samber/lo"
+
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
@@ -172,7 +174,9 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(ctx context.Context
 	// Disbursement state is derived, so a status update writes the facts it
 	// implies rather than a label. Terminal outcomes move the loan's own
 	// status; the two states that are not derivable get their markers stamped.
+	terminalTransition := false
 	if next := loanStatusForDisbursement(status); next != "" {
+		terminalTransition = loan.Status != next
 		loan.Status = next
 	}
 	now := time.Now()
@@ -190,6 +194,10 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(ctx context.Context
 	if err := a.repo.Update(ctx, loan); err != nil {
 		return disbursementErr("update_status").With(pkgErrors.AttrLoanID, loan.ID).
 			Code(pkgErrors.CodeStateWriteFailed).With(pkgErrors.AttrSequenceID, sequenceID).With("status", status).Wrapf(err, "could not write the disbursement status")
+	}
+
+	if terminalTransition {
+		recordDisbursement(ctx, lo.FromPtr(loan.RampProvider), status)
 	}
 
 	a.logger.InfoContext(ctx, "disbursement status updated",

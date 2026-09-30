@@ -171,6 +171,7 @@ func (d *MpesaSTKLoanDriver) settle(ctx context.Context, l *models.Loan) {
 		d.logger.ErrorContext(ctx, "could not mark the repayment funds received", "loan_id", l.ID, "error", err)
 		return
 	}
+	recordRepayment(ctx, railMpesaSTK, models.LoanRepaymentStatusFundsReceived)
 	d.notify(ctx, l.ID, amountKES)
 }
 
@@ -224,7 +225,9 @@ func (d *MpesaSTKLoanDriver) close(ctx context.Context, loanID, status string) {
 	row.RepaymentNextPollAt = nil
 	if err := d.repo.Update(ctx, row); err != nil {
 		d.logger.ErrorContext(ctx, "could not write the terminal repayment status", "loan_id", loanID, "error", err)
+		return
 	}
+	recordRepayment(ctx, railMpesaSTK, status)
 }
 
 func loanIDOrEmpty(l *models.Loan) string {

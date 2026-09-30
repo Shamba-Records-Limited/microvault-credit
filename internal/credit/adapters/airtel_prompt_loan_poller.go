@@ -180,6 +180,7 @@ func (d *AirtelPromptLoanDriver) settle(ctx context.Context, l *models.Loan, res
 		d.logger.ErrorContext(ctx, "could not mark the repayment funds received", "loan_id", l.ID, "error", err)
 		return
 	}
+	recordRepayment(ctx, railAirtel, models.LoanRepaymentStatusFundsReceived)
 	d.notify(ctx, l.ID, amountKES)
 }
 
@@ -231,7 +232,9 @@ func (d *AirtelPromptLoanDriver) close(ctx context.Context, loanID, status strin
 	row.RepaymentNextPollAt = nil
 	if err := d.repo.Update(ctx, row); err != nil {
 		d.logger.ErrorContext(ctx, "could not write the terminal repayment status", "loan_id", loanID, "error", err)
+		return
 	}
+	recordRepayment(ctx, railAirtel, status)
 }
 
 // NewAirtelPromptLoanRunner pairs the driver with the poller cadence.

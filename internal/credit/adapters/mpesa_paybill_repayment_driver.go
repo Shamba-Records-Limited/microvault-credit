@@ -297,6 +297,7 @@ func (d *MpesaPaybillRepaymentDriver) recompute(ctx context.Context, loanID stri
 		"received_stroops", total, "payoff_stroops", *loanRow.RepaymentPayoffStroops, "status", loanRow.RepaymentStatus)
 
 	if !wasFundsReceived && loanRow.RepaymentStatus == models.LoanRepaymentStatusFundsReceived {
+		recordRepayment(ctx, railMpesaPaybill, models.LoanRepaymentStatusFundsReceived)
 		d.notify(ctx, loanID)
 	}
 }

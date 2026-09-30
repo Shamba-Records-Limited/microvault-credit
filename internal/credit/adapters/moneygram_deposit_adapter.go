@@ -218,6 +218,7 @@ func (a *MoneyGramDepositAdapter) MarkFundsReceived(ctx context.Context, loanID 
 	}); err != nil {
 		return adapterErr("mark_funds_received", loanID).Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not record funds received")
 	}
+	recordRepayment(ctx, railMoneyGram, models.LoanRepaymentStatusFundsReceived)
 
 	a.recordCashInTransactions(ctx, loanID, tx)
 	return nil
@@ -240,6 +241,7 @@ func (a *MoneyGramDepositAdapter) MarkSettled(ctx context.Context, loanID, vault
 	if err := a.repo.Update(ctx, loanRow); err != nil {
 		return adapterErr("mark_settled", loanID).Code(pkgErrors.CodeStateWriteFailed).With("vault_tx_hash", vaultTxHash).Wrapf(err, "could not record settlement")
 	}
+	recordRepayment(ctx, railMoneyGram, models.LoanRepaymentStatusSettled)
 
 	a.recordVaultRepayTransaction(ctx, loanRow, vaultTxHash)
 	return nil
@@ -270,6 +272,7 @@ func (a *MoneyGramDepositAdapter) closeRepayment(ctx context.Context, loanID, st
 	if err := a.repo.Update(ctx, loanRow); err != nil {
 		return adapterErr("close_repayment", loanID).Code(pkgErrors.CodeStateWriteFailed).With("target_status", status).Wrapf(err, "could not write terminal repayment status")
 	}
+	recordRepayment(ctx, railMoneyGram, status)
 	return nil
 }
 

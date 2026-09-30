@@ -11,6 +11,7 @@ x-backend-environment: &backend-environment
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
   OTEL_TRACES_SAMPLER: parentbased_traceidratio
   OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
+  OTEL_METRIC_EXPORT_INTERVAL: ${OTEL_METRIC_EXPORT_INTERVAL:-60000}
 
   DB_HOST: postgres
   DB_PORT: "5432"

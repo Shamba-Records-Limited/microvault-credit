@@ -859,6 +859,8 @@ func (a *LoanServiceAdapter) RequestLoan(ctx context.Context, req *ussd.LoanRequ
 		if _, mErr := a.loanSvc.MarkAsOffRampFailed(ctx, loanID); mErr != nil {
 			a.logger.WarnContext(ctx, "failed to flip loan status to offramp_failed",
 				"loan_id", loanID, "error", mErr)
+		} else {
+			recordDisbursement(ctx, string(provider.ID()), "initiate_failed")
 		}
 
 		// USDC never left treasury — repay vault immediately.
