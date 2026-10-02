@@ -564,6 +564,8 @@ func main() {
 		Logger:        logger,
 		PublicBaseURL: cfg.Server.PublicBaseURL,
 		Shortener:     linkShortener,
+
+		VaultRepayMaxAttempts: cfg.Stellar.VaultRepayMaxAttempts,
 	})
 
 	// ---- 12b. Rate service adapter ----
@@ -933,6 +935,26 @@ func main() {
 	})
 	go rescreenSweep.Start(pollerCtx)
 	slog.InfoContext(ctx, "compliance rescreen sweep started")
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatalf("Failed to get the database handle for the vault repay reconciler: %v", err)
+	}
+	vaultRepayRunner, err := adapters.NewVaultRepayReconcileRunner(adapters.VaultRepayReconcilerDeps{
+		Repo:             repos.Loan,
+		Reconciler:       disbursementAdapter,
+		DB:               sqlDB,
+		Logger:           logger,
+		Interval:         cfg.Stellar.VaultRepayReconcileInterval,
+		SettlementWindow: cfg.Stellar.VaultRepaySettlementWindow,
+		RetryBackoff:     cfg.Stellar.VaultRepayRetryBackoff,
+		MaxAttempts:      cfg.Stellar.VaultRepayMaxAttempts,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create the vault repay reconciler: %v", err)
+	}
+	go vaultRepayRunner.Start(pollerCtx)
+	slog.InfoContext(ctx, "vault repay reconciler started")
 
 	// ---- 16. Fiber app + middleware + routes ----
 	// The proxy header is read only from a trusted hop: without the

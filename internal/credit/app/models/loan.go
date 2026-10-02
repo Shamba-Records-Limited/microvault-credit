@@ -52,6 +52,15 @@ type Loan struct {
 	RampFiatCurr      *string    `json:"ramp_fiat_currency,omitempty" gorm:"column:ramp_fiat_currency;type:varchar(10)"`
 	SettlementMethod  *string    `json:"settlement_method,omitempty" gorm:"type:varchar(20)"`
 	RampSequenceID    *string    `json:"ramp_sequence_id,omitempty" gorm:"type:varchar(200);index"`
+
+	// VaultRepayAttempts counts failed treasury-to-vault repays of an unwound
+	// disbursement; at VaultRepayMaxAttempts the reconciler takes over.
+	VaultRepayAttempts int `json:"vault_repay_attempts" gorm:"not null;default:0"`
+	// VaultRepayAmountStroops is the amount owed, fixed at the first attempt.
+	// Nil means the principal.
+	VaultRepayAmountStroops *int64     `json:"vault_repay_amount_stroops,omitempty" gorm:"type:bigint"`
+	VaultRepayAttemptedAt   *time.Time `json:"vault_repay_attempted_at,omitempty" gorm:"type:timestamptz"`
+
 	// DisbursementRate is the FX rate actually executed at disbursement, the
 	// counterpart to EntryRateBuffered at quote time.
 	//
@@ -336,6 +345,11 @@ const (
 	// completed direct where USDC went to YC and no repay is owed).
 	VaultRepayStatusSuccess = "success"
 	VaultRepayStatusFailed  = "failed"
+	// VaultRepayStatusPending is the claim held while the repay is in flight.
+	VaultRepayStatusPending = "pending"
+	// VaultRepayStatusUnknown means the repay was submitted but its outcome
+	// was never confirmed. Nothing retries it until it is verified on-chain.
+	VaultRepayStatusUnknown = "unknown"
 
 	// Loan Repayment Status — the borrower paying their loan off, stored on
 	// loans.repayment_status. The LoanRepayment prefix is deliberate: it keeps

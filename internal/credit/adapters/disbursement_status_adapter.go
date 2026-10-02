@@ -3,6 +3,7 @@ package adapters
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -13,12 +14,14 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
 	txmodels "github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
+	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
 	"github.com/Shamba-Records-Limited/microvault/pkg/urlshortener"
 	"github.com/Shamba-Records-Limited/microvault/pkg/webhook"
 
 	"github.com/samber/oops"
+	"gorm.io/gorm"
 
 	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
 )
@@ -40,7 +43,11 @@ type DisbursementStatusAdapter struct {
 	loanNotifier  contracts.LoanNotifier
 	txnSvc        transaction.Service
 	stellarSvc    stellar.Service
+	alerts        mgpoller.AlertService
 	logger        *slog.Logger
+
+	vaultRepayMaxAttempts int
+	now                   func() time.Time
 }
 
 // notifyAsync sends a borrower notification off the caller's thread.
@@ -90,6 +97,9 @@ type DisbursementAdapterDeps struct {
 	// Optional.
 	PublicBaseURL string
 	Shortener     urlshortener.Shortener
+	Alerts        mgpoller.AlertService
+	// VaultRepayMaxAttempts caps inline repay attempts; 0 means 5.
+	VaultRepayMaxAttempts int
 }
 
 func NewDisbursementStatusAdapter(deps DisbursementAdapterDeps) *DisbursementStatusAdapter {
@@ -97,14 +107,21 @@ func NewDisbursementStatusAdapter(deps DisbursementAdapterDeps) *DisbursementSta
 	if logger == nil {
 		logger = slog.Default()
 	}
+	maxAttempts := deps.VaultRepayMaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
 	return &DisbursementStatusAdapter{
-		repo:          deps.Repo,
-		loanNotifier:  deps.LoanNotifier,
-		txnSvc:        deps.TxnSvc,
-		stellarSvc:    deps.StellarSvc,
-		logger:        logger,
-		publicBaseURL: deps.PublicBaseURL,
-		shortener:     deps.Shortener,
+		repo:                  deps.Repo,
+		loanNotifier:          deps.LoanNotifier,
+		txnSvc:                deps.TxnSvc,
+		stellarSvc:            deps.StellarSvc,
+		alerts:                deps.Alerts,
+		logger:                logger,
+		publicBaseURL:         deps.PublicBaseURL,
+		shortener:             deps.Shortener,
+		vaultRepayMaxAttempts: maxAttempts,
+		now:                   time.Now,
 	}
 }
 
@@ -241,11 +258,20 @@ func (a *DisbursementStatusAdapter) UpdateDisbursementStatus(ctx context.Context
 	return nil
 }
 
-// repayVaultIfNeeded checks whether USDC is still in the treasury for this loan
-// and, if so, calls RepayToVault to return it to the pool. Idempotent: skips if
-// VaultRepayTxHash is already set.
+// repayVaultIfNeeded returns the loan's borrowed USDC from the treasury to the
+// vault, unless it already has been or the loan has used its inline attempts.
+// Idempotent: skips if VaultRepayTxHash is already set.
 func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan *models.Loan, trigger string, amountOverride *int64) error {
-	// Idempotency: already repaid.
+	return a.repayVault(ctx, loan, trigger, amountOverride, true)
+}
+
+// ReconcileVaultRepay retries a failed vault repay on the reconciler's
+// schedule, past the inline attempt cap.
+func (a *DisbursementStatusAdapter) ReconcileVaultRepay(ctx context.Context, loan *models.Loan) error {
+	return a.repayVault(ctx, loan, "reconciler", loan.VaultRepayAmountStroops, false)
+}
+
+func (a *DisbursementStatusAdapter) repayVault(ctx context.Context, loan *models.Loan, trigger string, amountOverride *int64, enforceCap bool) error {
 	if loan.VaultRepayTxHash != nil && *loan.VaultRepayTxHash != "" {
 		a.logger.InfoContext(ctx, "vault repay already completed, skipping",
 			"loan_id", loan.ID,
@@ -265,49 +291,60 @@ func (a *DisbursementStatusAdapter) repayVaultIfNeeded(ctx context.Context, loan
 			With(pkgErrors.AttrDependency, "stellar_service").Errorf("required dependency is missing")
 	}
 
+	if enforceCap && loan.VaultRepayAttempts >= a.vaultRepayMaxAttempts {
+		a.logger.InfoContext(ctx, "vault repay attempts exhausted, deferring to the reconciler",
+			"loan_id", loan.ID, "attempts", loan.VaultRepayAttempts, "trigger", trigger)
+		return disbursementErr("repay_vault").With(pkgErrors.AttrLoanID, loan.ID).
+			Wrapf(contracts.ErrVaultRepayDeferred, "inline attempts exhausted")
+	}
+
 	amount := loan.PrincipalAmount
-	if amountOverride != nil {
+	switch {
+	case amountOverride != nil:
 		amount = *amountOverride
+	case loan.VaultRepayAmountStroops != nil:
+		amount = *loan.VaultRepayAmountStroops
 	}
 	if amount <= 0 {
 		return disbursementErr("repay_vault").With(pkgErrors.AttrAmountStroops, amount).
 			Code(pkgErrors.CodeInvalidAmount).Errorf("refusing to repay a non-positive amount")
 	}
+
+	claimed, err := a.repo.ClaimVaultRepay(ctx, loan.ID, &amount, a.now())
+	if err != nil {
+		return disbursementErr("repay_vault").With(pkgErrors.AttrLoanID, loan.ID).
+			Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not claim the vault repay")
+	}
+	if !claimed {
+		a.logger.InfoContext(ctx, "vault repay held elsewhere or of unknown outcome, skipping",
+			"loan_id", loan.ID, "trigger", trigger)
+		return disbursementErr("repay_vault").With(pkgErrors.AttrLoanID, loan.ID).
+			Wrapf(contracts.ErrVaultRepayDeferred, "vault repay not claimable")
+	}
+
 	a.logger.InfoContext(ctx, "initiating vault repay",
 		"loan_id", loan.ID,
 		"amount_stroops", amount,
 		"trigger", trigger,
+		"attempt", loan.VaultRepayAttempts+1,
 		"settlement_method", loan.SettlementMethod,
 	)
 
 	repayResp, err := a.stellarSvc.RepayToVault(ctx, stellar.RepayRequest{Amount: amount})
 	if err != nil {
-		a.logger.ErrorContext(ctx, "CRITICAL: vault repay failed — USDC stuck in treasury",
-			"loan_id", loan.ID,
-			"amount_stroops", amount,
-			"trigger", trigger,
-			"error", err,
-		)
-		// Stamp vault_repay_status=failed so ops can query and retry.
-		// repay_tx_hash stays NULL — the (failed, null hash) combination
-		// is the signal for "needs manual intervention or sweep".
-		failedStatus := models.VaultRepayStatusFailed
-		loan.VaultRepayStatus = &failedStatus
-		if upErr := a.repo.Update(ctx, loan); upErr != nil {
-			a.logger.ErrorContext(ctx, "failed to save vault_repay_status=failed",
-				"loan_id", loan.ID,
-				"error", upErr,
-			)
-		}
+		a.recordVaultRepayFailure(ctx, loan, amount, trigger, err)
 		return disbursementErr("repay_vault").Code(pkgErrors.CodeVaultRepayFailed).
+			With(pkgErrors.AttrLoanID, loan.ID).With(pkgErrors.AttrAmountStroops, amount).
 			Wrapf(err, "vault repay leg failed")
 	}
 
-	// Persist repay tx hash + success status on the loan.
-	loan.VaultRepayTxHash = &repayResp.TxHash
 	successStatus := models.VaultRepayStatusSuccess
+	loan.VaultRepayTxHash = &repayResp.TxHash
 	loan.VaultRepayStatus = &successStatus
-	if err := a.repo.Update(ctx, loan); err != nil {
+	if err := a.repo.UpdateFields(ctx, loan.ID, map[string]any{
+		"vault_repay_tx_hash": repayResp.TxHash,
+		"vault_repay_status":  successStatus,
+	}); err != nil {
 		a.logger.ErrorContext(ctx, "failed to save vault repay tx hash",
 			"loan_id", loan.ID,
 			"repay_tx_hash", repayResp.TxHash,
@@ -812,5 +849,63 @@ func loanStatusForDisbursement(status string) string {
 		return models.LoanStatusCancelled
 	default:
 		return ""
+	}
+}
+
+// recordVaultRepayFailure releases the claim. A submit whose outcome was never
+// confirmed is parked as unknown rather than failed, since retrying it could
+// repay the vault twice.
+func (a *DisbursementStatusAdapter) recordVaultRepayFailure(ctx context.Context, loan *models.Loan, amount int64, trigger string, cause error) {
+	if errors.Is(cause, stellar.ErrTransactionTimeout) || errors.Is(cause, stellar.ErrUnknownTransactionStatus) {
+		unknown := models.VaultRepayStatusUnknown
+		loan.VaultRepayStatus = &unknown
+		if err := a.repo.UpdateFields(ctx, loan.ID, map[string]any{"vault_repay_status": unknown}); err != nil {
+			a.logger.ErrorContext(ctx, "failed to save vault_repay_status=unknown", "loan_id", loan.ID, "error", err)
+		}
+		a.alertOps(ctx, "Vault repay outcome unknown",
+			fmt.Sprintf("Loan %s: repay of %d stroops (%s) was submitted but never confirmed: %v. "+
+				"Verify on-chain, then set vault_repay_tx_hash or reset vault_repay_status to failed.",
+				loan.ID, amount, trigger, cause))
+		return
+	}
+
+	attempts := loan.VaultRepayAttempts + 1
+	failed := models.VaultRepayStatusFailed
+	loan.VaultRepayStatus = &failed
+	loan.VaultRepayAttempts = attempts
+	a.logger.ErrorContext(ctx, "CRITICAL: vault repay failed — USDC stuck in treasury",
+		"loan_id", loan.ID,
+		"amount_stroops", amount,
+		"trigger", trigger,
+		"attempts", attempts,
+		"max_attempts", a.vaultRepayMaxAttempts,
+		"error", cause,
+	)
+	if err := a.repo.UpdateFields(ctx, loan.ID, map[string]any{
+		"vault_repay_status":   failed,
+		"vault_repay_attempts": gorm.Expr("vault_repay_attempts + 1"),
+	}); err != nil {
+		a.logger.ErrorContext(ctx, "failed to save vault_repay_status=failed", "loan_id", loan.ID, "error", err)
+	}
+	// Attempts only increment, so equality alerts exactly once.
+	if attempts == a.vaultRepayMaxAttempts {
+		a.alertOps(ctx, "Vault repay attempts exhausted",
+			fmt.Sprintf("Loan %s: repay of %d stroops has failed %d times; the reconciler keeps retrying on its backoff. Last error: %v",
+				loan.ID, amount, attempts, cause))
+	}
+}
+
+func (a *DisbursementStatusAdapter) alertOps(ctx context.Context, subject, message string) {
+	sendOpsAlert(ctx, a.alerts, a.logger, subject, message)
+}
+
+// sendOpsAlert degrades to a log line when no AlertService is configured.
+func sendOpsAlert(ctx context.Context, alerts mgpoller.AlertService, logger *slog.Logger, subject, message string) {
+	if alerts == nil {
+		logger.WarnContext(ctx, "ops alert", "subject", subject, "message", message)
+		return
+	}
+	if err := alerts.AlertOps(subject, message); err != nil {
+		logger.WarnContext(ctx, "failed to send ops alert", "subject", subject, "error", err)
 	}
 }
