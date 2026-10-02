@@ -1,0 +1,42 @@
+{
+  "name": "spike_silent_ghost",
+  "stream_type": "logs",
+  "stream_name": "default",
+  "is_real_time": false,
+  "query_condition": {
+    "type": "sql",
+    "conditions": null,
+    "sql": "SELECT COUNT(*) AS cnt FROM \"default\" WHERE service = 'ghost' HAVING COUNT(*) = 0",
+    "promql": null,
+    "promql_condition": null,
+    "aggregation": null,
+    "vrl_function": null,
+    "search_event_type": null,
+    "multi_time_range": null
+  },
+  "trigger_condition": {
+    "period": 10,
+    "operator": ">=",
+    "threshold": 1,
+    "frequency": 1,
+    "cron": "",
+    "frequency_type": "minutes",
+    "silence": 0,
+    "tolerance_in_secs": null,
+    "align_time": true
+  },
+  "destinations": [
+    "spike_echo"
+  ],
+  "context_attributes": {
+    "tier": "silent_ghost"
+  },
+  "row_template": "silent {cnt}",
+  "row_template_type": "String",
+  "description": "absence probe",
+  "enabled": true,
+  "tz_offset": 0,
+  "creates_incident": false,
+  "workflows": [],
+  "pending_period_sec": 0
+}

@@ -1,0 +1,43 @@
+{
+  "name": "spike_digest_day",
+  "stream_type": "logs",
+  "stream_name": "default",
+  "is_real_time": false,
+  "query_condition": {
+    "type": "sql",
+    "conditions": null,
+    "sql": "SELECT alert_subject, COUNT(*) AS cnt FROM \"default\" WHERE msg = 'ops alert' AND level = 'ERROR' GROUP BY alert_subject",
+    "promql": null,
+    "promql_condition": null,
+    "aggregation": null,
+    "vrl_function": null,
+    "search_event_type": null,
+    "multi_time_range": null
+  },
+  "trigger_condition": {
+    "period": 60,
+    "operator": ">=",
+    "threshold": 1,
+    "frequency": 3600,
+    "cron": "0 0 7-22 * * *",
+    "frequency_type": "cron",
+    "silence": 0,
+    "timezone": "Africa/Nairobi",
+    "tolerance_in_secs": null,
+    "align_time": true
+  },
+  "destinations": [
+    "spike_echo"
+  ],
+  "context_attributes": {
+    "tier": "digest"
+  },
+  "row_template": "{alert_subject} x{cnt}",
+  "row_template_type": "String",
+  "description": "hourly digest 07-22 EAT",
+  "enabled": true,
+  "tz_offset": 0,
+  "creates_incident": false,
+  "workflows": [],
+  "pending_period_sec": 0
+}

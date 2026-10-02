@@ -1,0 +1,47 @@
+{
+  "name": "spike_disbursement_failures",
+  "stream_type": "metrics",
+  "stream_name": "microvault_loan_disbursements",
+  "is_real_time": false,
+  "query_condition": {
+    "type": "promql",
+    "conditions": null,
+    "sql": null,
+    "promql": "sum(microvault_loan_disbursements{outcome=\"failed\"})",
+    "promql_condition": {
+      "column": "value",
+      "operator": ">=",
+      "value": 1,
+      "ignore_case": false
+    },
+    "aggregation": null,
+    "vrl_function": null,
+    "search_event_type": null,
+    "multi_time_range": null
+  },
+  "trigger_condition": {
+    "period": 15,
+    "operator": ">=",
+    "threshold": 1,
+    "frequency": 1,
+    "cron": "",
+    "frequency_type": "minutes",
+    "silence": 0,
+    "tolerance_in_secs": null,
+    "align_time": true
+  },
+  "destinations": [
+    "spike_echo"
+  ],
+  "context_attributes": {
+    "tier": "promqlprobe"
+  },
+  "row_template": "failed disbursements: {value}",
+  "row_template_type": "String",
+  "description": "promql probe",
+  "enabled": true,
+  "tz_offset": 0,
+  "creates_incident": false,
+  "workflows": [],
+  "pending_period_sec": 0
+}

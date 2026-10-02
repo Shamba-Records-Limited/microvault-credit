@@ -1,0 +1,13 @@
+{
+  "name": "spike_echo",
+  "url": "https://example.invalid/hook",
+  "method": "post",
+  "skip_tls_verify": false,
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "template": "spike_probe",
+  "emails": [],
+  "type": "http",
+  "metadata": {}
+}

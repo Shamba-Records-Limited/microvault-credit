@@ -1,0 +1,73 @@
+{
+  "name": "spike_rt",
+  "stream_type": "logs",
+  "stream_name": "default",
+  "is_real_time": true,
+  "query_condition": {
+    "type": "custom",
+    "conditions": {
+      "and": [
+        {
+          "column": "msg",
+          "operator": "=",
+          "value": "ops alert",
+          "ignore_case": false
+        },
+        {
+          "column": "level",
+          "operator": "=",
+          "value": "ERROR",
+          "ignore_case": false
+        },
+        {
+          "or": [
+            {
+              "column": "alert_subject",
+              "operator": "=",
+              "value": "Vault repay claim stale",
+              "ignore_case": false
+            },
+            {
+              "column": "alert_subject",
+              "operator": "=",
+              "value": "Refund Failed",
+              "ignore_case": false
+            }
+          ]
+        }
+      ]
+    },
+    "sql": null,
+    "promql": null,
+    "promql_condition": null,
+    "aggregation": null,
+    "vrl_function": null,
+    "search_event_type": null,
+    "multi_time_range": null
+  },
+  "trigger_condition": {
+    "period": 1,
+    "operator": ">=",
+    "threshold": 1,
+    "frequency": 1,
+    "cron": "",
+    "frequency_type": "minutes",
+    "silence": 30,
+    "tolerance_in_secs": null,
+    "align_time": true
+  },
+  "destinations": [
+    "spike_echo"
+  ],
+  "context_attributes": {
+    "tier": "page"
+  },
+  "row_template": "{alert_subject}: {alert_message}",
+  "row_template_type": "String",
+  "description": "real-time probe",
+  "enabled": false,
+  "tz_offset": 0,
+  "creates_incident": false,
+  "workflows": [],
+  "pending_period_sec": 0
+}

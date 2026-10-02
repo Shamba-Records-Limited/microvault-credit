@@ -1,0 +1,9 @@
+{
+  "name": "spike_probe",
+  "body": "{\"text\": \"{alert_name} [{tier}] {alert_count}\\n{rows}\", \"tier\": \"{tier}\"}",
+  "isDefault": true,
+  "isPrebuilt": false,
+  "type": "http",
+  "title": "",
+  "kind": "custom"
+}
