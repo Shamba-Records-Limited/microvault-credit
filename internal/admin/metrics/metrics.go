@@ -130,9 +130,29 @@ func (s *Service) alerts(ctx context.Context) ([]Alert, error) {
 		},
 		{
 			label: "Vault repayment failed",
-			note:  "USDC not returned to the vault",
+			note:  "USDC held in treasury; the reconciler is retrying",
 			apply: func(q *gorm.DB) *gorm.DB {
-				return q.Model(&models.Loan{}).Where("vault_repay_status = ?", models.VaultRepayStatusFailed)
+				return q.Model(&models.Loan{}).
+					Where("vault_repay_status = ? AND vault_repay_attempted_at IS NOT NULL", models.VaultRepayStatusFailed)
+			},
+		},
+		{
+			label: "Vault repay unconfirmed",
+			note:  "Submitted; the reconciler settles it from the ledger once it expires",
+			apply: func(q *gorm.DB) *gorm.DB {
+				return q.Model(&models.Loan{}).
+					Where("vault_repay_status IN ? AND vault_repay_pending_tx_hash IS NOT NULL",
+						[]string{models.VaultRepayStatusPending, models.VaultRepayStatusUnknown})
+			},
+		},
+		{
+			label: "Vault repay needs an operator",
+			note:  "Outcome unknown with no recorded transaction, or failed before retries were tracked",
+			apply: func(q *gorm.DB) *gorm.DB {
+				return q.Model(&models.Loan{}).Where(
+					"(vault_repay_status = ? AND vault_repay_pending_tx_hash IS NULL) OR "+
+						"(vault_repay_status = ? AND vault_repay_attempted_at IS NULL)",
+					models.VaultRepayStatusUnknown, models.VaultRepayStatusFailed)
 			},
 		},
 		{
