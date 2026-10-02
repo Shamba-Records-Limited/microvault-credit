@@ -255,6 +255,9 @@ services:
   openobserve:
     image: openobserve/openobserve:v1.0.4
     restart: unless-stopped
+    # Loopback only: reached through an SSH tunnel, never exposed publicly.
+    ports:
+      - "127.0.0.1:5080:5080"
     environment:
       ZO_ROOT_USER_EMAIL: ${ZO_ROOT_USER_EMAIL:?}
       ZO_ROOT_USER_PASSWORD: ${ZO_ROOT_USER_PASSWORD:?}
