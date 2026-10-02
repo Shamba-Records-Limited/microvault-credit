@@ -16,7 +16,9 @@ import (
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan"
 	loanproduct "github.com/Shamba-Records-Limited/microvault-credit/internal/credit/services/loan_product"
+	"github.com/Shamba-Records-Limited/microvault/pkg/alerts"
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
+	"github.com/Shamba-Records-Limited/microvault/pkg/logging"
 	"github.com/Shamba-Records-Limited/microvault/pkg/mobile/ussd"
 	"github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/cashin"
@@ -58,6 +60,7 @@ type LoanServiceAdapter struct {
 	loanNotifier   contracts.LoanNotifier
 	txnSvc         transaction.Service
 	logger         *slog.Logger
+	alerts         alerts.Service
 	productConfig  *ussd.LoanProductConfig
 	fxBuffer       offramp.RateBuffer
 	dedupe         *dedupeGate
@@ -384,10 +387,9 @@ func (a *LoanServiceAdapter) runRepaymentInitiation(ctx context.Context, loanID,
 		// The deposit exists at MoneyGram but we have no record of it, so the
 		// poller will never drive it and a borrower who pays is unreconciled.
 		// Louder than the other failures for that reason.
-		a.logger.ErrorContext(ctx, "CRITICAL: deposit opened but the quote lock was not recorded",
-			pkgErrors.AttrLoanID, loanID,
-			pkgErrors.AttrMoneyGramTxID, resp.ID,
-			"error", err)
+		alerts.Raise(logging.WithLoan(ctx, loanID, ""), a.alerts, a.logger, "Repayment deposit not recorded",
+			fmt.Sprintf("MoneyGram deposit %s is open but its quote lock was not recorded, so the poller will never "+
+				"drive it and a borrower who pays is unreconciled: %v", resp.ID, err))
 		a.sendRepaymentFailed(ctx, loanID, phoneNumber)
 		return
 	}
@@ -463,6 +465,7 @@ type LoanAdapterDeps struct {
 	Logger       *slog.Logger
 
 	// Optional.
+	Alerts          alerts.Service
 	FXOrchestrator  *moneygram.FXOrchestrator
 	PublicBaseURL   string
 	Shortener       urlshortener.Shortener
@@ -555,6 +558,7 @@ func NewLoanServiceAdapter(ctx context.Context, deps LoanAdapterDeps) (*LoanServ
 		loanNotifier:  loanNotifier,
 		txnSvc:        txnSvc,
 		logger:        logger,
+		alerts:        deps.Alerts,
 		productConfig: cfg,
 		fxBuffer:      offramp.NewRateBuffer(fxCfg.BufferPct, DefaultFXBufferPct),
 		dedupe:        newDedupeGate(60 * time.Second),
@@ -1088,12 +1092,9 @@ func (a *LoanServiceAdapter) repayVaultAfterInitiate(
 ) {
 	repayResp, repayErr := a.stellarSvc.RepayToVault(ctx, stellar.RepayRequest{Amount: amountStroops})
 	if repayErr != nil {
-		a.logger.ErrorContext(ctx, "CRITICAL: vault repay failed",
-			"loan_id", loanID,
-			"trigger", trigger,
-			"amount_stroops", amountStroops,
-			"error", repayErr,
-		)
+		alerts.Raise(logging.WithLoan(ctx, loanID, ""), a.alerts, a.logger, "Vault repay failed after off-ramp initiate",
+			fmt.Sprintf("Repay of %d stroops (%s) failed: %v. vault_repay_status=failed with no attempt recorded, "+
+				"so the vault repay reconciler will not pick it up; repay by hand.", amountStroops, trigger, repayErr))
 		failedStatus := "failed"
 		_, _ = a.loanSvc.Update(ctx, loanID, loan.UpdateLoanRequest{VaultRepayStatus: &failedStatus})
 		return

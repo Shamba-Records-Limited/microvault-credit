@@ -16,6 +16,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
 
+	"github.com/samber/lo"
 	"github.com/samber/oops"
 
 	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
@@ -484,6 +485,7 @@ func (a *MoneyGramPollerAdapter) settleTransaction(ctx context.Context, txnID, k
 func projectLoanRecord(l *models.Loan) mgpoller.LoanRecord {
 	rec := mgpoller.LoanRecord{
 		LoanID:           l.ID,
+		LoanReference:    lo.FromPtr(l.LoanReference),
 		UserID:           l.UserID,
 		PrincipalStroops: l.PrincipalAmount,
 	}

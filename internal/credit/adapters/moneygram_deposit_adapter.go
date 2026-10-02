@@ -503,6 +503,7 @@ func (a *MoneyGramDepositAdapter) settleTransaction(ctx context.Context, txnID, 
 func projectRepaymentRecord(l *models.Loan) mgpoller.RepaymentRecord {
 	rec := mgpoller.RepaymentRecord{
 		LoanID:          l.ID,
+		LoanReference:   lo.FromPtr(l.LoanReference),
 		UserID:          l.UserID,
 		RepaymentStatus: l.RepaymentStatus,
 		ReminderSent:    l.RepaymentReminderSentAt != nil,

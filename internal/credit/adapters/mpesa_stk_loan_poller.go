@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/samber/lo"
 	"github.com/samber/oops"
 
 	"github.com/Shamba-Records-Limited/microvault/pkg/config"
@@ -250,8 +251,9 @@ func NewMpesaSTKLoanRunner(deps MpesaSTKLoanDriverDeps) (*mgpoller.Runner[*model
 		Fetcher: mgpoller.FetchFunc[*models.Loan](func(ctx context.Context, limit int) ([]*models.Loan, error) {
 			return deps.Repo.GetDueSTKRepayments(ctx, limit)
 		}),
-		Driver: driver,
-		Logger: deps.Logger,
-		LoanID: func(l *models.Loan) string { return l.ID },
+		Driver:        driver,
+		Logger:        deps.Logger,
+		LoanID:        func(l *models.Loan) string { return l.ID },
+		LoanReference: func(l *models.Loan) string { return lo.FromPtr(l.LoanReference) },
 	}), nil
 }

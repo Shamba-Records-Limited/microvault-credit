@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Shamba-Records-Limited/microvault/pkg/alerts"
 	"github.com/Shamba-Records-Limited/microvault/pkg/telemetry"
 
 	"github.com/gofiber/fiber/v2"
@@ -81,6 +82,10 @@ import (
 // @BasePath /
 func main() {
 	logger := logging.Setup()
+
+	// Ops alerts are structured log lines; OpenObserve routes them to Slack,
+	// Telegram and PagerDuty (see the openobserve alerting plan).
+	opsAlerts := alerts.LogAlerter{Logger: logger}
 
 	shutdownTracing, err := telemetry.Setup(context.Background())
 	if err != nil {
@@ -366,6 +371,7 @@ func main() {
 			Treasury:           treasuryTransfer,
 			CryptoCurrencyCode: fonbnkCryptoCode,
 			TreasuryAddress:    treasuryAddr,
+			Alerts:             opsAlerts,
 			Logger:             logger,
 		})
 		if err != nil {
@@ -460,7 +466,7 @@ func main() {
 			HighThreshold:      cfg.Stellar.MultiSigHighThreshold,
 		},
 		logger,
-		nil, // AlertService — chain-status failures log-only for now
+		opsAlerts,
 	)
 	if err != nil {
 		log.Fatalf("Failed to create user service adapter: %v", err)
@@ -519,6 +525,7 @@ func main() {
 	ctx := context.Background()
 	cashInRegistry := cashin.NewRegistry()
 	loanAdapter, err := adapters.NewLoanServiceAdapter(ctx, adapters.LoanAdapterDeps{
+		Alerts:       opsAlerts,
 		LoanSvc:      loanSvc,
 		ProductSvc:   loanProductSvc,
 		StellarSvc:   stellarSvc,
@@ -567,6 +574,7 @@ func main() {
 		Shortener:     linkShortener,
 
 		TxResolver:            stellarrpc.NewVerifier(rpcClient),
+		Alerts:                opsAlerts,
 		VaultRepayMaxAttempts: cfg.Stellar.VaultRepayMaxAttempts,
 	})
 
@@ -630,7 +638,7 @@ func main() {
 	ussdCtrl := controllers.NewUSSDController(ussdService)
 
 	// ---- 14. Webhook service + controller ----
-	webhookSvc := webhook.NewService(disbursementAdapter, nil, disbursementAdapter, ycAdapter)
+	webhookSvc := webhook.NewService(disbursementAdapter, opsAlerts, disbursementAdapter, ycAdapter)
 	webhookCtrl := controllers.NewWebhookController(webhookSvc, cfg.Payments.YellowCard.PublicKey, cfg.Payments.YellowCard.SecretKey)
 
 	// ---- 15. Pollers ----
@@ -640,7 +648,7 @@ func main() {
 		ycOffRamp,
 		disbursementAdapter,
 		disbursementAdapter,
-		nil, // AlertService — ops alerts via logging for now
+		opsAlerts,
 		disbursementAdapter,
 		webhook.DefaultRefundPollerConfig(),
 	)
@@ -660,7 +668,7 @@ func main() {
 		Disbursement: disbursementAdapter,               // reused from the YC flow
 		Treasury:     mgFundsTransfer,                   // funds-wallet sender for USDC to MG anchor
 		Verifier:     stellarrpc.NewVerifier(rpcClient), // confirms MG's refunds landed on-ledger
-		Alerts:       nil,                               // log-only for now
+		Alerts:       opsAlerts,
 		Config:       mgPollerConfig(cfg),
 		Logger:       logger,
 	})
@@ -696,7 +704,7 @@ func main() {
 		Recorder: depositAdapter,
 		Vault:    depositAdapter,
 		Notifier: repaymentNotifier,
-		Alerts:   nil, // log-only for now, same as the withdrawal side
+		Alerts:   opsAlerts,
 		Config:   mgPollerConfig(cfg),
 		Logger:   logger,
 	})
@@ -946,6 +954,7 @@ func main() {
 		Repo:             repos.Loan,
 		Reconciler:       disbursementAdapter,
 		DB:               sqlDB,
+		Alerts:           opsAlerts,
 		Logger:           logger,
 		Interval:         cfg.Stellar.VaultRepayReconcileInterval,
 		SettlementWindow: cfg.Stellar.VaultRepaySettlementWindow,
@@ -962,6 +971,7 @@ func main() {
 		Ensurer:      userAdapter,
 		Repo:         coreRepos.Account,
 		DB:           sqlDB,
+		Alerts:       opsAlerts,
 		Logger:       logger,
 		Interval:     cfg.Stellar.AccountHealInterval,
 		RetryAfter:   cfg.Stellar.AccountHealRetryAfter,

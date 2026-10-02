@@ -145,7 +145,7 @@ func (s *vaultRepayStellar) RepayToVault(ctx context.Context, req stellar.RepayR
 
 type recordingAlerts struct{ subjects []string }
 
-func (a *recordingAlerts) AlertOps(subject, _ string) error {
+func (a *recordingAlerts) AlertOps(_ context.Context, subject, _ string) error {
 	a.subjects = append(a.subjects, subject)
 	return nil
 }

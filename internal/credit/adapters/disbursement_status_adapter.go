@@ -11,7 +11,9 @@ import (
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
+	"github.com/Shamba-Records-Limited/microvault/pkg/alerts"
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
+	"github.com/Shamba-Records-Limited/microvault/pkg/logging"
 	txmodels "github.com/Shamba-Records-Limited/microvault/pkg/models"
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
@@ -284,6 +286,7 @@ func (a *DisbursementStatusAdapter) ReconcileVaultRepay(ctx context.Context, loa
 }
 
 func (a *DisbursementStatusAdapter) repayVault(ctx context.Context, loan *models.Loan, trigger string, amountOverride *int64, enforceCap bool) error {
+	ctx = withLoan(ctx, loan)
 	if loan.VaultRepayTxHash != nil && *loan.VaultRepayTxHash != "" {
 		a.logger.InfoContext(ctx, "vault repay already completed, skipping",
 			"loan_id", loan.ID,
@@ -880,6 +883,7 @@ func (a *DisbursementStatusAdapter) GetRefundPendingDisbursements(ctx context.Co
 			SequenceID:       *l.RampSequenceID,
 			PaymentID:        *l.RampRequestID,
 			LoanID:           l.ID,
+			LoanReference:    lo.FromPtr(l.LoanReference),
 			UserID:           l.UserID,
 			RecipientName:    name,
 			AmountUSD:        amountUSD,
@@ -945,7 +949,7 @@ func (a *DisbursementStatusAdapter) recordVaultRepayFailure(ctx context.Context,
 		return
 	}
 
-	a.logger.ErrorContext(ctx, "CRITICAL: vault repay failed — USDC stuck in treasury",
+	a.logger.ErrorContext(ctx, "vault repay failed — USDC stuck in treasury",
 		"loan_id", loan.ID,
 		"amount_stroops", amount,
 		"trigger", trigger,
@@ -980,6 +984,7 @@ func (a *DisbursementStatusAdapter) recordVaultRepayFailed(ctx context.Context, 
 // ResolveVaultRepay settles a repay whose submission was never confirmed by
 // looking its recorded transaction up on the ledger.
 func (a *DisbursementStatusAdapter) ResolveVaultRepay(ctx context.Context, loan *models.Loan) error {
+	ctx = withLoan(ctx, loan)
 	if a.txResolver == nil {
 		return disbursementErr("resolve_vault_repay").Code(pkgErrors.CodeMissingDependency).
 			With(pkgErrors.AttrDependency, "tx_resolver").Errorf("required dependency is missing")
@@ -1040,16 +1045,21 @@ func (a *DisbursementStatusAdapter) ResolveVaultRepay(ctx context.Context, loan 
 }
 
 func (a *DisbursementStatusAdapter) alertOps(ctx context.Context, subject, message string) {
-	sendOpsAlert(ctx, a.alerts, a.logger, subject, message)
+	alerts.Raise(ctx, a.alerts, a.logger, subject, message)
 }
 
-// sendOpsAlert degrades to a log line when no AlertService is configured.
-func sendOpsAlert(ctx context.Context, alerts mgpoller.AlertService, logger *slog.Logger, subject, message string) {
-	if alerts == nil {
-		logger.WarnContext(ctx, "ops alert", "subject", subject, "message", message)
-		return
+// withLoan attaches the loan's identity to ctx so log lines and alerts raised
+// under it carry loan_id and loan_reference, whoever the caller was.
+func withLoan(ctx context.Context, loan *models.Loan) context.Context {
+	return logging.WithLoan(ctx, loan.ID, lo.FromPtr(loan.LoanReference))
+}
+
+// LoanRefs implements contracts.DisbursementUpdater.
+func (a *DisbursementStatusAdapter) LoanRefs(ctx context.Context, sequenceID string) (string, string, error) {
+	loan, err := a.repo.GetBySequenceID(ctx, sequenceID)
+	if err != nil {
+		return "", "", disbursementErr("loan_refs").With(pkgErrors.AttrSequenceID, sequenceID).
+			Code(pkgErrors.CodeLoanLoadFailed).Wrapf(err, "could not find the loan by sequence id")
 	}
-	if err := alerts.AlertOps(subject, message); err != nil {
-		logger.WarnContext(ctx, "failed to send ops alert", "subject", subject, "error", err)
-	}
+	return loan.ID, lo.FromPtr(loan.LoanReference), nil
 }

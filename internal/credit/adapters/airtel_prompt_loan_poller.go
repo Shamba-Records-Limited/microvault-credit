@@ -254,8 +254,9 @@ func NewAirtelPromptLoanRunner(deps AirtelPromptLoanDriverDeps) (*mgpoller.Runne
 		Fetcher: mgpoller.FetchFunc[*models.Loan](func(ctx context.Context, limit int) ([]*models.Loan, error) {
 			return deps.Repo.GetDueAirtelRepayments(ctx, limit)
 		}),
-		Driver: driver,
-		Logger: deps.Logger,
-		LoanID: func(l *models.Loan) string { return l.ID },
+		Driver:        driver,
+		Logger:        deps.Logger,
+		LoanID:        func(l *models.Loan) string { return l.ID },
+		LoanReference: func(l *models.Loan) string { return lo.FromPtr(l.LoanReference) },
 	}), nil
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/samber/lo"
 	"github.com/samber/oops"
 
+	"github.com/Shamba-Records-Limited/microvault/pkg/alerts"
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
 	pkgErrors "github.com/Shamba-Records-Limited/microvault/pkg/errors"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
@@ -81,10 +82,11 @@ func NewVaultRepayReconcileRunner(deps VaultRepayReconcilerDeps) (*mgpoller.Runn
 				MaxAttempts:      deps.MaxAttempts,
 			}, limit)
 		}),
-		Driver: driver,
-		DB:     deps.DB,
-		Logger: logger,
-		LoanID: func(l *models.Loan) string { return l.ID },
+		Driver:        driver,
+		DB:            deps.DB,
+		Logger:        logger,
+		LoanID:        func(l *models.Loan) string { return l.ID },
+		LoanReference: func(l *models.Loan) string { return lo.FromPtr(l.LoanReference) },
 	}), nil
 }
 
@@ -128,5 +130,5 @@ func (d *VaultRepayReconcileDriver) parkStaleClaim(ctx context.Context, l *model
 	msg := fmt.Sprintf("Loan %s: vault repay claim has been pending since %v with no result recorded. "+
 		"Verify on-chain, then set vault_repay_tx_hash or reset vault_repay_status to failed.",
 		l.ID, lo.FromPtr(l.VaultRepayAttemptedAt).Format(time.RFC3339))
-	sendOpsAlert(ctx, d.alerts, d.logger, "Vault repay claim stale", msg)
+	alerts.Raise(ctx, d.alerts, d.logger, "Vault repay claim stale", msg)
 }
