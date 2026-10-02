@@ -11,8 +11,14 @@ import (
 
 	"gorm.io/gorm"
 
+	coremodels "github.com/Shamba-Records-Limited/microvault/pkg/models"
+
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 )
+
+// accountPendingStale matches the reconciler's ACCOUNT_HEAL_PENDING_AFTER
+// default: a pending account younger than this is still being created.
+const accountPendingStale = 15 * time.Minute
 
 // AssetTotal is a summed amount in one asset's minor units.
 type AssetTotal struct {
@@ -153,6 +159,23 @@ func (s *Service) alerts(ctx context.Context) ([]Alert, error) {
 					"(vault_repay_status = ? AND vault_repay_pending_tx_hash IS NULL) OR "+
 						"(vault_repay_status = ? AND vault_repay_attempted_at IS NULL)",
 					models.VaultRepayStatusUnknown, models.VaultRepayStatusFailed)
+			},
+		},
+		{
+			label: "On-chain account missing",
+			note:  "Creation failed or stalled; the reconciler is retrying",
+			apply: func(q *gorm.DB) *gorm.DB {
+				return q.Model(&coremodels.Account{}).Where("deleted_at IS NULL").Where(
+					"chain_status = ? OR (chain_status = ? AND created_at <= ?)",
+					coremodels.ChainStatusFailed, coremodels.ChainStatusPending, time.Now().Add(-accountPendingStale))
+			},
+		},
+		{
+			label: "Derivation conflict",
+			note:  "Address belongs to another account; re-issue at a fresh index",
+			apply: func(q *gorm.DB) *gorm.DB {
+				return q.Model(&coremodels.Account{}).
+					Where("deleted_at IS NULL AND chain_status = ?", coremodels.ChainStatusConflict)
 			},
 		},
 		{

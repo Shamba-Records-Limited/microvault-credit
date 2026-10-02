@@ -52,6 +52,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/pin"
 	corerepository "github.com/Shamba-Records-Limited/microvault/pkg/repository"
+	"github.com/Shamba-Records-Limited/microvault/pkg/services/accountheal"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/airtelpoller"
 	compliancesvc "github.com/Shamba-Records-Limited/microvault/pkg/services/compliance"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
@@ -956,6 +957,23 @@ func main() {
 	}
 	go vaultRepayRunner.Start(pollerCtx)
 	slog.InfoContext(ctx, "vault repay reconciler started")
+
+	accountHealRunner, err := accountheal.NewRunner(accountheal.Deps{
+		Ensurer:      userAdapter,
+		Repo:         coreRepos.Account,
+		DB:           sqlDB,
+		Logger:       logger,
+		Interval:     cfg.Stellar.AccountHealInterval,
+		RetryAfter:   cfg.Stellar.AccountHealRetryAfter,
+		RetryBackoff: cfg.Stellar.AccountHealRetryBackoff,
+		PendingAfter: cfg.Stellar.AccountHealPendingAfter,
+		MaxAttempts:  cfg.Stellar.AccountHealMaxAttempts,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create the account chain reconciler: %v", err)
+	}
+	go accountHealRunner.Start(pollerCtx)
+	slog.InfoContext(ctx, "account chain reconciler started")
 
 	// ---- 16. Fiber app + middleware + routes ----
 	// The proxy header is read only from a trusted hop: without the
