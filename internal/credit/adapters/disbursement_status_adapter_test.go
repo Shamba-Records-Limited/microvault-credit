@@ -3,6 +3,7 @@ package adapters
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
+	stellarrpc "github.com/Shamba-Records-Limited/microvault/pkg/stellar/rpc"
+	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
 
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/models"
 	"github.com/Shamba-Records-Limited/microvault-credit/internal/credit/app/repository"
@@ -81,11 +84,18 @@ func TestRetryOnNotFound(t *testing.T) {
 	})
 }
 
+type settleCall struct {
+	guard  repository.VaultRepayGuard
+	fields map[string]any
+}
+
 type vaultRepayRepo struct {
 	repository.LoanRepository
 	claimable    bool
 	claimErr     error
 	claimAmounts []int64
+	settleFail   map[int]bool // call index -> report not settled
+	settles      []settleCall
 	fields       []map[string]any
 }
 
@@ -94,19 +104,39 @@ func (r *vaultRepayRepo) ClaimVaultRepay(_ context.Context, _ string, amount *in
 	return r.claimable, r.claimErr
 }
 
+func (r *vaultRepayRepo) SettleVaultRepay(_ context.Context, _ string, guard repository.VaultRepayGuard, fields map[string]any) (bool, error) {
+	r.settles = append(r.settles, settleCall{guard: guard, fields: fields})
+	return !r.settleFail[len(r.settles)-1], nil
+}
+
 func (r *vaultRepayRepo) UpdateFields(_ context.Context, _ string, fields map[string]any) error {
 	r.fields = append(r.fields, fields)
 	return nil
 }
 
+func (r *vaultRepayRepo) last() settleCall { return r.settles[len(r.settles)-1] }
+
+var testValidUntil = time.Date(2026, 10, 2, 12, 5, 0, 0, time.UTC)
+
+// vaultRepayStellar signs before it fails unless failBeforeSigning is set,
+// matching the real submit path.
 type vaultRepayStellar struct {
 	stellar.Service
-	err     error
-	amounts []int64
+	err               error
+	failBeforeSigning bool
+	amounts           []int64
 }
 
-func (s *vaultRepayStellar) RepayToVault(_ context.Context, req stellar.RepayRequest) (*stellar.RepayResponse, error) {
+func (s *vaultRepayStellar) RepayToVault(ctx context.Context, req stellar.RepayRequest) (*stellar.RepayResponse, error) {
 	s.amounts = append(s.amounts, req.Amount)
+	if s.err != nil && s.failBeforeSigning {
+		return nil, s.err
+	}
+	if req.OnSigned != nil {
+		if err := req.OnSigned(ctx, "repay-tx", testValidUntil); err != nil {
+			return nil, err
+		}
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -118,6 +148,25 @@ type recordingAlerts struct{ subjects []string }
 func (a *recordingAlerts) AlertOps(subject, _ string) error {
 	a.subjects = append(a.subjects, subject)
 	return nil
+}
+
+type fakeTxResolver struct {
+	res stellarrpc.TxResolution
+	err error
+}
+
+func (f fakeTxResolver) ResolveSubmitted(context.Context, string, time.Time, time.Time) (stellarrpc.TxResolution, error) {
+	return f.res, f.err
+}
+
+type countingTxnSvc struct {
+	transaction.Service
+	created int
+}
+
+func (c *countingTxnSvc) Create(context.Context, transaction.CreateTransactionRequest) (*transaction.TransactionResponse, error) {
+	c.created++
+	return nil, nil
 }
 
 func newVaultRepayAdapter(repo *vaultRepayRepo, st *vaultRepayStellar, alerts *recordingAlerts) *DisbursementStatusAdapter {
@@ -142,17 +191,28 @@ func borrowedLoan(attempts int) *models.Loan {
 	}
 }
 
-func TestRepayVault_SuccessRecordsTheHash(t *testing.T) {
+func TestRepayVault_RecordsTheSignedHashThenSettlesOnIt(t *testing.T) {
 	repo := &vaultRepayRepo{claimable: true}
-	st := &vaultRepayStellar{}
-	a := newVaultRepayAdapter(repo, st, nil)
+	a := newVaultRepayAdapter(repo, &vaultRepayStellar{}, nil)
 
 	require.NoError(t, a.repayVaultIfNeeded(t.Context(), borrowedLoan(0), "fiat_failed", nil))
 
-	assert.Equal(t, []int64{100_000_000}, st.amounts)
-	require.Len(t, repo.fields, 1)
-	assert.Equal(t, "repay-tx", repo.fields[0]["vault_repay_tx_hash"])
-	assert.Equal(t, models.VaultRepayStatusSuccess, repo.fields[0]["vault_repay_status"])
+	require.Len(t, repo.settles, 2)
+	assert.Equal(t, repository.VaultRepayGuard{Status: models.VaultRepayStatusPending}, repo.settles[0].guard)
+	assert.Equal(t, map[string]any{"vault_repay_pending_tx_hash": "repay-tx", "vault_repay_tx_expires_at": testValidUntil},
+		repo.settles[0].fields, "the hash is recorded before submission")
+	assert.Equal(t, repository.VaultRepayGuard{PendingTxHash: "repay-tx"}, repo.settles[1].guard)
+	assert.Equal(t, vaultRepaySuccessFields("repay-tx"), repo.settles[1].fields)
+}
+
+func TestRepayVault_LostClaimAbortsBeforeSubmission(t *testing.T) {
+	repo := &vaultRepayRepo{claimable: true, settleFail: map[int]bool{0: true}}
+	st := &vaultRepayStellar{}
+
+	err := newVaultRepayAdapter(repo, st, nil).repayVaultIfNeeded(t.Context(), borrowedLoan(0), "fiat_failed", nil)
+
+	require.Error(t, err)
+	assert.Equal(t, vaultRepayFailedFields()["vault_repay_status"], repo.last().fields["vault_repay_status"])
 }
 
 func TestRepayVault_AmountPrecedence(t *testing.T) {
@@ -245,9 +305,9 @@ func TestRepayVault_FailureCountsAndAlertsOnceAtTheCap(t *testing.T) {
 
 			require.Error(t, err)
 			require.NotErrorIs(t, err, contracts.ErrVaultRepayDeferred)
-			require.Len(t, repo.fields, 1)
-			assert.Equal(t, models.VaultRepayStatusFailed, repo.fields[0]["vault_repay_status"])
-			assert.Contains(t, repo.fields[0], "vault_repay_attempts")
+			assert.Equal(t, repository.VaultRepayGuard{Status: models.VaultRepayStatusPending}, repo.last().guard)
+			assert.Equal(t, models.VaultRepayStatusFailed, repo.last().fields["vault_repay_status"])
+			assert.Contains(t, repo.last().fields, "vault_repay_attempts")
 			if tc.wantAlert {
 				assert.Equal(t, []string{"Vault repay attempts exhausted"}, alerts.subjects)
 			} else {
@@ -257,8 +317,8 @@ func TestRepayVault_FailureCountsAndAlertsOnceAtTheCap(t *testing.T) {
 	}
 }
 
-func TestRepayVault_UnconfirmedOutcomeIsParkedUnknown(t *testing.T) {
-	for _, cause := range []error{stellar.ErrTransactionTimeout, stellar.ErrUnknownTransactionStatus} {
+func TestRepayVault_UnconfirmedOutcomeKeepsTheHashForTheReconciler(t *testing.T) {
+	for _, cause := range []error{stellar.ErrTransactionTimeout, stellar.ErrUnknownTransactionStatus, stellar.ErrSubmissionUnconfirmed} {
 		t.Run(cause.Error(), func(t *testing.T) {
 			repo := &vaultRepayRepo{claimable: true}
 			alerts := &recordingAlerts{}
@@ -266,10 +326,115 @@ func TestRepayVault_UnconfirmedOutcomeIsParkedUnknown(t *testing.T) {
 
 			require.Error(t, a.repayVaultIfNeeded(t.Context(), borrowedLoan(0), "fiat_failed", nil))
 
-			require.Len(t, repo.fields, 1)
-			assert.Equal(t, map[string]any{"vault_repay_status": models.VaultRepayStatusUnknown}, repo.fields[0],
-				"an unconfirmed submit must not count as a retryable failure")
-			assert.Equal(t, []string{"Vault repay outcome unknown"}, alerts.subjects)
+			assert.Equal(t, map[string]any{"vault_repay_status": models.VaultRepayStatusUnknown}, repo.last().fields,
+				"an unconfirmed submit must not count as an attempt or drop its hash")
+			assert.Empty(t, alerts.subjects, "the reconciler settles it; no human needed")
+		})
+	}
+}
+
+func TestRepayVault_UnconfirmedWithoutAHashAlerts(t *testing.T) {
+	repo := &vaultRepayRepo{claimable: true}
+	alerts := &recordingAlerts{}
+	a := newVaultRepayAdapter(repo, &vaultRepayStellar{err: stellar.ErrTransactionTimeout, failBeforeSigning: true}, alerts)
+
+	require.Error(t, a.repayVaultIfNeeded(t.Context(), borrowedLoan(0), "fiat_failed", nil))
+
+	assert.Equal(t, []string{"Vault repay outcome unknown"}, alerts.subjects)
+}
+
+func TestSettleVaultRepaySuccess_RecordsTheAuditTransactionOnce(t *testing.T) {
+	for _, settled := range []bool{true, false} {
+		t.Run(fmt.Sprintf("settled=%v", settled), func(t *testing.T) {
+			repo := &vaultRepayRepo{settleFail: map[int]bool{0: !settled}}
+			txns := &countingTxnSvc{}
+			a := newVaultRepayAdapter(repo, &vaultRepayStellar{}, nil)
+			a.txnSvc = txns
+
+			a.settleVaultRepaySuccess(t.Context(), borrowedLoan(0), repository.VaultRepayGuard{PendingTxHash: "repay-tx"},
+				&stellar.RepayResponse{TxHash: "repay-tx", AmountRepaid: 1}, "test")
+
+			assert.Equal(t, lo.Ternary(settled, 1, 0), txns.created)
+		})
+	}
+}
+
+func unconfirmedLoan() *models.Loan {
+	l := borrowedLoan(1)
+	l.VaultRepayStatus = lo.ToPtr(models.VaultRepayStatusUnknown)
+	l.VaultRepayPendingTxHash = lo.ToPtr("repay-tx")
+	l.VaultRepayAttemptedAt = lo.ToPtr(testValidUntil.Add(-5 * time.Minute))
+	l.VaultRepayTxExpiresAt = lo.ToPtr(testValidUntil)
+	l.VaultRepayAmountStroops = lo.ToPtr(int64(40_000_000))
+	return l
+}
+
+func TestResolveVaultRepay(t *testing.T) {
+	hashGuard := repository.VaultRepayGuard{PendingTxHash: "repay-tx"}
+	cases := []struct {
+		name       string
+		resolver   fakeTxResolver
+		wantFields map[string]any
+		wantAlert  []string
+		wantErr    bool
+	}{
+		{
+			name:       "landed is recorded as success",
+			resolver:   fakeTxResolver{res: stellarrpc.TxResolution{Outcome: stellarrpc.TxSucceeded, Ledger: 9}},
+			wantFields: vaultRepaySuccessFields("repay-tx"),
+		},
+		{
+			name:       "failed on ledger spends an attempt",
+			resolver:   fakeTxResolver{res: stellarrpc.TxResolution{Outcome: stellarrpc.TxFailed}},
+			wantFields: vaultRepayFailedFields(),
+		},
+		{
+			name:       "never landed spends an attempt",
+			resolver:   fakeTxResolver{res: stellarrpc.TxResolution{Outcome: stellarrpc.TxNeverLanded}},
+			wantFields: vaultRepayFailedFields(),
+		},
+		{
+			name:     "outside retention is parked for an operator",
+			resolver: fakeTxResolver{res: stellarrpc.TxResolution{Outcome: stellarrpc.TxOutsideRetention}},
+			wantFields: map[string]any{
+				"vault_repay_status":          models.VaultRepayStatusUnknown,
+				"vault_repay_pending_tx_hash": nil,
+				"vault_repay_tx_expires_at":   nil,
+			},
+			wantAlert: []string{"Vault repay outcome unresolvable"},
+		},
+		{
+			name:     "unresolved writes nothing",
+			resolver: fakeTxResolver{res: stellarrpc.TxResolution{Outcome: stellarrpc.TxUnresolved}},
+		},
+		{
+			name:     "lookup error writes nothing",
+			resolver: fakeTxResolver{err: errors.New("rpc down")},
+			wantErr:  true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &vaultRepayRepo{}
+			alerts := &recordingAlerts{}
+			a := newVaultRepayAdapter(repo, &vaultRepayStellar{}, alerts)
+			a.txResolver = tc.resolver
+
+			err := a.ResolveVaultRepay(t.Context(), unconfirmedLoan())
+
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			if tc.wantFields == nil {
+				assert.Empty(t, repo.settles)
+			} else {
+				require.Len(t, repo.settles, 1)
+				assert.Equal(t, hashGuard, repo.settles[0].guard, "resolution only applies to the transaction it looked up")
+				assert.Equal(t, tc.wantFields, repo.settles[0].fields)
+			}
+			assert.Equal(t, tc.wantAlert, alerts.subjects)
 		})
 	}
 }
@@ -278,6 +443,7 @@ func TestVaultRepayColumnsAreUpdatable(t *testing.T) {
 	for _, col := range []string{
 		"vault_repay_tx_hash", "vault_repay_status", "vault_repay_attempts",
 		"vault_repay_amount_stroops", "vault_repay_attempted_at",
+		"vault_repay_pending_tx_hash", "vault_repay_tx_expires_at",
 	} {
 		assert.True(t, repository.IsUpdatableColumn(col), col)
 	}

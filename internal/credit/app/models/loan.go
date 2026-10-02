@@ -60,6 +60,10 @@ type Loan struct {
 	// Nil means the principal.
 	VaultRepayAmountStroops *int64     `json:"vault_repay_amount_stroops,omitempty" gorm:"type:bigint"`
 	VaultRepayAttemptedAt   *time.Time `json:"vault_repay_attempted_at,omitempty" gorm:"type:timestamptz"`
+	// VaultRepayPendingTxHash is the signed repay transaction, recorded before
+	// submission and cleared once its outcome is recorded.
+	VaultRepayPendingTxHash *string    `json:"vault_repay_pending_tx_hash,omitempty" gorm:"type:varchar(64)"`
+	VaultRepayTxExpiresAt   *time.Time `json:"vault_repay_tx_expires_at,omitempty" gorm:"type:timestamptz"`
 
 	// DisbursementRate is the FX rate actually executed at disbursement, the
 	// counterpart to EntryRateBuffered at quote time.

@@ -42,6 +42,7 @@ var (
 	ErrFailedToGetDueRepayments       = errors.New("failed to get due repayments")
 	ErrFailedToGetDueVaultRepays      = errors.New("failed to get due vault repays")
 	ErrFailedToClaimVaultRepay        = errors.New("failed to claim vault repay")
+	ErrFailedToSettleVaultRepay       = errors.New("failed to settle vault repay")
 	ErrFailedToGetActiveByProvider    = errors.New("failed to get active loans by provider")
 	ErrFailedToListLoans              = errors.New("failed to list loans")
 	ErrFailedToCountLoans             = errors.New("failed to count loans")
@@ -95,6 +96,11 @@ type LoanRepository interface {
 	// amountStroops as the amount owed if none is recorded yet. It reports
 	// false when the repay is already done, in flight, or of unknown outcome.
 	ClaimVaultRepay(ctx context.Context, id string, amountStroops *int64, now time.Time) (bool, error)
+
+	// SettleVaultRepay writes the outcome of a repay only while guard still
+	// holds and no repay hash is recorded, so a late writer can never
+	// overwrite a settled result. It reports whether the row was written.
+	SettleVaultRepay(ctx context.Context, id string, guard VaultRepayGuard, fields map[string]any) (bool, error)
 
 	// GetActiveByProvider returns loans where ramp_provider matches the given
 	// provider and the loan has not reached a terminal status. Used by
@@ -499,8 +505,11 @@ func (r *loanRepository) GetDueRepayments(ctx context.Context, limit int) ([]*mo
 
 // VaultRepayDue selects the reconciler's work. A failed repay is due once
 // SettlementWindow has passed since its last attempt, or RetryBackoff once it
-// has reached MaxAttempts. A pending claim older than SettlementWindow is
-// returned too, so the reconciler can escalate it as stale. Rows failed before
+// has reached MaxAttempts. A pending or unknown repay with a recorded
+// transaction is due once that transaction has expired, to be settled from
+// the ledger. A pending claim with no recorded transaction older than
+// SettlementWindow is returned too, so the reconciler can escalate it as
+// stale. Rows failed before
 // attempts were recorded have no vault_repay_attempted_at and are never due;
 // they are left for an operator to check against the ledger first.
 type VaultRepayDue struct {
@@ -529,7 +538,9 @@ func (r *loanRepository) GetDueVaultRepays(ctx context.Context, due VaultRepayDu
 				models.VaultRepayStatusFailed, due.MaxAttempts, windowCutoff).
 			Or("vault_repay_status = ? AND vault_repay_attempts >= ? AND vault_repay_attempted_at <= ?",
 				models.VaultRepayStatusFailed, due.MaxAttempts, backoffCutoff).
-			Or("vault_repay_status = ? AND vault_repay_attempted_at <= ?",
+			Or("vault_repay_status IN ? AND vault_repay_pending_tx_hash IS NOT NULL AND vault_repay_tx_expires_at <= ?",
+				[]string{models.VaultRepayStatusPending, models.VaultRepayStatusUnknown}, due.Now).
+			Or("vault_repay_status = ? AND vault_repay_pending_tx_hash IS NULL AND vault_repay_attempted_at <= ?",
 				models.VaultRepayStatusPending, windowCutoff)).
 		Order("vault_repay_attempted_at ASC").
 		Limit(limit).
@@ -545,9 +556,11 @@ func (r *loanRepository) GetDueVaultRepays(ctx context.Context, due VaultRepayDu
 // can never submit the same repay concurrently.
 func (r *loanRepository) ClaimVaultRepay(ctx context.Context, id string, amountStroops *int64, now time.Time) (bool, error) {
 	fields := map[string]any{
-		"vault_repay_status":       models.VaultRepayStatusPending,
-		"vault_repay_attempted_at": now,
-		"updated_at":               now,
+		"vault_repay_status":          models.VaultRepayStatusPending,
+		"vault_repay_attempted_at":    now,
+		"vault_repay_pending_tx_hash": nil,
+		"vault_repay_tx_expires_at":   nil,
+		"updated_at":                  now,
 	}
 	if amountStroops != nil {
 		fields["vault_repay_amount_stroops"] = gorm.Expr("COALESCE(vault_repay_amount_stroops, ?)", *amountStroops)
@@ -562,6 +575,44 @@ func (r *loanRepository) ClaimVaultRepay(ctx context.Context, id string, amountS
 	if result.Error != nil {
 		slog.ErrorContext(ctx, "ClaimVaultRepay: database error", slog.Any("error", result.Error))
 		return false, ErrFailedToClaimVaultRepay
+	}
+	return result.RowsAffected == 1, nil
+}
+
+// VaultRepayGuard is the state a SettleVaultRepay write requires. Empty
+// fields are not checked.
+type VaultRepayGuard struct {
+	Status        string
+	PendingTxHash string
+}
+
+// SettleVaultRepay is a guarded UpdateFields; see the interface docs.
+func (r *loanRepository) SettleVaultRepay(ctx context.Context, id string, guard VaultRepayGuard, fields map[string]any) (bool, error) {
+	out := make(map[string]any, len(fields)+1)
+	for k, v := range fields {
+		if !loanUpdatableColumns[k] {
+			slog.ErrorContext(ctx, "SettleVaultRepay: rejected non-updatable column", slog.String("k", k))
+			return false, ErrFailedToSettleVaultRepay
+		}
+		out[k] = v
+	}
+	out["updated_at"] = time.Now()
+
+	query := r.db.WithContext(ctx).
+		Model(&models.Loan{}).
+		Omit(clause.Associations).
+		Where("id = ? AND deleted_at IS NULL", id).
+		Where("vault_repay_tx_hash IS NULL OR vault_repay_tx_hash = ''")
+	if guard.Status != "" {
+		query = query.Where("vault_repay_status = ?", guard.Status)
+	}
+	if guard.PendingTxHash != "" {
+		query = query.Where("vault_repay_pending_tx_hash = ?", guard.PendingTxHash)
+	}
+	result := query.Updates(out)
+	if result.Error != nil {
+		slog.ErrorContext(ctx, "SettleVaultRepay: database error", slog.Any("error", result.Error))
+		return false, ErrFailedToSettleVaultRepay
 	}
 	return result.RowsAffected == 1, nil
 }
@@ -649,9 +700,11 @@ func loanUpdateMap(loan *models.Loan) map[string]interface{} {
 		"tax_usd":                loan.TaxUSD,
 		"tax_local":              loan.TaxLocal,
 
-		"vault_repay_attempts":       loan.VaultRepayAttempts,
-		"vault_repay_amount_stroops": loan.VaultRepayAmountStroops,
-		"vault_repay_attempted_at":   loan.VaultRepayAttemptedAt,
+		"vault_repay_attempts":        loan.VaultRepayAttempts,
+		"vault_repay_amount_stroops":  loan.VaultRepayAmountStroops,
+		"vault_repay_attempted_at":    loan.VaultRepayAttemptedAt,
+		"vault_repay_pending_tx_hash": loan.VaultRepayPendingTxHash,
+		"vault_repay_tx_expires_at":   loan.VaultRepayTxExpiresAt,
 
 		"ramp_interactive_url":       loan.RampInteractiveURL,
 		"ramp_short_code":            loan.RampShortCode,
@@ -717,6 +770,7 @@ func IsUpdatableColumn(col string) bool {
 var vaultRepayColumns = []string{
 	"vault_repay_tx_hash", "vault_repay_status", "vault_repay_attempts",
 	"vault_repay_amount_stroops", "vault_repay_attempted_at",
+	"vault_repay_pending_tx_hash", "vault_repay_tx_expires_at",
 }
 
 // Update rewrites every updatable column from the model except the vault repay

@@ -13,12 +13,18 @@ import (
 )
 
 type fakeVaultReconciler struct {
-	err   error
-	calls []string
+	err      error
+	calls    []string
+	resolved []string
 }
 
 func (f *fakeVaultReconciler) ReconcileVaultRepay(_ context.Context, l *models.Loan) error {
 	f.calls = append(f.calls, l.ID)
+	return f.err
+}
+
+func (f *fakeVaultReconciler) ResolveVaultRepay(_ context.Context, l *models.Loan) error {
+	f.resolved = append(f.resolved, l.ID)
 	return f.err
 }
 
@@ -47,4 +53,23 @@ func TestReconcileDrive_StalePendingClaimIsParkedNotRetried(t *testing.T) {
 	assert.Empty(t, rec.calls)
 	assert.Equal(t, []map[string]any{{"vault_repay_status": models.VaultRepayStatusUnknown}}, repo.fields)
 	assert.Equal(t, []string{"Vault repay claim stale"}, alerts.subjects)
+}
+
+func TestReconcileDrive_RecordedTransactionIsResolvedNotRetried(t *testing.T) {
+	for _, status := range []string{models.VaultRepayStatusPending, models.VaultRepayStatusUnknown} {
+		t.Run(status, func(t *testing.T) {
+			repo := &vaultRepayRepo{}
+			rec := &fakeVaultReconciler{}
+			d := &VaultRepayReconcileDriver{repo: repo, reconciler: rec, logger: slog.New(slog.DiscardHandler)}
+
+			l := borrowedLoan(1)
+			l.VaultRepayStatus = lo.ToPtr(status)
+			l.VaultRepayPendingTxHash = lo.ToPtr("repay-tx")
+			d.Drive(t.Context(), l)
+
+			assert.Equal(t, []string{"loan-1"}, rec.resolved)
+			assert.Empty(t, rec.calls)
+			assert.Empty(t, repo.fields, "a recorded transaction is never parked as stale")
+		})
+	}
 }

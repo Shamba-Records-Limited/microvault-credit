@@ -23,6 +23,7 @@ import (
 // drives, so tests can stand in for the on-chain call.
 type vaultRepayReconciler interface {
 	ReconcileVaultRepay(ctx context.Context, loan *models.Loan) error
+	ResolveVaultRepay(ctx context.Context, loan *models.Loan) error
 }
 
 // VaultRepayReconcileDriver returns USDC owed to the vault for unwound
@@ -87,11 +88,18 @@ func NewVaultRepayReconcileRunner(deps VaultRepayReconcilerDeps) (*mgpoller.Runn
 	}), nil
 }
 
-// Drive retries a failed repay. A claim still pending past the settlement
-// window means the process died mid-submit, so it is parked as unknown for an
-// operator rather than retried blind.
+// Drive settles an unconfirmed repay from the ledger when its transaction
+// was recorded, and otherwise retries a failed one. A claim still pending
+// past the settlement window with no recorded transaction died before
+// signing or predates recording, so it is parked as unknown for an operator.
 func (d *VaultRepayReconcileDriver) Drive(ctx context.Context, l *models.Loan) {
 	if l == nil {
+		return
+	}
+	if l.VaultRepayPendingTxHash != nil && *l.VaultRepayPendingTxHash != "" {
+		if err := d.reconciler.ResolveVaultRepay(ctx, l); err != nil {
+			d.logger.WarnContext(ctx, "vault repay resolution failed", "loan_id", l.ID, "error", err)
+		}
 		return
 	}
 	if l.VaultRepayStatus != nil && *l.VaultRepayStatus == models.VaultRepayStatusPending {

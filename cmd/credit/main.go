@@ -565,6 +565,7 @@ func main() {
 		PublicBaseURL: cfg.Server.PublicBaseURL,
 		Shortener:     linkShortener,
 
+		TxResolver:            stellarrpc.NewVerifier(rpcClient),
 		VaultRepayMaxAttempts: cfg.Stellar.VaultRepayMaxAttempts,
 	})
 

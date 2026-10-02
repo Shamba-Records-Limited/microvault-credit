@@ -16,6 +16,7 @@ import (
 	"github.com/Shamba-Records-Limited/microvault/pkg/payment/yellowcard"
 	"github.com/Shamba-Records-Limited/microvault/pkg/services/mgpoller"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
+	stellarrpc "github.com/Shamba-Records-Limited/microvault/pkg/stellar/rpc"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
 	"github.com/Shamba-Records-Limited/microvault/pkg/urlshortener"
 	"github.com/Shamba-Records-Limited/microvault/pkg/webhook"
@@ -33,6 +34,12 @@ var (
 	_ webhook.TransactionRecorder   = (*DisbursementStatusAdapter)(nil)
 )
 
+// vaultRepayTxResolver is the ledger lookup ResolveVaultRepay needs;
+// *stellarrpc.Verifier satisfies it.
+type vaultRepayTxResolver interface {
+	ResolveSubmitted(ctx context.Context, txHash string, submittedAfter, validUntil time.Time) (stellarrpc.TxResolution, error)
+}
+
 // DisbursementStatusAdapter implements contracts.DisbursementUpdater,
 // webhook.RefundPendingFetcher, and webhook.TransactionRecorder using
 // the credit loan repository and transaction service.
@@ -44,6 +51,7 @@ type DisbursementStatusAdapter struct {
 	txnSvc        transaction.Service
 	stellarSvc    stellar.Service
 	alerts        mgpoller.AlertService
+	txResolver    vaultRepayTxResolver
 	logger        *slog.Logger
 
 	vaultRepayMaxAttempts int
@@ -98,6 +106,9 @@ type DisbursementAdapterDeps struct {
 	PublicBaseURL string
 	Shortener     urlshortener.Shortener
 	Alerts        mgpoller.AlertService
+	// TxResolver settles unconfirmed repays from the ledger; nil leaves them
+	// to an operator.
+	TxResolver vaultRepayTxResolver
 	// VaultRepayMaxAttempts caps inline repay attempts; 0 means 5.
 	VaultRepayMaxAttempts int
 }
@@ -117,6 +128,7 @@ func NewDisbursementStatusAdapter(deps DisbursementAdapterDeps) *DisbursementSta
 		txnSvc:                deps.TxnSvc,
 		stellarSvc:            deps.StellarSvc,
 		alerts:                deps.Alerts,
+		txResolver:            deps.TxResolver,
 		logger:                logger,
 		publicBaseURL:         deps.PublicBaseURL,
 		shortener:             deps.Shortener,
@@ -330,29 +342,86 @@ func (a *DisbursementStatusAdapter) repayVault(ctx context.Context, loan *models
 		"settlement_method", loan.SettlementMethod,
 	)
 
-	repayResp, err := a.stellarSvc.RepayToVault(ctx, stellar.RepayRequest{Amount: amount})
+	var signedHash string
+	repayResp, err := a.stellarSvc.RepayToVault(ctx, stellar.RepayRequest{
+		Amount: amount,
+		OnSigned: func(ctx context.Context, txHash string, validUntil time.Time) error {
+			ok, err := a.repo.SettleVaultRepay(ctx, loan.ID,
+				repository.VaultRepayGuard{Status: models.VaultRepayStatusPending},
+				map[string]any{"vault_repay_pending_tx_hash": txHash, "vault_repay_tx_expires_at": validUntil})
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return disbursementErr("repay_vault").With(pkgErrors.AttrLoanID, loan.ID).
+					Code(pkgErrors.CodeStateWriteFailed).Errorf("vault repay claim was lost before submission")
+			}
+			signedHash = txHash
+			loan.VaultRepayPendingTxHash = &txHash
+			loan.VaultRepayTxExpiresAt = &validUntil
+			return nil
+		},
+	})
 	if err != nil {
-		a.recordVaultRepayFailure(ctx, loan, amount, trigger, err)
+		a.recordVaultRepayFailure(ctx, loan, amount, trigger, signedHash, err)
 		return disbursementErr("repay_vault").Code(pkgErrors.CodeVaultRepayFailed).
 			With(pkgErrors.AttrLoanID, loan.ID).With(pkgErrors.AttrAmountStroops, amount).
 			Wrapf(err, "vault repay leg failed")
 	}
 
+	guard := repository.VaultRepayGuard{PendingTxHash: signedHash}
+	if signedHash == "" {
+		guard = repository.VaultRepayGuard{Status: models.VaultRepayStatusPending}
+	}
+	a.settleVaultRepaySuccess(ctx, loan, guard, repayResp, trigger)
+	return nil
+}
+
+// vaultRepaySuccessFields records a landed repay and clears the in-flight
+// transaction.
+func vaultRepaySuccessFields(txHash string) map[string]any {
+	return map[string]any{
+		"vault_repay_tx_hash":         txHash,
+		"vault_repay_status":          models.VaultRepayStatusSuccess,
+		"vault_repay_pending_tx_hash": nil,
+		"vault_repay_tx_expires_at":   nil,
+	}
+}
+
+// vaultRepayFailedFields records a definitive failure as a spent attempt.
+func vaultRepayFailedFields() map[string]any {
+	return map[string]any{
+		"vault_repay_status":          models.VaultRepayStatusFailed,
+		"vault_repay_attempts":        gorm.Expr("vault_repay_attempts + 1"),
+		"vault_repay_pending_tx_hash": nil,
+		"vault_repay_tx_expires_at":   nil,
+	}
+}
+
+// settleVaultRepaySuccess records the landed repay and its audit transaction.
+// The transaction is recorded only by whichever writer settles the row, so a
+// repay confirmed both inline and by the reconciler is recorded once.
+func (a *DisbursementStatusAdapter) settleVaultRepaySuccess(ctx context.Context, loan *models.Loan, guard repository.VaultRepayGuard, repayResp *stellar.RepayResponse, trigger string) {
 	successStatus := models.VaultRepayStatusSuccess
 	loan.VaultRepayTxHash = &repayResp.TxHash
 	loan.VaultRepayStatus = &successStatus
-	if err := a.repo.UpdateFields(ctx, loan.ID, map[string]any{
-		"vault_repay_tx_hash": repayResp.TxHash,
-		"vault_repay_status":  successStatus,
-	}); err != nil {
+	loan.VaultRepayPendingTxHash = nil
+	loan.VaultRepayTxExpiresAt = nil
+	settled, err := a.repo.SettleVaultRepay(ctx, loan.ID, guard, vaultRepaySuccessFields(repayResp.TxHash))
+	if err != nil {
 		a.logger.ErrorContext(ctx, "failed to save vault repay tx hash",
 			"loan_id", loan.ID,
 			"repay_tx_hash", repayResp.TxHash,
 			"error", err,
 		)
+		return
+	}
+	if !settled {
+		a.logger.InfoContext(ctx, "vault repay already settled by another writer",
+			"loan_id", loan.ID, "repay_tx_hash", repayResp.TxHash)
+		return
 	}
 
-	// Record vault_repay transaction for audit trail.
 	if a.txnSvc != nil {
 		desc := "Vault repay"
 		txnResp, txnErr := a.txnSvc.Create(ctx, transaction.CreateTransactionRequest{
@@ -363,8 +432,8 @@ func (a *DisbursementStatusAdapter) repayVault(ctx context.Context, loan *models
 			Asset:            "USDC",
 			StellarTxHash:    &repayResp.TxHash,
 			StellarLedger:    &repayResp.Ledger,
-			ContractID:       &repayResp.ContractID,
-			ContractFunction: &repayResp.ContractFunction,
+			ContractID:       lo.EmptyableToPtr(repayResp.ContractID),
+			ContractFunction: lo.EmptyableToPtr(repayResp.ContractFunction),
 			Description:      &desc,
 			Metadata:         txMetadata(map[string]any{"trigger": trigger}),
 		})
@@ -392,7 +461,6 @@ func (a *DisbursementStatusAdapter) repayVault(ctx context.Context, loan *models
 		"amount_repaid", repayResp.AmountRepaid,
 		"trigger", trigger,
 	)
-	return nil
 }
 
 // RecordDisbursementCompletion persists the final financials of a completed
@@ -853,46 +921,122 @@ func loanStatusForDisbursement(status string) string {
 }
 
 // recordVaultRepayFailure releases the claim. A submit whose outcome was never
-// confirmed is parked as unknown rather than failed, since retrying it could
-// repay the vault twice.
-func (a *DisbursementStatusAdapter) recordVaultRepayFailure(ctx context.Context, loan *models.Loan, amount int64, trigger string, cause error) {
-	if errors.Is(cause, stellar.ErrTransactionTimeout) || errors.Is(cause, stellar.ErrUnknownTransactionStatus) {
+// confirmed stays recorded as unknown with its transaction hash, for the
+// reconciler to settle from the ledger once the transaction expires; retrying
+// it blind could repay the vault twice.
+func (a *DisbursementStatusAdapter) recordVaultRepayFailure(ctx context.Context, loan *models.Loan, amount int64, trigger, signedHash string, cause error) {
+	pendingGuard := repository.VaultRepayGuard{Status: models.VaultRepayStatusPending}
+	if errors.Is(cause, stellar.ErrTransactionTimeout) || errors.Is(cause, stellar.ErrUnknownTransactionStatus) ||
+		errors.Is(cause, stellar.ErrSubmissionUnconfirmed) {
 		unknown := models.VaultRepayStatusUnknown
 		loan.VaultRepayStatus = &unknown
-		if err := a.repo.UpdateFields(ctx, loan.ID, map[string]any{"vault_repay_status": unknown}); err != nil {
+		if _, err := a.repo.SettleVaultRepay(ctx, loan.ID, pendingGuard, map[string]any{"vault_repay_status": unknown}); err != nil {
 			a.logger.ErrorContext(ctx, "failed to save vault_repay_status=unknown", "loan_id", loan.ID, "error", err)
 		}
+		if signedHash != "" {
+			a.logger.WarnContext(ctx, "vault repay outcome unconfirmed; the reconciler settles it from the ledger once the transaction expires",
+				"loan_id", loan.ID, "tx_hash", signedHash, "trigger", trigger, "error", cause)
+			return
+		}
 		a.alertOps(ctx, "Vault repay outcome unknown",
-			fmt.Sprintf("Loan %s: repay of %d stroops (%s) was submitted but never confirmed: %v. "+
+			fmt.Sprintf("Loan %s: repay of %d stroops (%s) was submitted but never confirmed and no transaction hash was recorded: %v. "+
 				"Verify on-chain, then set vault_repay_tx_hash or reset vault_repay_status to failed.",
 				loan.ID, amount, trigger, cause))
 		return
 	}
 
-	attempts := loan.VaultRepayAttempts + 1
-	failed := models.VaultRepayStatusFailed
-	loan.VaultRepayStatus = &failed
-	loan.VaultRepayAttempts = attempts
 	a.logger.ErrorContext(ctx, "CRITICAL: vault repay failed — USDC stuck in treasury",
 		"loan_id", loan.ID,
 		"amount_stroops", amount,
 		"trigger", trigger,
-		"attempts", attempts,
+		"attempts", loan.VaultRepayAttempts+1,
 		"max_attempts", a.vaultRepayMaxAttempts,
 		"error", cause,
 	)
-	if err := a.repo.UpdateFields(ctx, loan.ID, map[string]any{
-		"vault_repay_status":   failed,
-		"vault_repay_attempts": gorm.Expr("vault_repay_attempts + 1"),
-	}); err != nil {
+	a.recordVaultRepayFailed(ctx, loan, pendingGuard, amount, cause)
+}
+
+// recordVaultRepayFailed spends an attempt. Attempts only increment, so the
+// alert at the cap fires exactly once.
+func (a *DisbursementStatusAdapter) recordVaultRepayFailed(ctx context.Context, loan *models.Loan, guard repository.VaultRepayGuard, amount int64, cause error) {
+	attempts := loan.VaultRepayAttempts + 1
+	failed := models.VaultRepayStatusFailed
+	loan.VaultRepayStatus = &failed
+	loan.VaultRepayAttempts = attempts
+	loan.VaultRepayPendingTxHash = nil
+	loan.VaultRepayTxExpiresAt = nil
+	settled, err := a.repo.SettleVaultRepay(ctx, loan.ID, guard, vaultRepayFailedFields())
+	if err != nil {
 		a.logger.ErrorContext(ctx, "failed to save vault_repay_status=failed", "loan_id", loan.ID, "error", err)
+		return
 	}
-	// Attempts only increment, so equality alerts exactly once.
-	if attempts == a.vaultRepayMaxAttempts {
+	if settled && attempts == a.vaultRepayMaxAttempts {
 		a.alertOps(ctx, "Vault repay attempts exhausted",
 			fmt.Sprintf("Loan %s: repay of %d stroops has failed %d times; the reconciler keeps retrying on its backoff. Last error: %v",
 				loan.ID, amount, attempts, cause))
 	}
+}
+
+// ResolveVaultRepay settles a repay whose submission was never confirmed by
+// looking its recorded transaction up on the ledger.
+func (a *DisbursementStatusAdapter) ResolveVaultRepay(ctx context.Context, loan *models.Loan) error {
+	if a.txResolver == nil {
+		return disbursementErr("resolve_vault_repay").Code(pkgErrors.CodeMissingDependency).
+			With(pkgErrors.AttrDependency, "tx_resolver").Errorf("required dependency is missing")
+	}
+	if loan.VaultRepayPendingTxHash == nil || loan.VaultRepayAttemptedAt == nil || loan.VaultRepayTxExpiresAt == nil {
+		return disbursementErr("resolve_vault_repay").With(pkgErrors.AttrLoanID, loan.ID).
+			Code(pkgErrors.CodeIncompleteResponse).Errorf("no recorded transaction to resolve")
+	}
+	txHash := *loan.VaultRepayPendingTxHash
+	amount := loan.PrincipalAmount
+	if loan.VaultRepayAmountStroops != nil {
+		amount = *loan.VaultRepayAmountStroops
+	}
+
+	res, err := a.txResolver.ResolveSubmitted(ctx, txHash, *loan.VaultRepayAttemptedAt, *loan.VaultRepayTxExpiresAt)
+	if err != nil {
+		return disbursementErr("resolve_vault_repay").With(pkgErrors.AttrLoanID, loan.ID).
+			With(pkgErrors.AttrTxHash, txHash).Wrapf(err, "could not look up the repay transaction")
+	}
+
+	guard := repository.VaultRepayGuard{PendingTxHash: txHash}
+	switch res.Outcome {
+	case stellarrpc.TxSucceeded:
+		a.settleVaultRepaySuccess(ctx, loan, guard, &stellar.RepayResponse{
+			TxHash:           txHash,
+			AmountRepaid:     amount,
+			Ledger:           int64(res.Ledger),
+			ContractFunction: "repay",
+		}, "ledger_resolution")
+	case stellarrpc.TxFailed, stellarrpc.TxNeverLanded:
+		cause := "failed on ledger"
+		if res.Outcome == stellarrpc.TxNeverLanded {
+			cause = "expired without landing"
+		}
+		a.logger.WarnContext(ctx, "unconfirmed vault repay resolved as not repaid",
+			"loan_id", loan.ID, "tx_hash", txHash, "outcome", cause)
+		a.recordVaultRepayFailed(ctx, loan, guard, amount, errors.New(cause))
+	case stellarrpc.TxOutsideRetention:
+		settled, err := a.repo.SettleVaultRepay(ctx, loan.ID, guard, map[string]any{
+			"vault_repay_status":          models.VaultRepayStatusUnknown,
+			"vault_repay_pending_tx_hash": nil,
+			"vault_repay_tx_expires_at":   nil,
+		})
+		if err != nil {
+			return disbursementErr("resolve_vault_repay").With(pkgErrors.AttrLoanID, loan.ID).
+				Code(pkgErrors.CodeStateWriteFailed).Wrapf(err, "could not park the unresolvable repay")
+		}
+		if settled {
+			a.alertOps(ctx, "Vault repay outcome unresolvable",
+				fmt.Sprintf("Loan %s: repay transaction %s of %d stroops is older than the RPC's history. "+
+					"Check it against an archive, then set vault_repay_tx_hash or reset vault_repay_status to failed.",
+					loan.ID, txHash, amount))
+		}
+	default:
+		a.logger.DebugContext(ctx, "vault repay transaction not yet resolvable", "loan_id", loan.ID, "tx_hash", txHash)
+	}
+	return nil
 }
 
 func (a *DisbursementStatusAdapter) alertOps(ctx context.Context, subject, message string) {
