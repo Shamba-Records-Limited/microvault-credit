@@ -333,6 +333,20 @@ func TestRepayVault_UnconfirmedOutcomeKeepsTheHashForTheReconciler(t *testing.T)
 	}
 }
 
+func TestRepayVault_RefusedSubmissionSpendsAnAttemptAndDropsTheHash(t *testing.T) {
+	for _, cause := range []error{stellar.ErrTransactionRejected, stellar.ErrStellarCoreOverloaded} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			repo := &vaultRepayRepo{claimable: true}
+			a := newVaultRepayAdapter(repo, &vaultRepayStellar{err: cause}, nil)
+
+			require.Error(t, a.repayVaultIfNeeded(t.Context(), borrowedLoan(0), "fiat_failed", nil))
+
+			assert.Equal(t, vaultRepayFailedFields(), repo.last().fields,
+				"stellar-core never admitted it, so there is nothing for the ledger to settle")
+		})
+	}
+}
+
 func TestRepayVault_UnconfirmedWithoutAHashAlerts(t *testing.T) {
 	repo := &vaultRepayRepo{claimable: true}
 	alerts := &recordingAlerts{}
