@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Shamba-Records-Limited/microvault/pkg/contracts"
+	"github.com/Shamba-Records-Limited/microvault/pkg/logging"
 	"github.com/Shamba-Records-Limited/microvault/pkg/stellar"
 	stellarrpc "github.com/Shamba-Records-Limited/microvault/pkg/stellar/rpc"
 	"github.com/Shamba-Records-Limited/microvault/pkg/transaction"
@@ -116,6 +117,13 @@ func (r *vaultRepayRepo) UpdateFields(_ context.Context, _ string, fields map[st
 
 func (r *vaultRepayRepo) last() settleCall { return r.settles[len(r.settles)-1] }
 
+func (r *vaultRepayRepo) GetBySequenceID(_ context.Context, seq string) (*models.Loan, error) {
+	if seq != "seq-1" {
+		return nil, errors.New("not found")
+	}
+	return &models.Loan{ID: "loan-1", LoanReference: lo.ToPtr("REF-1")}, nil
+}
+
 var testValidUntil = time.Date(2026, 10, 2, 12, 5, 0, 0, time.UTC)
 
 // vaultRepayStellar signs before it fails unless failBeforeSigning is set,
@@ -143,10 +151,14 @@ func (s *vaultRepayStellar) RepayToVault(ctx context.Context, req stellar.RepayR
 	return &stellar.RepayResponse{TxHash: "repay-tx", AmountRepaid: req.Amount}, nil
 }
 
-type recordingAlerts struct{ subjects []string }
+type recordingAlerts struct {
+	subjects []string
+	attrs    []slog.Attr
+}
 
-func (a *recordingAlerts) AlertOps(_ context.Context, subject, _ string) error {
+func (a *recordingAlerts) AlertOps(ctx context.Context, subject, _ string) error {
 	a.subjects = append(a.subjects, subject)
+	a.attrs = logging.Attrs(ctx)
 	return nil
 }
 
@@ -461,4 +473,31 @@ func TestVaultRepayColumnsAreUpdatable(t *testing.T) {
 	} {
 		assert.True(t, repository.IsUpdatableColumn(col), col)
 	}
+}
+
+func TestLoanRefs(t *testing.T) {
+	a := newVaultRepayAdapter(&vaultRepayRepo{}, &vaultRepayStellar{}, nil)
+
+	id, ref, err := a.LoanRefs(t.Context(), "seq-1")
+	require.NoError(t, err)
+	assert.Equal(t, "loan-1", id)
+	assert.Equal(t, "REF-1", ref)
+
+	_, _, err = a.LoanRefs(t.Context(), "missing")
+	assert.Error(t, err)
+}
+
+// A vault repay can be driven from a webhook whose context knows nothing of
+// the loan; the alert must still be grouped per loan.
+func TestRepayVault_AlertCarriesTheLoan(t *testing.T) {
+	repo := &vaultRepayRepo{claimable: true}
+	alerts := &recordingAlerts{}
+	a := newVaultRepayAdapter(repo, &vaultRepayStellar{err: errors.New("contract error")}, alerts)
+	l := borrowedLoan(2)
+	l.LoanReference = lo.ToPtr("REF-1")
+
+	_ = a.ReconcileVaultRepay(t.Context(), l)
+
+	require.Equal(t, []string{"Vault repay attempts exhausted"}, alerts.subjects)
+	assert.Equal(t, []slog.Attr{slog.String("loan_id", "loan-1"), slog.String("loan_reference", "REF-1")}, alerts.attrs)
 }
