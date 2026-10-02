@@ -28,7 +28,9 @@ RUN sh scripts/generate-credit-docs.sh
 
 # Build the application
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
-RUN go build -ldflags="-s -w" -o credit ./cmd/credit
+RUN go build -ldflags="-s -w" -o credit ./cmd/credit && \
+    go build -ldflags="-s -w" -o account-heal ./cmd/account-heal && \
+    go build -ldflags="-s -w" -o mpesa-settle ./cmd/mpesa-settle
 
 # --- Release stage ---
 FROM alpine:latest AS release
@@ -42,12 +44,14 @@ WORKDIR /app
 
 # Copy binary and necessary files from builder
 COPY --from=builder /build/microvault-credit/credit ./credit
+COPY --from=builder /build/microvault-credit/account-heal ./account-heal
+COPY --from=builder /build/microvault-credit/mpesa-settle ./mpesa-settle
 COPY --from=builder /build/microvault-credit/cmd/credit/docs/redoc-static.html ./cmd/credit/docs/redoc-static.html
 COPY --from=builder /build/microvault/static ./static
 COPY --from=builder /build/microvault-credit/internal/credit/entrypoint.sh ./entrypoint.sh
 
 # Set permissions before switching user
-RUN chmod +x ./entrypoint.sh ./credit && \
+RUN chmod +x ./entrypoint.sh ./credit ./account-heal ./mpesa-settle && \
     chown -R appuser:appgroup /app
 
 # Switch to non-root user

@@ -1,4 +1,4 @@
-.PHONY: help migrate-up migrate-down migrate-version migrate-force build build-credit build-migrate run up up-build down test test-integration test-integration-down docs clean lint lint-new lint-fix fmt yc-tx yc-seq yc-list yc-all yc-account yc-get mg-tx mg-list mg-all
+.PHONY: help migrate-up migrate-down migrate-version migrate-force build build-credit build-migrate run up up-build down test test-integration test-integration-down docs clean lint lint-new lint-fix fmt yc-tx yc-seq yc-list yc-all yc-account yc-get mg-tx mg-list mg-all heal-account
 
 COMPOSE := docker compose
 COMPOSE_TEST := docker compose -f docker-compose.test.yml
@@ -53,6 +53,9 @@ help:
 	@echo "  make mg-tx TX=<hash>     - Look up one MoneyGram SEP-24 transaction"
 	@echo "  make mg-list [N=50]      - List recent MoneyGram SEP-24 transactions"
 	@echo "  make mg-all              - Page through every MoneyGram SEP-24 transaction"
+	@echo ""
+	@echo "Operator Commands:"
+	@echo "  make heal-account ACCOUNT=<id|address|phone> [APPLY=1] - Report on (or heal) a child Stellar account"
 	@echo ""
 	@echo "Documentation Commands:"
 	@echo "  make docs                - Generate API documentation"
@@ -210,6 +213,15 @@ mg-list:
 
 mg-all:
 	@scripts/mg-sep24.sh all
+
+# Operator commands. Locally these run against the dev .env; on testnet the
+# same binaries ship in the credit image, run with docker exec.
+heal-account:
+ifndef ACCOUNT
+	@echo "Error: account required. Usage: make heal-account ACCOUNT=<id|address|phone> [APPLY=1]"
+	@exit 1
+endif
+	@go run ./cmd/account-heal --account $(ACCOUNT) $(if $(APPLY),--apply,)
 
 # Documentation commands
 docs:
